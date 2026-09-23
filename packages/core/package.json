@@ -17,5 +17,8 @@
   },
   "files": [
     "dist"
-  ]
+  ],
+  "dependencies": {
+    "uuid": "^14.0.2"
+  }
 }

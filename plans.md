@@ -163,7 +163,8 @@ Every delivery commit in the code repo carries `APM-Node: <full-uuid>`. This is 
 ### 3.7 IDs and handles
 
 - Stored IDs are full UUIDv7 values.
-- The **handle** is the last 8 hex chars (`1c0b9a44`). All CLI and MCP inputs accept an unambiguous handle suffix.
+- The **handle** is the last 8 hex chars (`1c0b9a44`). All CLI and MCP inputs accept an unambiguous handle suffix of at least 4 hex chars, or a full ID (with or without hyphens, any case).
+- Those 8 chars are 32 random bits, so two nodes can share them (about a 1% chance somewhere in a 10,000-node project). Where that happens, both are displayed with as many extra chars as it takes to tell them apart.
 - ⚠ Do **not** use the leading characters. In UUIDv7 those are the timestamp, so nodes created within about a minute of each other share their first 8 characters.
 
 ---
@@ -454,7 +455,10 @@ Each phase is **one branch → one PR into `main`**. Phases are small enough to 
 
 ### 12.1 Conventions (every phase)
 
-- **Branch:** `phase/NN-<slug>` (e.g. `phase/02-model-io`). Squash-merge into `main`.
+- **Branch:** `phase/NN-<slug>` (e.g. `phase/02-model-io`); a child phase uses its full number (`phase/02.1-model-ids`).
+- **Size: at most 300 lines per PR**, counted as added lines excluding comments, blank lines, docs and generated files (lockfile). Fixtures and tests count.
+- **Too big → decompose, the APM way.** A phase that won't fit is broken into child phases (`P02.1`, `P02.2`, …), exactly as APM breaks down a node: each child gets its own scope, real dependencies and exit criteria, and ships as its own PR. A child that still won't fit is broken down again. The parent has no PR of its own; it's done when all its children are, and its exit criteria are checked then.
+- **Stacked PRs:** when children must land in sequence, each PR targets the branch of the one before it. Merge them in order with a **merge commit** (not squash), so the stack stays intact and GitHub retargets the next PR to `main` automatically.
 - **PR title:** `P<NN>: <phase title>`. **PR body:** goal, scope delivered, the phase's exit criteria as a ticked checklist, anything deferred, and follow-ups.
 - **CI must pass:** typecheck, lint, and tests (from P01 onward).
 - **Keep the plan true:** each PR updates its row in the tracker (§12.2), and edits the design sections if the implementation diverged from them. The plan doc is never allowed to drift from the code.
@@ -467,8 +471,13 @@ Each phase is **one branch → one PR into `main`**. Phases are small enough to 
 | Phase | Title | M | Depends on | Status | PR |
 |---|---|---|---|---|---|
 | P00 | Phased implementation plan (this doc) | — | — | done | [#1](https://github.com/jerryqhyu/APM/pull/1) |
-| P01 | Workspace scaffold + CI | M1 | P00 | in review | [#2](https://github.com/jerryqhyu/APM/pull/2) |
-| P02 | Node model, IDs and file I/O | M1 | P01 | todo | |
+| P01 | Workspace scaffold + CI | M1 | P00 | done | [#2](https://github.com/jerryqhyu/APM/pull/2) |
+| P02 | Node model, IDs and file I/O *(parent: done when P02.1–P02.5 are)* | M1 | P01 | in progress | ~~#3~~ (split) |
+| ↳ P02.1 | Node model + IDs and handles | M1 | P01 | in review | |
+| ↳ P02.2 | Plan-repo paths, atomic writes, bodies | M1 | P02.1 | todo | |
+| ↳ P02.3 | `apm.yaml` config | M1 | P02.2 | todo | |
+| ↳ P02.4 | `graph.ndjson` parser | M1 | P02.1 | todo | |
+| ↳ P02.5 | `graph.ndjson` serializer + graph file I/O | M1 | P02.2, P02.4 | todo | |
 | P03 | Invariants and computed status | M1 | P02 | todo | |
 | P04 | Lifting and level views | M1 | P03 | todo | |
 | P05 | `mutate()`, write lock, git commits, `init` | M1 | P03 | todo | |
@@ -508,12 +517,32 @@ Each phase is **one branch → one PR into `main`**. Phases are small enough to 
 - *Exit:* a fresh clone runs `pnpm i && pnpm build && pnpm test` green; CI is green on the PR; `pnpm apm --version` prints the version.
 
 **P02 — Node model, IDs and file I/O** (§3.2–3.4, §3.7)
-- Types: `Node`, `Kind`, `Status`, `Delivery`, plus the reserved `external` and `variant_of` fields (parsed and preserved, otherwise unused).
-- UUIDv7 generation, `handle()` (the last 8 hex chars) and `resolveHandle(suffix)`, which errors on an ambiguous or unknown suffix.
-- `graph.ndjson` serializer: sorts by `id`, writes keys in a fixed order, and omits null and empty values. The parser reports errors with line numbers.
-- `nodes/<id>.md` read/write, and the body template for new nodes (Intent / Acceptance criteria / Notes).
-- `apm.yaml` schema (zod + `yaml`) with defaults.
-- *Exit:* property test shows `parse(serialize(g)) ≡ g`, and that serialization is byte-stable (serializing twice gives identical bytes); golden-file tests pass; handle-ambiguity tests pass.
+
+Decomposed into five PRs (first attempt, #3, was ~1,150 lines). Stacked in the order below; the dependencies are the real ones.
+
+- *Exit (checked when all children are done):* property test shows `parse(serialize(g)) ≡ g`, and that serialization is byte-stable (serializing twice gives identical bytes); golden-file tests pass; handle-ambiguity tests pass.
+
+**P02.1 — Node model + IDs and handles** · depends on P01
+- Types: `Node`, `Kind`, `Status`, `Delivery`, plus the reserved `external` and `variant_of` fields.
+- `newId()` (UUIDv7, in creation order even within one ms), `handle()` (last 8 hex), `handles()` (lengthens only colliding handles, §3.7) and `resolveHandle()` with typed `invalid` / `unknown` / `ambiguous` errors.
+- *Exit:* ID ordering, ambiguity, collision and "never match the timestamp prefix" tests pass; a property test shows every displayed handle resolves back to its node.
+
+**P02.2 — Plan-repo paths, atomic writes, bodies** · depends on P02.1
+- Paths inside `.apm/`; `writeFileAtomic` (temp file + rename); `readFileIfExists`; `bodyPath` refuses anything but a node ID, so input can't escape `nodes/`.
+- `nodes/<id>.md`: `renderBody()` (Intent / Acceptance criteria / Notes, §3.3), `readBody` (missing → empty), `writeBody`.
+- *Exit:* round-trip and no-leftover-temp-file tests; path-escape tests; template snapshot tests.
+
+**P02.3 — `apm.yaml` config** · depends on P02.2
+- Schema (zod + `yaml`) with defaults, strict keys, and `line:col` YAML errors. Empty keys (YAML `null`) count as not set, so a commented-out block falls back to defaults. `defaultRepo()`.
+- *Exit:* the §3.4 example parses; defaults, empty-key and each validation error are tested.
+
+**P02.4 — `graph.ndjson` parser** · depends on P02.1
+- The per-line schema and `parseGraph`: canonicalizes hand-written input (any order, CRLF, blank lines, byte-order mark, `null`s, missing `kind`/`status`, duplicate deps), and reports **every** bad line as `graph.ndjson:<line>: <field>: <problem>`. Whole-graph checks are P03.
+- *Exit:* golden and hand-written fixtures parse to the same graph; each error case is reported with its line number.
+
+**P02.5 — `graph.ndjson` serializer + graph file I/O** · depends on P02.2, P02.4
+- `serializeGraph` / `serializeNode`: byte-stable (id order, fixed key order, nulls and empties omitted). Every line is checked against the parser's schema first, and a node the parser would reject throws `InvalidNodeError` instead of being written. `readGraphFile` / `writeGraphFile`.
+- *Exit:* the P02 exit criteria above, plus a property test that anything written reads back, and a test that a refused write leaves the existing file untouched.
 
 **P03 — Invariants and computed status** (§2.3, §2.4)
 - An in-memory `Graph` with a children index, ancestor walk, and computed depth.
