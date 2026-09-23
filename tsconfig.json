@@ -1,0 +1,9 @@
+{
+  // Typecheck everything (sources, tests, configs) in one pass without emitting.
+  // Builds use the per-package project references: `pnpm build`.
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true
+  },
+  "include": ["packages/*/src", "vitest.config.ts"]
+}
