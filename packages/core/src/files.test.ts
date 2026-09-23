@@ -1,9 +1,10 @@
-import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { readBody, renderBody, writeBody } from "./body.ts";
-import { bodyPath, writeFileAtomic } from "./files.ts";
+import { bodyPath, readGraphFile, writeFileAtomic, writeGraphFile } from "./files.ts";
+import type { Node } from "./model.ts";
 
 const ID = "0192f3a1-7c4e-7b91-a2d5-3f8e1c0b9a44";
 
@@ -13,6 +14,40 @@ beforeEach(async () => {
 });
 afterEach(async () => {
   await rm(dir, { recursive: true, force: true });
+});
+
+describe("graph file", () => {
+  it("round-trips through disk", async () => {
+    const nodes: Node[] = [
+      { id: ID, parent: null, title: "t", kind: "work", status: "todo", depends_on: [] },
+    ];
+    await writeGraphFile(dir, nodes);
+    expect(await readGraphFile(dir)).toEqual(nodes);
+    expect(await readdir(dir)).toEqual(["graph.ndjson"]); // no temp files left behind
+  });
+
+  it("refuses to write an unreadable graph and leaves the existing file alone", async () => {
+    const good: Node = {
+      id: ID,
+      parent: null,
+      title: "t",
+      kind: "work",
+      status: "todo",
+      depends_on: [],
+    };
+    await writeGraphFile(dir, [good]);
+    const before = await readFile(join(dir, "graph.ndjson"), "utf8");
+    await expect(writeGraphFile(dir, [{ ...good, title: "two\nlines" }])).rejects.toThrow(
+      /title: must be a single line/,
+    );
+    expect(await readFile(join(dir, "graph.ndjson"), "utf8")).toBe(before);
+    expect(await readGraphFile(dir)).toEqual([good]);
+  });
+
+  it("names graph.ndjson in parse errors", async () => {
+    await writeFile(join(dir, "graph.ndjson"), "{\n");
+    await expect(readGraphFile(dir)).rejects.toThrow(/^graph\.ndjson:1: invalid JSON/);
+  });
 });
 
 describe("writeFileAtomic", () => {
