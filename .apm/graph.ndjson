@@ -1,0 +1,19 @@
+{"id":"01a0ccda-9c10-7404-9787-d046500ad29b","title":"Project decisions","kind":"work","status":"in_progress"}
+{"id":"01a0ccda-9c11-7093-829c-176f32047a7d","parent":"01a0ccda-9c10-7404-9787-d046500ad29b","title":"Language: TypeScript end-to-end, Node 24 LTS","kind":"decision","status":"done"}
+{"id":"01a0ccda-9c12-76ab-88ea-0104888a2295","parent":"01a0ccda-9c10-7404-9787-d046500ad29b","title":"Graph model: Compound graph: containment tree + dependency DAG; cross-level edges stored once and lifted for display","kind":"decision","status":"done"}
+{"id":"01a0ccda-9c13-714b-9bb4-ca3db2b2ab3c","parent":"01a0ccda-9c10-7404-9787-d046500ad29b","title":"Plan storage: Separate git repo at `.apm/`, ignored by the code repo and linked to it by a committed `.apm-link`","kind":"decision","status":"done"}
+{"id":"01a0ccda-9c14-7759-a744-af190185834f","parent":"01a0ccda-9c10-7404-9787-d046500ad29b","title":"Source of truth: `graph.ndjson` (structure + metadata) + `nodes/<id>.md` (prose only)","kind":"decision","status":"done"}
+{"id":"01a0ccda-9c15-7482-9df8-bfdd793435c8","parent":"01a0ccda-9c10-7404-9787-d046500ad29b","title":"IDs: UUIDv7; the short handle is the last 8 hex chars","kind":"decision","status":"done"}
+{"id":"01a0ccda-9c16-7345-b4c6-4625b3e93f21","parent":"01a0ccda-9c10-7404-9787-d046500ad29b","title":"Local DB: SQLite (`node:sqlite`) in `.apm/.cache/`, not committed","kind":"decision","status":"done"}
+{"id":"01a0ccda-9c17-7616-adad-72d25fc068e1","parent":"01a0ccda-9c10-7404-9787-d046500ad29b","title":"History: Git commits with structured trailers, indexed into SQLite","kind":"decision","status":"done"}
+{"id":"01a0ccda-9c18-748e-a240-2304acb24865","parent":"01a0ccda-9c10-7404-9787-d046500ad29b","title":"Writes: `core.mutate()` under a file lock, callable from any process","kind":"decision","status":"done"}
+{"id":"01a0ccda-9c19-70b0-8107-14c76a687f4c","parent":"01a0ccda-9c10-7404-9787-d046500ad29b","title":"Agents: Server spawns `claude` CLI; agents call back through the APM MCP","kind":"decision","status":"done"}
+{"id":"01a0ccda-9c1a-70da-bd95-b85d8aa2c560","parent":"01a0ccda-9c10-7404-9787-d046500ad29b","title":"Planning writes: Agents return proposals (`--json-schema`); nothing is committed until you accept","kind":"decision","status":"done"}
+{"id":"01a0ccda-9c1b-70ed-b9b4-c2442c8146b2","parent":"01a0ccda-9c10-7404-9787-d046500ad29b","title":"Packaging: Agents + skills + MCP ship as one Claude Code plugin","kind":"decision","status":"done"}
+{"id":"01a0ccda-9c1c-75c8-ba61-6a290b60facf","parent":"01a0ccda-9c10-7404-9787-d046500ad29b","title":"Scope: Single user, single machine, one code repo (config already shaped for many repos)","kind":"decision","status":"done"}
+{"id":"01a0ccda-9c1d-76fa-99fd-f372fad1b57c","parent":"01a0ccda-9c10-7404-9787-d046500ad29b","title":"Q1: Duplicates across parents","kind":"decision","status":"todo"}
+{"id":"01a0ccda-9c1e-77e3-ab52-b574a5cc3ab0","parent":"01a0ccda-9c10-7404-9787-d046500ad29b","title":"Q2: Parent status","kind":"decision","status":"todo"}
+{"id":"01a0ccda-9c1f-77cf-b733-3e424b87077e","parent":"01a0ccda-9c10-7404-9787-d046500ad29b","title":"Q3: Auto-committing hand edits","kind":"decision","status":"todo"}
+{"id":"01a0ccda-9c20-72af-b804-220210bbc6f4","parent":"01a0ccda-9c10-7404-9787-d046500ad29b","title":"Q4: Package name","kind":"decision","status":"todo"}
+{"id":"01a0ccda-9c21-74a1-a7de-5116422e4038","parent":"01a0ccda-9c10-7404-9787-d046500ad29b","title":"Deleting a node with children: refuse, or require --recursive?","kind":"decision","status":"todo"}
+{"id":"01a0ccda-9c22-7242-b748-ba831217913e","parent":"01a0ccda-9c10-7404-9787-d046500ad29b","title":"Reconciler: how much is deterministic code, how much agent?","kind":"decision","status":"todo"}
