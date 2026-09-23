@@ -466,7 +466,7 @@ Each phase is **one branch → one PR into `main`**. Phases are small enough to 
 
 | Phase | Title | M | Depends on | Status | PR |
 |---|---|---|---|---|---|
-| P00 | Phased implementation plan (this doc) | — | — | in review | — |
+| P00 | Phased implementation plan (this doc) | — | — | in review | [#1](https://github.com/jerryqhyu/APM/pull/1) |
 | P01 | Workspace scaffold + CI | M1 | P00 | todo | |
 | P02 | Node model, IDs and file I/O | M1 | P01 | todo | |
 | P03 | Invariants and computed status | M1 | P02 | todo | |
