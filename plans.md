@@ -472,12 +472,12 @@ Each phase is **one branch → one PR into `main`**. Phases are small enough to 
 |---|---|---|---|---|---|
 | P00 | Phased implementation plan (this doc) | — | — | done | [#1](https://github.com/jerryqhyu/APM/pull/1) |
 | P01 | Workspace scaffold + CI | M1 | P00 | done | [#2](https://github.com/jerryqhyu/APM/pull/2) |
-| P02 | Node model, IDs and file I/O *(parent: done when P02.1–P02.5 are)* | M1 | P01 | in progress | ~~#3~~ (split) |
-| ↳ P02.1 | Node model + IDs and handles | M1 | P01 | in review | |
-| ↳ P02.2 | Plan-repo paths, atomic writes, bodies | M1 | P02.1 | todo | |
-| ↳ P02.3 | `apm.yaml` config | M1 | P02.2 | todo | |
-| ↳ P02.4 | `graph.ndjson` parser | M1 | P02.1 | todo | |
-| ↳ P02.5 | `graph.ndjson` serializer + graph file I/O | M1 | P02.2, P02.4 | todo | |
+| P02 | Node model, IDs and file I/O *(parent: done when P02.1–P02.5 are)* | M1 | P01 | in progress | ~~[#3](https://github.com/jerryqhyu/APM/pull/3)~~ (split) |
+| ↳ P02.1 | Node model + IDs and handles | M1 | P01 | in review | [#4](https://github.com/jerryqhyu/APM/pull/4) |
+| ↳ P02.2 | Plan-repo paths, atomic writes, bodies | M1 | P02.1 | todo | [#5](https://github.com/jerryqhyu/APM/pull/5) |
+| ↳ P02.3 | `apm.yaml` config | M1 | P02.2 | todo | [#6](https://github.com/jerryqhyu/APM/pull/6) |
+| ↳ P02.4 | `graph.ndjson` parser | M1 | P02.1 | todo | [#7](https://github.com/jerryqhyu/APM/pull/7) |
+| ↳ P02.5 | `graph.ndjson` serializer + graph file I/O | M1 | P02.2, P02.4 | todo | [#8](https://github.com/jerryqhyu/APM/pull/8) |
 | P03 | Invariants and computed status | M1 | P02 | todo | |
 | P04 | Lifting and level views | M1 | P03 | todo | |
 | P05 | `mutate()`, write lock, git commits, `init` | M1 | P03 | todo | |
