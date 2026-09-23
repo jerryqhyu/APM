@@ -477,7 +477,7 @@ Each phase is **one branch → one PR into `main`**. Phases are small enough to 
 |---|---|---|---|---|---|
 | P00 | Phased implementation plan (this doc) | — | — | done | [#1](https://github.com/jerryqhyu/APM/pull/1) |
 | P01 | Workspace scaffold + CI | M1 | P00 | done | [#2](https://github.com/jerryqhyu/APM/pull/2) |
-| P02 | Node model, IDs and file I/O | M1 | P01 | in review | |
+| P02 | Node model, IDs and file I/O | M1 | P01 | in review | [#3](https://github.com/jerryqhyu/APM/pull/3) |
 | P03 | Invariants and computed status | M1 | P02 | todo | |
 | P04 | Lifting and level views | M1 | P03 | todo | |
 | P05 | `mutate()`, write lock, git commits, `init` | M1 | P03 | todo | |
