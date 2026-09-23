@@ -67,6 +67,29 @@ runner:
     expect(config.runner).toEqual({ max_concurrent: 4, default_budget_usd: 2, agents: {} });
   });
 
+  it.each([
+    ["an empty runner", "runner:\n"],
+    ["a runner with everything commented out", "runner:\n  # max_concurrent: 4\n"],
+    ["empty agents", "runner:\n  agents:\n"],
+    ["an empty setting", "runner:\n  max_concurrent:\n  default_budget_usd: 2\n"],
+  ])("treats %s as not set, so defaults apply", (_name, runner) => {
+    const config = parseConfig(`name: x\ncode: { repos: { app: { path: '..' } } }\n${runner}`);
+    expect(config.runner).toEqual({ max_concurrent: 2, default_budget_usd: 2, agents: {} });
+  });
+
+  it("treats an empty agent entry and an empty remote as not set", () => {
+    const config = parseConfig(
+      "name: x\ncode:\n  repos:\n    app: { path: '..', remote: }\nrunner:\n  agents:\n    apm-critic:\n    apm-decomposer: { model: opus, budget_usd: }\n",
+    );
+    expect(config.code.repos.app?.remote).toBeNull();
+    expect(config.runner.agents).toEqual({ "apm-decomposer": { model: "opus" } });
+  });
+
+  it("still requires required keys that are present but empty", () => {
+    expect(issuesFor("name:\ncode: { repos: { app: { path: '..' } } }\n")[0]).toMatch(/^name: /);
+    expect(issuesFor("name: x\ncode:\n")[0]).toMatch(/^code: /);
+  });
+
   it("picks the marked default among several repos", () => {
     const config = parseConfig(
       "name: x\ncode:\n  repos:\n    api: { path: '../api' }\n    web: { path: '../web', default: true }\n",

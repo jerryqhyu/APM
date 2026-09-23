@@ -26,6 +26,24 @@ describe("graph file", () => {
     expect(await readdir(dir)).toEqual(["graph.ndjson"]); // no temp files left behind
   });
 
+  it("refuses to write an unreadable graph and leaves the existing file alone", async () => {
+    const good: Node = {
+      id: ID,
+      parent: null,
+      title: "t",
+      kind: "work",
+      status: "todo",
+      depends_on: [],
+    };
+    await writeGraphFile(dir, [good]);
+    const before = await readFile(join(dir, "graph.ndjson"), "utf8");
+    await expect(writeGraphFile(dir, [{ ...good, title: "two\nlines" }])).rejects.toThrow(
+      /title: must be a single line/,
+    );
+    expect(await readFile(join(dir, "graph.ndjson"), "utf8")).toBe(before);
+    expect(await readGraphFile(dir)).toEqual([good]);
+  });
+
   it("names graph.ndjson in parse errors", async () => {
     await writeFile(join(dir, "graph.ndjson"), "{\n");
     await expect(readGraphFile(dir)).rejects.toThrow(/^graph\.ndjson:1: invalid JSON/);

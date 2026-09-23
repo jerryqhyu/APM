@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 import { KINDS, type Node, STATUSES } from "./model.ts";
-import { GraphParseError, parseGraph, serializeGraph } from "./ndjson.ts";
+import { GraphParseError, InvalidNodeError, parseGraph, serializeGraph } from "./ndjson.ts";
 
 const fixture = (name: string) =>
   readFileSync(new URL(`../fixtures/${name}`, import.meta.url), "utf8");
@@ -72,6 +72,12 @@ describe("golden files", () => {
     expect(text).toContain("\r\n");
     expect(parseGraph(text)).toEqual(golden);
     expect(serializeGraph(parseGraph(text))).toBe(fixture("graph.golden.ndjson"));
+  });
+
+  it("ignores a leading byte-order mark", () => {
+    const text = fixture("graph.golden.ndjson");
+    expect(parseGraph(`\uFEFF${text}`)).toEqual(golden);
+    expect(parseGraph(`\uFEFF${fixture("graph.handwritten.ndjson")}`)).toEqual(golden);
   });
 
   it("treats an empty file as an empty graph", () => {
@@ -161,6 +167,40 @@ describe("serialization", () => {
     );
   });
 
+  describe("refuses to write a node it couldn't read back", () => {
+    const base: Node = {
+      id: ROOT,
+      parent: null,
+      title: "t",
+      kind: "work",
+      status: "todo",
+      depends_on: [],
+    };
+    it.each<[string, Partial<Node>, RegExp]>([
+      ["a multi-line title", { title: "a\nb" }, /title: must be a single line/],
+      ["a blank title", { title: "  " }, /title: must not be blank/],
+      [
+        "a non-v7 id",
+        { id: "0192f2c8-1a0d-4e33-8c41-5b2a9d0e7f10" },
+        /id: must be a lowercase UUIDv7/,
+      ],
+      ["a bad parent", { parent: "nope" }, /parent: must be a lowercase UUIDv7/],
+      ["a bad dependency", { depends_on: ["nope"] }, /depends_on\[0\]: /],
+      [
+        "a non-hex commit",
+        { delivery: { repo: "app", commits: ["zz"] } },
+        /delivery\.commits\[0\]: /,
+      ],
+      ["an empty delivery repo", { delivery: { repo: "" } }, /delivery\.repo: /],
+      ["a non-URL pr", { delivery: { repo: "app", pr: "12" } }, /delivery\.pr: /],
+      ["an unknown status", { status: "blocked" as Node["status"] }, /status: /],
+    ])("%s", (_name, patch, pattern) => {
+      const bad = { ...base, ...patch };
+      expect(() => serializeGraph([golden[0] as Node, bad])).toThrow(InvalidNodeError);
+      expect(() => serializeGraph([bad])).toThrow(pattern);
+    });
+  });
+
   it("refuses duplicate ids", () => {
     const n = golden[0] as Node;
     expect(() => serializeGraph([n, { ...n }])).toThrow(/duplicate id/);
@@ -230,6 +270,45 @@ describe("round-trip properties", () => {
       fc.property(graph, (g) => {
         expect(parseGraph(serializeGraph(g))).toEqual(sortedById(g));
       }),
+    );
+  });
+
+  it("whatever serializeGraph writes, parseGraph reads back (or it refuses to write)", () => {
+    // Deliberately loose: values that are often invalid, to exercise the write-side check.
+    const looseId = fc.oneof(id, fc.uuid(), fc.string({ maxLength: 8 }));
+    const looseText = fc.string({ unit: "binary", maxLength: 8 });
+    const loose: fc.Arbitrary<Node> = fc
+      .record({
+        id: looseId,
+        parent: fc.option(looseId, { nil: null }),
+        title: fc.oneof(text, looseText, fc.constantFrom("", " ", "a\nb", "a\rb")),
+        kind: fc.constantFrom(...KINDS),
+        status: fc.constantFrom(...STATUSES),
+        depends_on: fc.array(looseId, { maxLength: 3 }),
+        repo: fc.option(looseText, { nil: undefined }),
+        commits: fc.array(fc.oneof(sha, looseText), { maxLength: 2 }),
+        pr: fc.option(fc.oneof(fc.webUrl(), looseText), { nil: undefined }),
+      })
+      .map(({ repo, commits, pr, ...rest }) => {
+        const n: Node = rest;
+        if (repo !== undefined) {
+          n.delivery = { repo, commits };
+          if (pr !== undefined) n.delivery.pr = pr;
+        }
+        return n;
+      });
+    fc.assert(
+      fc.property(fc.uniqueArray(loose, { selector: (n) => n.id, maxLength: 5 }), (g) => {
+        let text: string;
+        try {
+          text = serializeGraph(g);
+        } catch (err) {
+          expect(err).toBeInstanceOf(InvalidNodeError);
+          return;
+        }
+        expect(serializeGraph(parseGraph(text))).toBe(text);
+      }),
+      { numRuns: 500 },
     );
   });
 

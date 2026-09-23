@@ -26,6 +26,19 @@ export class GraphParseError extends Error {
   }
 }
 
+/** Thrown when asked to write a node that `parseGraph` would reject. */
+export class InvalidNodeError extends Error {
+  override name = "InvalidNodeError";
+  readonly id: unknown;
+  readonly issues: readonly string[];
+
+  constructor(id: unknown, issues: readonly string[]) {
+    super(`cannot write node ${String(id)}: ${issues.join("; ")}`);
+    this.id = id;
+    this.issues = issues;
+  }
+}
+
 // Optional fields accept null in hand-written files and treat it as absent.
 const nodeId = z.string().regex(UUID_V7_RE, "must be a lowercase UUIDv7");
 const nonBlank = z
@@ -67,7 +80,9 @@ export function parseGraph(text: string, source = "graph.ndjson"): Node[] {
   const firstSeen = new Map<NodeId, number>();
   const nodes: Node[] = [];
 
-  for (const [i, raw] of text.split("\n").entries()) {
+  // Some editors start files with a byte-order mark; it isn't part of line 1's JSON.
+  const body = text.startsWith("\uFEFF") ? text.slice(1) : text;
+  for (const [i, raw] of body.split("\n").entries()) {
     const line = i + 1;
     const content = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
     if (content.trim() === "") continue;
@@ -81,10 +96,7 @@ export function parseGraph(text: string, source = "graph.ndjson"): Node[] {
     }
     const result = NodeLineSchema.safeParse(json);
     if (!result.success) {
-      for (const issue of result.error.issues) {
-        const path = issue.path.length > 0 ? `${formatPath(issue.path)}: ` : "";
-        issues.push({ line, message: `${path}${issue.message}` });
-      }
+      for (const message of formatIssues(result.error.issues)) issues.push({ line, message });
       continue;
     }
     const node = fromLine(result.data);
@@ -112,7 +124,11 @@ export function serializeGraph(nodes: Iterable<Node>): string {
   return sorted.map((n) => `${serializeNode(n)}\n`).join("");
 }
 
-/** One line of graph.ndjson (without the newline). Keys always in the order below. */
+/**
+ * One line of graph.ndjson (without the newline). Keys always in the order below.
+ * Throws `InvalidNodeError` rather than produce a line `parseGraph` would reject, so a bad value
+ * can never make the file unreadable.
+ */
 export function serializeNode(n: Node): string {
   const out: Record<string, unknown> = { id: n.id };
   if (n.parent !== null) out.parent = n.parent;
@@ -137,6 +153,8 @@ export function serializeNode(n: Node): string {
     out.external = external;
   }
   if (n.variant_of) out.variant_of = n.variant_of;
+  const check = NodeLineSchema.safeParse(out);
+  if (!check.success) throw new InvalidNodeError(n.id, formatIssues(check.error.issues));
   return JSON.stringify(out);
 }
 
@@ -173,6 +191,10 @@ function fromLine(l: NodeLine): Node {
 
 function byId(a: Node, b: Node): number {
   return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+}
+
+function formatIssues(issues: readonly z.core.$ZodIssue[]): string[] {
+  return issues.map((i) => (i.path.length > 0 ? `${formatPath(i.path)}: ${i.message}` : i.message));
 }
 
 function formatPath(path: readonly PropertyKey[]): string {

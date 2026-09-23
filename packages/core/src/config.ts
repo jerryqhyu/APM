@@ -86,7 +86,7 @@ export function parseConfig(text: string, source = CONFIG_FILE): ApmConfig {
       source,
     );
   }
-  const result = ConfigSchema.safeParse(doc.toJS() ?? {});
+  const result = ConfigSchema.safeParse(dropNulls(doc.toJS() ?? {}));
   if (!result.success) {
     throw new ConfigError(
       result.error.issues.map((i) => {
@@ -129,6 +129,20 @@ export async function readConfig(apmDir: string): Promise<ApmConfig> {
   const text = await readFileIfExists(configPath(apmDir));
   if (text === undefined) throw new ConfigError(["file not found"]);
   return parseConfig(text);
+}
+
+/**
+ * YAML reads an empty key (`runner:` with its body commented out) as null. Treat it as not set,
+ * so defaults apply, by dropping null-valued keys from every mapping.
+ */
+function dropNulls(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(dropNulls);
+  if (value === null || typeof value !== "object") return value;
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(value)) {
+    if (v !== null) out[k] = dropNulls(v);
+  }
+  return out;
 }
 
 /** The key of the repo marked default. */

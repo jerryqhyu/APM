@@ -114,8 +114,9 @@ Format rules (the serializer's output is byte-stable, so the same graph always p
 
 - Key order is the field order above; nested objects follow the same rules.
 - `kind` and `status` are always written. `depends_on` is sorted and de-duplicated.
-- Hand-written lines may be in any order, use `null` for absent fields, and leave out `kind`/`status` (defaults: `work`/`todo`). The next write puts them in canonical form.
+- Hand-written lines may be in any order, use `null` for absent fields, start with a byte-order mark, and leave out `kind`/`status` (defaults: `work`/`todo`). The next write puts them in canonical form.
 - Unknown keys are errors, so a typo can't be silently dropped. IDs must be lowercase UUIDv7s; titles must be one non-blank line.
+- The writer checks every node against the same rules as the reader and refuses to write one it couldn't read back, so a bad value can never make the file unloadable.
 
 ### 3.3 `nodes/<uuid>.md`: prose only
 
