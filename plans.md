@@ -466,8 +466,8 @@ Each phase is **one branch → one PR into `main`**. Phases are small enough to 
 
 | Phase | Title | M | Depends on | Status | PR |
 |---|---|---|---|---|---|
-| P00 | Phased implementation plan (this doc) | — | — | in review | [#1](https://github.com/jerryqhyu/APM/pull/1) |
-| P01 | Workspace scaffold + CI | M1 | P00 | todo | |
+| P00 | Phased implementation plan (this doc) | — | — | done | [#1](https://github.com/jerryqhyu/APM/pull/1) |
+| P01 | Workspace scaffold + CI | M1 | P00 | in review | |
 | P02 | Node model, IDs and file I/O | M1 | P01 | todo | |
 | P03 | Invariants and computed status | M1 | P02 | todo | |
 | P04 | Lifting and level views | M1 | P03 | todo | |
@@ -499,11 +499,12 @@ Each phase is **one branch → one PR into `main`**. Phases are small enough to 
 - *Exit:* merged; the tracker exists.
 
 **P01 — Workspace scaffold + CI**
-- pnpm workspace with `packages/core`, `packages/app`, and `plugin/`. `packages/ui` is added in P13. Node 24 is pinned via `engines` and `.nvmrc`, and the workspace uses the `packageManager` field.
-- TypeScript in strict mode, ESM only. `tsc -b` with project references for `core` and `app`.
-- Tooling (proposed; confirm in the PR): **Vitest** + **fast-check** for tests, **Biome** for lint and format.
-- `apm` binary entry in `packages/app` that implements only `apm --version`.
-- GitHub Actions workflow on PRs to run install, typecheck, lint and test. It runs on `ubuntu-latest` and `macos-latest`, because the file locking and git behaviour tested later differ between them.
+- pnpm 12 workspace with `packages/core` and `packages/app`. `plugin/` is added in P08 and `packages/ui` in P13, so that neither lands as an empty placeholder. Node 24 is pinned via `engines` and `.nvmrc`, and the workspace uses the `packageManager` field.
+- TypeScript 7 in strict mode, ESM only. `tsc -b` with project references builds `core` and `app` to `dist/` for publishing; a root `tsconfig.json` typechecks sources, tests and configs in one `noEmit` pass.
+- **Run from source, no build step in development.** Node 24 strips types natively, so the code keeps to erasable TypeScript (`erasableSyntaxOnly`) and imports relative files with `.ts` extensions, which `tsc` rewrites to `.js` on build. Workspace packages export `./src/index.ts`; `publishConfig.exports` points at `dist/` for publishing. Node, Vitest and `tsc` all resolve `@apm/core` to its source.
+- Tooling (confirmed): **Vitest** + **fast-check** for tests (colocated `*.test.ts`), **Biome** for lint and format.
+- `apm` binary entry in `packages/app` that implements only `--version` and `--help`.
+- GitHub Actions workflow on PRs and `main` to run install (frozen lockfile), lint, typecheck, build, test, and a smoke test of the built binary. It runs on `ubuntu-latest` and `macos-latest`, because the file locking and git behaviour tested later differ between them.
 - *Exit:* a fresh clone runs `pnpm i && pnpm build && pnpm test` green; CI is green on the PR; `pnpm apm --version` prints the version.
 
 **P02 — Node model, IDs and file I/O** (§3.2–3.4, §3.7)

@@ -1,0 +1,21 @@
+{
+  "name": "@apm/core",
+  "version": "0.0.0",
+  "private": true,
+  "description": "APM core: graph model, invariants, lifting, git I/O, index, mutate()",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "publishConfig": {
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      }
+    }
+  },
+  "files": [
+    "dist"
+  ]
+}

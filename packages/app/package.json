@@ -1,0 +1,16 @@
+{
+  "name": "@apm/app",
+  "version": "0.0.0",
+  "private": true,
+  "description": "The apm binary: CLI, serve, and mcp",
+  "type": "module",
+  "bin": {
+    "apm": "./dist/cli.js"
+  },
+  "dependencies": {
+    "@apm/core": "workspace:*"
+  },
+  "files": [
+    "dist"
+  ]
+}
