@@ -26,7 +26,7 @@
 {"id":"01a0ccda-a011-71de-83b8-f86f805aa927","title":"M6: Implementer","kind":"work","status":"todo"}
 {"id":"01a0ccda-a012-72ca-a793-8d559950d62e","title":"M7: Reconciler","kind":"work","status":"todo"}
 {"id":"01a0ccdb-8e5b-70c3-8bd1-1a4f2c9ab938","parent":"01a0ccda-a00c-7638-9990-7efe42d0ce13","title":"P01: Workspace scaffold + CI","kind":"work","status":"done","depends_on":["01a0ccda-a00b-7032-a7b3-e9ca508888a9"],"delivery":{"repo":"apm","branch":"phase/01-scaffold","commits":["ca4f43d","785e621"],"pr":"https://github.com/jerryqhyu/APM/pull/2"}}
-{"id":"01a0ccdb-8e5c-7039-a0c8-b177ea04bfdb","parent":"01a0ccda-a00c-7638-9990-7efe42d0ce13","title":"P02: Node model, IDs and file I/O","kind":"work","status":"todo","depends_on":["01a0ccdb-8e5b-70c3-8bd1-1a4f2c9ab938"]}
+{"id":"01a0ccdb-8e5c-7039-a0c8-b177ea04bfdb","parent":"01a0ccda-a00c-7638-9990-7efe42d0ce13","title":"P02: Node model, IDs and file I/O","kind":"work","status":"in_progress","depends_on":["01a0ccdb-8e5b-70c3-8bd1-1a4f2c9ab938"]}
 {"id":"01a0ccdb-8e5d-724e-846f-22adad3882ed","parent":"01a0ccda-a00c-7638-9990-7efe42d0ce13","title":"P03: Invariants and computed status","kind":"work","status":"todo","depends_on":["01a0ccda-9c1e-77e3-ab52-b574a5cc3ab0","01a0ccdb-8e5c-7039-a0c8-b177ea04bfdb"]}
 {"id":"01a0ccdb-8e5e-73d6-a936-d1f44b5c8cd9","parent":"01a0ccda-a00c-7638-9990-7efe42d0ce13","title":"P04: Lifting and level views","kind":"work","status":"todo","depends_on":["01a0ccdb-8e5d-724e-846f-22adad3882ed"]}
 {"id":"01a0ccdb-8e5f-74dc-8559-3747c44986ee","parent":"01a0ccda-a00c-7638-9990-7efe42d0ce13","title":"P05: `mutate()`, write lock, git commits, `init`","kind":"work","status":"todo","depends_on":["01a0ccda-9c21-74a1-a7de-5116422e4038","01a0ccdb-8e5d-724e-846f-22adad3882ed"]}
