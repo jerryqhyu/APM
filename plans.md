@@ -110,12 +110,13 @@ Fields: `id, parent, title, kind, status, depends_on, delivery, external, varian
 - `variant_of` is reserved for competing breakdowns (v2).
 - `delivery.pr` is the pull request URL.
 
-Format rules:
+Format rules (the serializer's output is byte-stable, so the same graph always produces the same file):
 
 - Key order is the field order above; nested objects follow the same rules.
 - `kind` and `status` are always written. `depends_on` is sorted and de-duplicated.
 - Hand-written lines may be in any order, use `null` for absent fields, start with a byte-order mark, and leave out `kind`/`status` (defaults: `work`/`todo`). The next write puts them in canonical form.
 - Unknown keys are errors, so a typo can't be silently dropped. IDs must be lowercase UUIDv7s; titles must be one non-blank line.
+- The writer checks every node against the same rules as the reader and refuses to write one it couldn't read back, so a bad value can never make the file unloadable.
 
 ### 3.3 `nodes/<uuid>.md`: prose only
 
@@ -485,7 +486,7 @@ Each phase is **one branch → one PR into `main`**. Phases are small enough to 
 | ↳ P02.2 | Plan-repo paths, atomic writes, bodies | M1 | P02.1 | in review | [#5](https://github.com/jerryqhyu/APM/pull/5) |
 | ↳ P02.3 | `apm.yaml` config | M1 | P02.2 | in review | [#6](https://github.com/jerryqhyu/APM/pull/6) |
 | ↳ P02.4 | `graph.ndjson` parser | M1 | P02.1 | in review | [#7](https://github.com/jerryqhyu/APM/pull/7) |
-| ↳ P02.5 | `graph.ndjson` serializer + graph file I/O | M1 | P02.2, P02.4 | todo | [#8](https://github.com/jerryqhyu/APM/pull/8) |
+| ↳ P02.5 | `graph.ndjson` serializer + graph file I/O | M1 | P02.2, P02.4 | in review | [#8](https://github.com/jerryqhyu/APM/pull/8) |
 | P03 | Invariants and computed status | M1 | P02 | todo | |
 | P04 | Lifting and level views | M1 | P03 | todo | |
 | P05 | `mutate()`, write lock, git commits, `init` | M1 | P03 | todo | |

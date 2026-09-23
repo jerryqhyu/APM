@@ -4,7 +4,8 @@ import { randomBytes } from "node:crypto";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { isNodeId } from "./ids.ts";
-import type { NodeId } from "./model.ts";
+import type { Node, NodeId } from "./model.ts";
+import { parseGraph, serializeGraph } from "./ndjson.ts";
 
 export const GRAPH_FILE = "graph.ndjson";
 export const NODES_DIR = "nodes";
@@ -22,6 +23,14 @@ export function configPath(apmDir: string): string {
 export function bodyPath(apmDir: string, id: NodeId): string {
   if (!isNodeId(id)) throw new Error(`not a node id: ${JSON.stringify(id)}`);
   return join(apmDir, NODES_DIR, `${id}.md`);
+}
+
+export async function readGraphFile(apmDir: string): Promise<Node[]> {
+  return parseGraph(await readFile(graphPath(apmDir), "utf8"), GRAPH_FILE);
+}
+
+export async function writeGraphFile(apmDir: string, nodes: Iterable<Node>): Promise<void> {
+  await writeFileAtomic(graphPath(apmDir), serializeGraph(nodes));
 }
 
 /**
