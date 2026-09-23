@@ -48,3 +48,5 @@
 {"id":"01a0cd2b-67a8-72d8-bfa5-5d1bfc95427f","parent":"01a0ccda-9c10-7404-9787-d046500ad29b","title":"Tooling: Vitest + fast-check for tests, Biome for lint and format","kind":"decision","status":"done"}
 {"id":"01a0cd2b-67a9-7133-b34b-8d74bf934d6d","parent":"01a0ccda-9c10-7404-9787-d046500ad29b","title":"Run from source in development: no build step","kind":"decision","status":"done"}
 {"id":"01a0cd2b-67aa-7780-96bc-357ecfb93ccc","parent":"01a0ccda-9c10-7404-9787-d046500ad29b","title":"CI runs on ubuntu-latest and macos-latest","kind":"decision","status":"done"}
+{"id":"01a0cfa3-9780-7290-bd98-3db1d1a18467","parent":"01a0ccda-9c10-7404-9787-d046500ad29b","title":"PRs are at most 300 counted lines; a bigger phase is decomposed into child phases","kind":"decision","status":"done"}
+{"id":"01a0cfa3-9781-7095-aec4-b6421107e1ad","parent":"01a0ccda-9c10-7404-9787-d046500ad29b","title":"Stacked child PRs merge in order with merge commits, not squash","kind":"decision","status":"done"}
