@@ -1,0 +1,11 @@
+name: apm
+code:
+  repos:
+    apm: { path: "..", remote: "git@github.com:jerryqhyu/APM.git", default: true }
+runner:
+  max_concurrent: 2
+  default_budget_usd: 2.00
+  agents:
+    apm-decomposer: { model: opus }
+    apm-critic: { model: sonnet }
+    apm-implementer: { model: opus, budget_usd: 5.00, allowed_tools: ["Bash(git *)", "Bash(pnpm *)"] }
