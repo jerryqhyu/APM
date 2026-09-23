@@ -17,3 +17,11 @@
 {"id":"01a0ccda-9c20-72af-b804-220210bbc6f4","parent":"01a0ccda-9c10-7404-9787-d046500ad29b","title":"Q4: Package name","kind":"decision","status":"todo"}
 {"id":"01a0ccda-9c21-74a1-a7de-5116422e4038","parent":"01a0ccda-9c10-7404-9787-d046500ad29b","title":"Deleting a node with children: refuse, or require --recursive?","kind":"decision","status":"todo"}
 {"id":"01a0ccda-9c22-7242-b748-ba831217913e","parent":"01a0ccda-9c10-7404-9787-d046500ad29b","title":"Reconciler: how much is deterministic code, how much agent?","kind":"decision","status":"todo"}
+{"id":"01a0ccda-a00b-7032-a7b3-e9ca508888a9","title":"P00: Phased implementation plan","kind":"work","status":"todo"}
+{"id":"01a0ccda-a00c-7638-9990-7efe42d0ce13","title":"M1: Core","kind":"work","status":"todo"}
+{"id":"01a0ccda-a00d-7344-8477-8b161b3bf1f9","title":"M2: CLI, MCP, dogfood","kind":"work","status":"todo"}
+{"id":"01a0ccda-a00e-7305-a044-5a75a0721454","title":"M3: Server, runner, proposals","kind":"work","status":"todo"}
+{"id":"01a0ccda-a00f-72e7-b52d-85e669f3f275","title":"M4: UI","kind":"work","status":"todo"}
+{"id":"01a0ccda-a010-7709-b901-23ab37701e84","title":"M5: Playback","kind":"work","status":"todo"}
+{"id":"01a0ccda-a011-71de-83b8-f86f805aa927","title":"M6: Implementer","kind":"work","status":"todo"}
+{"id":"01a0ccda-a012-72ca-a793-8d559950d62e","title":"M7: Reconciler","kind":"work","status":"todo"}
