@@ -98,7 +98,7 @@ Computed (never stored, so it can't go stale):
 One node per line, sorted by `id`. Keys are always written in the same order; null and empty fields are left out.
 
 ```json
-{"id":"0192f3a1-7c4e-7b91-a2d5-3f8e1c0b9a44","parent":"0192f2c8-1a0d-7e33-8c41-5b2a9d0e7f10","title":"Stream agent output to the UI","kind":"work","status":"in_progress","depends_on":["0192e9d0-…"],"delivery":{"repo":"app","branch":"apm/1c0b9a44-stream-output","commits":["a1b2c3d"],"pr":null}}
+{"id":"0192f3a1-7c4e-7b91-a2d5-3f8e1c0b9a44","parent":"0192f2c8-1a0d-7e33-8c41-5b2a9d0e7f10","title":"Stream agent output to the UI","kind":"work","status":"in_progress","depends_on":["0192e9d0-…"],"delivery":{"repo":"app","branch":"apm/1c0b9a44-stream-output","commits":["a1b2c3d"],"pr":"https://github.com/jerry/app/pull/12"}}
 ```
 
 Fields: `id, parent, title, kind, status, depends_on, delivery, external, variant_of`.
@@ -108,6 +108,14 @@ Fields: `id, parent, title, kind, status, depends_on, delivery, external, varian
 - No `session`: Claude session IDs only mean something on one machine, so they're kept in SQLite.
 - `external` is reserved for issue sync: `{ provider, id, synced_at, synced_hash }`.
 - `variant_of` is reserved for competing breakdowns (v2).
+- `delivery.pr` is the pull request URL.
+
+Format rules:
+
+- Key order is the field order above; nested objects follow the same rules.
+- `kind` and `status` are always written. `depends_on` is sorted and de-duplicated.
+- Hand-written lines may be in any order, use `null` for absent fields, start with a byte-order mark, and leave out `kind`/`status` (defaults: `work`/`todo`). The next write puts them in canonical form.
+- Unknown keys are errors, so a typo can't be silently dropped. IDs must be lowercase UUIDv7s; titles must be one non-blank line.
 
 ### 3.3 `nodes/<uuid>.md`: prose only
 
@@ -476,7 +484,7 @@ Each phase is **one branch → one PR into `main`**. Phases are small enough to 
 | ↳ P02.1 | Node model + IDs and handles | M1 | P01 | in review | [#4](https://github.com/jerryqhyu/APM/pull/4) |
 | ↳ P02.2 | Plan-repo paths, atomic writes, bodies | M1 | P02.1 | in review | [#5](https://github.com/jerryqhyu/APM/pull/5) |
 | ↳ P02.3 | `apm.yaml` config | M1 | P02.2 | in review | [#6](https://github.com/jerryqhyu/APM/pull/6) |
-| ↳ P02.4 | `graph.ndjson` parser | M1 | P02.1 | todo | [#7](https://github.com/jerryqhyu/APM/pull/7) |
+| ↳ P02.4 | `graph.ndjson` parser | M1 | P02.1 | in review | [#7](https://github.com/jerryqhyu/APM/pull/7) |
 | ↳ P02.5 | `graph.ndjson` serializer + graph file I/O | M1 | P02.2, P02.4 | todo | [#8](https://github.com/jerryqhyu/APM/pull/8) |
 | P03 | Invariants and computed status | M1 | P02 | todo | |
 | P04 | Lifting and level views | M1 | P03 | todo | |

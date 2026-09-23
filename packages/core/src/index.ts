@@ -5,3 +5,4 @@ export * from "./config.ts";
 export * from "./files.ts";
 export * from "./ids.ts";
 export * from "./model.ts";
+export * from "./ndjson.ts";
