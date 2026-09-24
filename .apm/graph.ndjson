@@ -27,7 +27,7 @@
 {"id":"01a0ccda-a012-72ca-a793-8d559950d62e","title":"M7: Reconciler","kind":"work","status":"todo"}
 {"id":"01a0ccdb-8e5b-70c3-8bd1-1a4f2c9ab938","parent":"01a0ccda-a00c-7638-9990-7efe42d0ce13","title":"P01: Workspace scaffold + CI","kind":"work","status":"done","depends_on":["01a0ccda-a00b-7032-a7b3-e9ca508888a9"],"delivery":{"repo":"apm","branch":"phase/01-scaffold","commits":["ca4f43d","785e621"],"pr":"https://github.com/jerryqhyu/APM/pull/2"}}
 {"id":"01a0ccdb-8e5c-7039-a0c8-b177ea04bfdb","parent":"01a0ccda-a00c-7638-9990-7efe42d0ce13","title":"P02: Node model, IDs and file I/O","kind":"work","status":"in_progress"}
-{"id":"01a0ccdb-8e5d-724e-846f-22adad3882ed","parent":"01a0ccda-a00c-7638-9990-7efe42d0ce13","title":"P03: Invariants and computed status","kind":"work","status":"todo"}
+{"id":"01a0ccdb-8e5d-724e-846f-22adad3882ed","parent":"01a0ccda-a00c-7638-9990-7efe42d0ce13","title":"P03: Invariants and computed status","kind":"work","status":"in_progress"}
 {"id":"01a0ccdb-8e5e-73d6-a936-d1f44b5c8cd9","parent":"01a0ccda-a00c-7638-9990-7efe42d0ce13","title":"P04: Lifting and level views","kind":"work","status":"todo"}
 {"id":"01a0ccdb-8e5f-74dc-8559-3747c44986ee","parent":"01a0ccda-a00c-7638-9990-7efe42d0ce13","title":"P05: `mutate()`, write lock, git commits, `init`","kind":"work","status":"todo"}
 {"id":"01a0ccdc-7ca8-779e-9741-35af6c28a274","parent":"01a0ccda-a00d-7344-8477-8b161b3bf1f9","title":"P06: SQLite index + FTS","kind":"work","status":"todo"}
@@ -58,7 +58,7 @@
 {"id":"01a0cfa9-63e0-72ce-a1f3-3475c5eb8b93","parent":"01a0ccda-9c10-7404-9787-d046500ad29b","title":"Handles: any unambiguous suffix of 4+ hex chars; colliding handles are lengthened","kind":"decision","status":"done"}
 {"id":"01a0cfa9-63e1-702b-8029-fcca12b09c28","parent":"01a0ccda-9c10-7404-9787-d046500ad29b","title":"graph.ndjson: strict keys, canonical on write, and the writer refuses what the reader would reject","kind":"decision","status":"done"}
 {"id":"01a0cfa9-63e2-76db-a39d-9216ef9d2095","parent":"01a0ccda-9c10-7404-9787-d046500ad29b","title":"apm.yaml: an empty key counts as not set","kind":"decision","status":"done"}
-{"id":"01a0cfae-9bd0-705a-90a2-ea1ec235a787","parent":"01a0ccdb-8e5d-724e-846f-22adad3882ed","title":"P03.1: In-memory `Graph` + test generator","kind":"work","status":"todo","depends_on":["01a0ccdb-8e5c-7039-a0c8-b177ea04bfdb"]}
+{"id":"01a0cfae-9bd0-705a-90a2-ea1ec235a787","parent":"01a0ccdb-8e5d-724e-846f-22adad3882ed","title":"P03.1: In-memory `Graph` + test generator","kind":"work","status":"in_progress","depends_on":["01a0ccdb-8e5c-7039-a0c8-b177ea04bfdb"],"delivery":{"repo":"apm","branch":"phase/03.1-graph","commits":["d9d3b37"],"pr":"https://github.com/jerryqhyu/APM/pull/10"}}
 {"id":"01a0cfae-9bd1-72af-9818-b6513fd3c79b","parent":"01a0ccdb-8e5d-724e-846f-22adad3882ed","title":"P03.2: `validate()` + structural invariants (I1, I4, I7)","kind":"work","status":"todo","depends_on":["01a0cfae-9bd0-705a-90a2-ea1ec235a787"]}
 {"id":"01a0cfae-9bd2-7741-8f76-12ff04612e80","parent":"01a0ccdb-8e5d-724e-846f-22adad3882ed","title":"P03.3: Dependency invariants (I2, I3) + I6 warning","kind":"work","status":"todo","depends_on":["01a0cfae-9bd1-72af-9818-b6513fd3c79b"]}
 {"id":"01a0cfae-9bd3-7518-9ab2-89aa7ba13696","parent":"01a0ccdb-8e5d-724e-846f-22adad3882ed","title":"P03.4: Computed status","kind":"work","status":"todo","depends_on":["01a0ccda-9c1e-77e3-ab52-b574a5cc3ab0","01a0cfae-9bd0-705a-90a2-ea1ec235a787"]}
