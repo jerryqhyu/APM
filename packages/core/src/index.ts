@@ -3,4 +3,5 @@
 export * from "./body.ts";
 export * from "./files.ts";
 export * from "./ids.ts";
+export * from "./lock.ts";
 export * from "./model.ts";
