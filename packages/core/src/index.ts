@@ -3,6 +3,7 @@
 export * from "./body.ts";
 export * from "./config.ts";
 export * from "./files.ts";
+export * from "./graph.ts";
 export * from "./ids.ts";
 export * from "./model.ts";
 export * from "./ndjson.ts";
