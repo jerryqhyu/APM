@@ -473,7 +473,7 @@ Each phase is **one branch → one PR into `main`**, or, when it's too big for t
 | P01 | Workspace scaffold + CI | M1 | P00 | in review | [#2](https://github.com/jerryqhyu/APM/pull/2) |
 | P02 | Node model, IDs and file I/O | M1 | P01 | todo | |
 | P03 | Invariants and computed status *(parent: done when P03.1–P03.4 are)* | M1 | P02 | todo | |
-| ↳ P03.1 | In-memory `Graph` + test generator | M1 | P02 | todo | |
+| ↳ P03.1 | In-memory `Graph` + test generator | M1 | P02 | in review | [#10](https://github.com/jerryqhyu/APM/pull/10) |
 | ↳ P03.2 | `validate()` + structural invariants (I1, I4, I7) | M1 | P03.1 | todo | |
 | ↳ P03.3 | Dependency invariants (I2, I3) + I6 warning | M1 | P03.2 | todo | |
 | ↳ P03.4 | Computed status | M1 | P03.1 | todo | |
@@ -482,8 +482,8 @@ Each phase is **one branch → one PR into `main`**, or, when it's too big for t
 | ↳ P04.2 | Boundary ports | M1 | P04.1 | todo | |
 | ↳ P04.3 | Entanglement (I5) + `checkAll()` | M1 | P04.1, P03.3 | todo | |
 | P05 | `mutate()`, write lock, git commits, `init` *(parent: done when P05.1–P05.6 are)* | M1 | P03 | todo | |
-| ↳ P05.1 | Git wrapper | M1 | P01 | todo | |
-| ↳ P05.2 | Write lock | M1 | P02.2 | todo | |
+| ↳ P05.1 | Git wrapper | M1 | P01 | in review | [#11](https://github.com/jerryqhyu/APM/pull/11) |
+| ↳ P05.2 | Write lock | M1 | P02.2 | in review | [#12](https://github.com/jerryqhyu/APM/pull/12) |
 | ↳ P05.3 | `initProject()` + project discovery | M1 | P05.1, P02.3, P02.5 | todo | |
 | ↳ P05.4 | `mutate()` core | M1 | P05.1, P05.2, P05.3, P03.3 | todo | |
 | ↳ P05.5 | Node ops: create, update, status, deliver, edit-body | M1 | P05.4 | todo | |
