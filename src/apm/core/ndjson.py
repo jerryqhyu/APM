@@ -1,10 +1,12 @@
 """graph.ndjson: one node per line, sorted by id, fixed key order, null and empty values left out
-(plans.md §3.2).
+(plans.md §3.2). The output is byte-stable: the same graph always serializes identically.
 
 Parsing checks each line on its own (shape, types, ID format, duplicates). Checks that need the
 whole graph, like parents existing or cycles, are the invariants in P03.
 """
 
+import itertools
+import json
 import re
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
@@ -31,6 +33,15 @@ class GraphParseError(ValueError):
         super().__init__("\n".join(f"{source}:{i.line}: {i.message}" for i in issues))
         self.issues = tuple(issues)
         self.source = source
+
+
+class InvalidNodeError(ValueError):
+    """Raised when asked to write a node that `parse_graph` would reject."""
+
+    def __init__(self, node_id: str, issues: Sequence[str]) -> None:
+        super().__init__(f"cannot write node {node_id}: {'; '.join(issues)}")
+        self.node_id = node_id
+        self.issues = tuple(issues)
 
 
 def _check_id(value: str) -> str:
@@ -145,6 +156,61 @@ def parse_graph(text: str, source: str = "graph.ndjson") -> list[Node]:
     if issues:
         raise GraphParseError(issues, source)
     return sorted(nodes, key=lambda n: n.id)
+
+
+def serialize_graph(nodes: Iterable[Node]) -> str:
+    """Serializes nodes to graph.ndjson text. Input order doesn't matter; output is canonical."""
+    ordered = sorted(nodes, key=lambda n: n.id)
+    for a, b in itertools.pairwise(ordered):
+        if a.id == b.id:
+            raise ValueError(f"serialize_graph: duplicate id {a.id}")
+    return "".join(f"{serialize_node(n)}\n" for n in ordered)
+
+
+def serialize_node(node: Node) -> str:
+    """One line of graph.ndjson (without the newline), keys always in the order below.
+
+    Raises `InvalidNodeError` rather than produce a line `parse_graph` would reject, so a bad
+    value can never make the file unreadable.
+    """
+    out: dict[str, object] = {"id": node.id}
+    if node.parent is not None:
+        out["parent"] = node.parent
+    out["title"] = node.title
+    out["kind"] = node.kind
+    out["status"] = node.status
+    if deps := canonical_ids(node.depends_on):
+        out["depends_on"] = deps
+    if (d := node.delivery) is not None:
+        delivery: dict[str, object] = {"repo": d.repo}
+        if d.branch:
+            delivery["branch"] = d.branch
+        if d.commits:
+            delivery["commits"] = d.commits
+        if d.pr:
+            delivery["pr"] = d.pr
+        out["delivery"] = delivery
+    if (e := node.external) is not None:
+        external: dict[str, object] = {"provider": e.provider, "id": e.id}
+        if e.synced_at:
+            external["synced_at"] = e.synced_at
+        if e.synced_hash:
+            external["synced_hash"] = e.synced_hash
+        out["external"] = external
+    if node.variant_of:
+        out["variant_of"] = node.variant_of
+    line = json.dumps(out, ensure_ascii=False, separators=(",", ":"))
+    try:
+        line.encode("utf-8")
+    except UnicodeEncodeError:
+        raise InvalidNodeError(
+            node.id, ["contains a lone surrogate, which isn't valid UTF-8"]
+        ) from None
+    try:
+        NodeLine.model_validate_json(line)
+    except ValidationError as err:
+        raise InvalidNodeError(node.id, [_line_issue(e) for e in err.errors()]) from None
+    return line
 
 
 def canonical_ids(ids: Iterable[NodeId]) -> tuple[NodeId, ...]:
