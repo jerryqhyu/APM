@@ -1,0 +1,51 @@
+[project]
+name = "apm"
+version = "0.0.0"
+description = "A local-first project manager built for working with AI agents"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.14"
+classifiers = [
+    # The distribution name is still open (plans.md §14, Q4); this blocks an accidental upload.
+    "Private :: Do Not Upload",
+]
+dependencies = [
+    "typer>=0.27.3",
+]
+
+[project.scripts]
+apm = "apm.cli:main"
+
+[dependency-groups]
+dev = [
+    "hypothesis>=6.168.5",
+    "pytest>=9.1.1",
+    "ruff>=0.17.0",
+    "ty>=0.0.86",
+]
+
+[build-system]
+requires = ["uv_build>=0.13.0,<0.14"]
+build-backend = "uv_build"
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = [
+    "E", "W", "F",  # pycodestyle, pyflakes
+    "I",            # import order
+    "N",            # PEP 8 naming
+    "UP",           # modern syntax for the target Python
+    "B",            # likely bugs
+    "SIM", "C4",    # simpler code
+    "PTH",          # pathlib over os.path
+    "PT",           # pytest style
+    "RUF",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = ["-ra", "--strict-markers", "--strict-config"]
+xfail_strict = true
