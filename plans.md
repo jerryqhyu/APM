@@ -1,10 +1,10 @@
 # APM — Design Plan
 
-**Status:** v4 draft, scoped for v1 · phased implementation plan in §12 · **Last updated:** 2026-09-22
+**Status:** v5 draft, scoped for v1 · phased implementation plan in §12 · **Last updated:** 2026-10-11
 
 APM is a local-first project manager built for working with AI agents. A project is a **nested graph of nodes**: you start with a big idea, then break it down with Claude agents, level by level, until each piece is small enough to ship as a commit or PR. The plan lives in its own git repo, so every change to it can be traced and **played back** from the project's first node onward.
 
-v1 = TypeScript, one user on one machine, one code repo, Claude CLI integration, a local web UI.
+v1 = a Python backend with a TypeScript web UI, one user on one machine, one code repo, Claude CLI integration.
 
 ---
 
@@ -12,12 +12,12 @@ v1 = TypeScript, one user on one machine, one code repo, Claude CLI integration,
 
 | Topic | Decision | Why |
 |---|---|---|
-| Language | TypeScript end-to-end, Node 24 LTS | One toolchain for core, server, MCP, UI; best Claude/MCP SDK support; `npx` install |
+| Language | **Python 3.14** for the backend (core, CLI, server, MCP), managed with **uv**; TypeScript only for the web UI | The standard library covers UUIDv7, SQLite with FTS5 and subprocess git; first-class MCP and Claude Agent SDKs; fast, strict tooling (uv, ruff, ty). The UI stays TypeScript because it runs in the browser. Installed with `uvx` / `uv tool install`. Replaces TypeScript-everywhere, before any core code merged (P01b) |
 | Graph model | Compound graph: containment **tree** + dependency **DAG**; cross-level edges stored once and *lifted* for display | Unlimited depth, zoom into any node, no hand-copying edges between levels |
 | Plan storage | Separate git repo at `.apm/`, ignored by the code repo and linked to it by a committed `.apm-link` | No CI runs on plan commits; works with a protected `main`; history holds only plan changes |
 | Source of truth | `graph.ndjson` (structure + metadata) + `nodes/<id>.md` (prose only) | Each field lives in exactly one place, so the two can't drift |
 | IDs | UUIDv7; the short handle is the **last** 8 hex chars | Sorts by creation time; new nodes append at the end of the file, so diffs stay small |
-| Local DB | SQLite (`node:sqlite`) in `.apm/.cache/`, not committed | Queries, replay frames, run logs. Can be deleted at any time |
+| Local DB | SQLite (the standard library's `sqlite3`) in `.apm/.cache/`, not committed | Queries, replay frames, run logs. Can be deleted at any time |
 | History | Git commits with structured trailers, indexed into SQLite | Git records the state and trailers record the intent, with no custom event log to maintain |
 | Writes | `core.mutate()` under a file lock, callable from any process | No daemon required; writes happen one at a time, so updates aren't lost |
 | Agents | Server spawns `claude` CLI; agents call back through the APM MCP | The server controls runs; the MCP is how agents read and write data |
@@ -163,7 +163,7 @@ APM-Run: <run-id>                      # optional
 
 Ops: `create, update, move, delete, link, unlink, status, deliver, decompose, edit-body`.
 
-Commits are made through the `git` CLI (`execFile`), so your identity, signing, and hooks apply.
+Commits are made through the `git` CLI (`subprocess` with an argument list, never a shell), so your identity, signing, and hooks apply.
 
 ### 3.6 Code-repo trailer
 
@@ -180,7 +180,7 @@ Every delivery commit in the code repo carries `APM-Node: <full-uuid>`. This is 
 
 ## 4. Local index (SQLite)
 
-`.apm/.cache/apm.db`, using `node:sqlite` (fallback: `better-sqlite3`). WAL mode.
+`.apm/.cache/apm.db`, using the standard library's `sqlite3` (FTS5 is required; opening the database checks for it). WAL mode.
 
 ```sql
 nodes(id PK, parent, title, kind, status, depth)
@@ -221,7 +221,7 @@ git -C .apm show <sha>:graph.ndjson        # one blob per frame
 ## 6. Components
 
 ```
-                ┌──────────────────── @apm/core ─────────────────────┐
+                ┌──────────────────── apm.core ──────────────────────┐
                 │ graph model · lifting · invariants · mutate()      │
                 │ git I/O · indexer · SQLite                         │
                 └────▲──────────────────▲───────────────────▲────────┘
@@ -233,14 +233,22 @@ git -C .apm show <sha>:graph.ndjson        # one blob per frame
                                  web UI
 ```
 
-### 6.1 Packages (pnpm workspace, one published binary)
+### 6.1 Layout (one Python package, one `apm` command)
 
 ```
-packages/core   graph, invariants, lifting, git, index, mutate
-packages/app    the `apm` binary: CLI commands + `serve` + `mcp`
-packages/ui     vite + react + @xyflow/react + elkjs
-plugin/         Claude Code plugin (agents, skills, .mcp.json)
+src/apm/core/    graph, invariants, lifting, git, index, mutate (no web or CLI dependencies)
+src/apm/cli.py   the `apm` command (Typer): every CLI command, plus `serve` and `mcp`
+src/apm/server/  FastAPI app (HTTP + WebSocket) and the runner, served by uvicorn
+src/apm/mcp/     stdio MCP server on the official `mcp` SDK
+tests/           pytest + Hypothesis, mirroring src/apm/
+ui/              TypeScript: vite + react + @xyflow/react + elkjs; its build ships inside the wheel
+plugin/          Claude Code plugin (agents, skills, .mcp.json)
 ```
+
+- **Backend:** Python 3.14, one distribution with an `apm` console script, managed with **uv** (committed `uv.lock`, `uv_build` backend, src layout). **ruff** lints and formats, **ty** type-checks, **pytest** + **Hypothesis** test. Names follow PEP 8: snake_case for modules, functions, variables and fields, PascalCase for classes; ruff's pep8-naming rules enforce it.
+- **Libraries:** pydantic (validating `graph.ndjson` lines, `apm.yaml`, and API and MCP inputs), PyYAML, Typer, FastAPI + uvicorn, and the `mcp` SDK. The standard library covers UUIDv7 (`uuid.uuid7()`), SQLite with FTS5 (`sqlite3`) and git (`subprocess`).
+- **Core is synchronous** and uses `pathlib` throughout. The server calls it from a worker thread and runs agent subprocesses with `asyncio`.
+- **UI:** TypeScript in its own pnpm workspace under `ui/` (Biome, Vitest), because it runs in the browser. It talks to the backend only over HTTP and WebSocket (§6.3), so the two sides share no code.
 
 ### 6.2 Write concurrency
 
@@ -446,7 +454,7 @@ apm push · apm pull              git push/pull for .apm
 
 | M | Deliverable | Exit criteria |
 |---|---|---|
-| **M1** | `core`: model, ndjson/md I/O, invariants, lifting, `mutate()` + lock, git commits with trailers | Property tests (fast-check) confirm I1–I4 hold across random op sequences; lifting and entanglement tests pass |
+| **M1** | `core`: model, ndjson/md I/O, invariants, lifting, `mutate()` + lock, git commits with trailers | Property tests (Hypothesis) confirm I1–I4 hold across random op sequences; lifting and entanglement tests pass |
 | **M2** | `apm` CLI + `apm mcp` + plugin skeleton + skills | **Dogfood: plan APM itself** with the CLI and an interactive `claude` session |
 | **M3** | `apm serve`: runner, decomposer + critic, proposals, SQLite runs | `apm run apm-decomposer <h>` → proposal → `apm proposal accept` → one commit; the three M3 CLI checks in §7.1 are answered |
 | **M4** | UI: level view, drill-down, node panel, live run stream, proposal review | Planning a feature entirely in the UI, start to finish |
@@ -460,7 +468,7 @@ Each milestone is split into PR-sized phases in §12.
 
 ## 12. Implementation phases
 
-Each phase is **one branch → one PR into `main`**. Phases are small enough to review in one sitting, and each leaves `main` green and usable. A milestone is complete when its last phase merges and the milestone's exit criteria (§11) are met.
+Each phase is **one branch → one PR into `main`**, or, when it's too big for that, one PR per child phase (§12.1). Phases are small enough to review in one sitting, and each leaves `main` green and usable. A milestone is complete when its last phase merges and the milestone's exit criteria (§11) are met.
 
 ### 12.1 Conventions (every phase)
 
@@ -469,10 +477,11 @@ Each phase is **one branch → one PR into `main`**. Phases are small enough to 
 - **Too big → decompose, the APM way.** A phase that won't fit is broken into child phases (`P02.1`, `P02.2`, …), exactly as APM breaks down a node: each child gets its own scope, real dependencies and exit criteria, and ships as its own PR. A child that still won't fit is broken down again. The parent has no PR of its own; it's done when all its children are, and its exit criteria are checked then.
 - **Stacked PRs:** when children must land in sequence, each PR targets the branch of the one before it. Merge them in order with a **merge commit** (not squash), so the stack stays intact and GitHub retargets the next PR to `main` automatically.
 - **PR title:** `P<NN>: <phase title>`. **PR body:** goal, scope delivered, the phase's exit criteria as a ticked checklist, anything deferred, and follow-ups.
-- **CI must pass:** typecheck, lint, and tests (from P01 onward).
+- **CI must pass:** `ruff format --check`, `ruff check`, `ty check` and `pytest` (from P01b onward), plus the UI's own lint, typecheck and tests once `ui/` exists (P13.1).
+- **Python style:** PEP 8 names (snake_case modules, functions, variables and fields; PascalCase classes), type hints on everything `ty` checks, `pathlib` for paths, frozen dataclasses for value types and pydantic only at input boundaries (files, API, MCP).
 - **Keep the plan true:** each PR updates its row in the tracker (§12.2), and edits the design sections if the implementation diverged from them. The plan doc is never allowed to drift from the code.
 - **No dead surface:** a command, endpoint or tool is registered only once it works. Nothing ships as a "not implemented" stub.
-- **Tests live with the code:** unit and property tests in the package; end-to-end tests run the built `apm` binary against throwaway git repos in a temp dir.
+- **Tests mirror the code:** pytest tests under `tests/` mirror `src/apm/` (`tests/core/test_ids.py` tests `apm/core/ids.py`); shared Hypothesis strategies live in `tests/strategies.py`. End-to-end tests run the `apm` command against throwaway git repos in a temp dir.
 - From **P09** onward, phase status is also tracked in APM itself (dogfooding). This file stays the design reference.
 
 ### 12.2 Tracker
@@ -480,33 +489,92 @@ Each phase is **one branch → one PR into `main`**. Phases are small enough to 
 | Phase | Title | M | Depends on | Status | PR |
 |---|---|---|---|---|---|
 | P00 | Phased implementation plan (this doc) | — | — | done | [#1](https://github.com/jerryqhyu/APM/pull/1) |
-| P01 | Workspace scaffold + CI | M1 | P00 | done | [#2](https://github.com/jerryqhyu/APM/pull/2) |
-| P02 | Node model, IDs and file I/O *(parent: done when P02.1–P02.5 are)* | M1 | P01 | in progress | ~~[#3](https://github.com/jerryqhyu/APM/pull/3)~~ (split) |
-| ↳ P02.1 | Node model + IDs and handles | M1 | P01 | in review | [#4](https://github.com/jerryqhyu/APM/pull/4) |
+| P01 | Workspace scaffold + CI *(TypeScript; replaced by P01b)* | M1 | P00 | done | [#2](https://github.com/jerryqhyu/APM/pull/2) |
+| P01b | Python backend scaffold + CI | M1 | P01 | in review | [#14](https://github.com/jerryqhyu/APM/pull/14) |
+| P02 | Node model, IDs and file I/O *(parent: done when P02.1–P02.5 are)* | M1 | P01b | in progress | ~~[#3](https://github.com/jerryqhyu/APM/pull/3)~~ (split) |
+| ↳ P02.1 | Node model + IDs and handles | M1 | P01b | in review | [#4](https://github.com/jerryqhyu/APM/pull/4) |
 | ↳ P02.2 | Plan-repo paths, atomic writes, bodies | M1 | P02.1 | in review | [#5](https://github.com/jerryqhyu/APM/pull/5) |
 | ↳ P02.3 | `apm.yaml` config | M1 | P02.2 | in review | [#6](https://github.com/jerryqhyu/APM/pull/6) |
 | ↳ P02.4 | `graph.ndjson` parser | M1 | P02.1 | in review | [#7](https://github.com/jerryqhyu/APM/pull/7) |
 | ↳ P02.5 | `graph.ndjson` serializer + graph file I/O | M1 | P02.2, P02.4 | in review | [#8](https://github.com/jerryqhyu/APM/pull/8) |
-| P03 | Invariants and computed status | M1 | P02 | todo | |
-| P04 | Lifting and level views | M1 | P03 | todo | |
-| P05 | `mutate()`, write lock, git commits, `init` | M1 | P03 | todo | |
-| P06 | SQLite index + FTS | M2 | P05 | todo | |
-| P07 | `apm` CLI | M2 | P04, P06 | todo | |
-| P08 | `apm mcp` + plugin skeleton + skills | M2 | P07 | todo | |
+| P03 | Invariants and computed status *(parent: done when P03.1–P03.4 are)* | M1 | P02 | todo | |
+| ↳ P03.1 | In-memory `Graph` + test generator | M1 | P02 | in review | [#10](https://github.com/jerryqhyu/APM/pull/10) |
+| ↳ P03.2 | `validate()` + structural invariants (I1, I4, I7) | M1 | P03.1 | todo | |
+| ↳ P03.3 | Dependency invariants (I2, I3) + I6 warning | M1 | P03.2 | todo | |
+| ↳ P03.4 | Computed status | M1 | P03.1 | todo | |
+| P04 | Lifting and level views *(parent: done when P04.1–P04.3 are)* | M1 | P03 | todo | |
+| ↳ P04.1 | Lifted edges | M1 | P03.1 | todo | |
+| ↳ P04.2 | Boundary ports | M1 | P04.1 | todo | |
+| ↳ P04.3 | Entanglement (I5) + `check_all()` | M1 | P04.1, P03.3 | todo | |
+| P05 | `mutate()`, write lock, git commits, `init` *(parent: done when P05.1–P05.6 are)* | M1 | P03 | todo | |
+| ↳ P05.1 | Git wrapper | M1 | P01b | in review | [#11](https://github.com/jerryqhyu/APM/pull/11) |
+| ↳ P05.2 | Write lock | M1 | P02.2 | in review | [#12](https://github.com/jerryqhyu/APM/pull/12) |
+| ↳ P05.3 | `init_project()` + project discovery | M1 | P05.1, P02.3, P02.5 | todo | |
+| ↳ P05.4 | `mutate()` core | M1 | P05.1, P05.2, P05.3, P03.3 | todo | |
+| ↳ P05.5 | Node ops: create, update, status, deliver, edit-body | M1 | P05.4 | todo | |
+| ↳ P05.6 | Structure ops: move, delete, link, unlink + op property test | M1 | P05.5 | todo | |
+| P06 | SQLite index + FTS *(parent: done when P06.1–P06.3 are)* | M2 | P05 | todo | |
+| ↳ P06.1 | SQLite wrapper + migrations | M2 | P05.3 | todo | |
+| ↳ P06.2 | Graph tables + freshness | M2 | P06.1, P05.4 | todo | |
+| ↳ P06.3 | FTS5 search | M2 | P06.2 | todo | |
+| P07 | `apm` CLI *(parent: done when P07.1–P07.5 are)* | M2 | P04, P06 | todo | |
+| ↳ P07.1 | CLI framework, outline, `init`, `node ls` | M2 | P05.3, P03.4 | todo | |
+| ↳ P07.2 | Node commands | M2 | P07.1, P05.6 | todo | |
+| ↳ P07.3 | `node edit`, `check`, `commit` | M2 | P07.2, P04.3 | todo | |
+| ↳ P07.4 | `ready` + `reindex` | M2 | P07.3, P06.3 | todo | |
+| ↳ P07.5 | Plan-repo remote: `link --remote`, `clone`, `push`, `pull` | M2 | P07.1 | todo | |
+| P08 | `apm mcp` + plugin skeleton + skills *(parent: done when P08.1–P08.4 are)* | M2 | P07 | todo | |
+| ↳ P08.1 | MCP server + read tools | M2 | P07.1, P06.3 | todo | |
+| ↳ P08.2 | MCP write tools | M2 | P08.1, P05.6 | todo | |
+| ↳ P08.3 | `APM_RUN_SCOPE` enforcement | M2 | P08.2 | todo | |
+| ↳ P08.4 | Plugin skeleton + skills | M2 | P08.1 | todo | |
 | P09 | Dogfood: plan APM in APM | M2 | P08 | todo | |
-| P10 | `apm serve`: HTTP/WS core and security | M3 | P07 | todo | |
-| P11 | Runner: spawning `claude`, run logs, cancel | M3 | P10 | todo | |
-| P12 | Decomposer, critic and proposals | M3 | P11 | todo | |
-| P13 | UI shell + level view | M4 | P10 | todo | |
-| P14 | UI node panel + editing | M4 | P13 | todo | |
-| P15 | UI runs + proposal review | M4 | P12, P14 | todo | |
-| P16 | Frames index + history API | M5 | P10 | todo | |
-| P17 | Playback scrubber + delivery overlay | M5 | P15, P16 | todo | |
-| P18 | `apm-implementer` | M6 | P15 | todo | |
-| P19 | `apm-reconciler` | M7 | P18 | todo | |
+| P10 | `apm serve`: HTTP/WS core and security *(parent: done when P10.1–P10.4 are)* | M3 | P07 | todo | |
+| ↳ P10.1 | Server core + security | M3 | P07.1, P04.3 | todo | |
+| ↳ P10.2 | Node read endpoint | M3 | P10.1 | todo | |
+| ↳ P10.3 | Write endpoints | M3 | P10.2, P05.6 | todo | |
+| ↳ P10.4 | WS `graph.changed` | M3 | P10.1 | todo | |
+| P11 | Runner: spawning `claude`, run logs, cancel *(parent: done when P11.1–P11.4 are)* | M3 | P10 | todo | |
+| ↳ P11.1 | Run tables, stream-json parser, fake `claude` | M3 | P06.1 | todo | |
+| ↳ P11.2 | Spawn a run | M3 | P11.1, P08.3, P10.4 | todo | |
+| ↳ P11.3 | Limits, cancel, resume | M3 | P11.2 | todo | |
+| ↳ P11.4 | Runs API + `apm run` | M3 | P11.3, P10.2 | todo | |
+| P12 | Decomposer, critic and proposals *(parent: done when P12.1–P12.4 are)* | M3 | P11 | todo | |
+| ↳ P12.1 | Schemas + agent definitions | M3 | P08.4 | todo | |
+| ↳ P12.2 | Proposal pipeline | M3 | P12.1, P11.3 | todo | |
+| ↳ P12.3 | Accepting a proposal | M3 | P12.1, P05.6 | todo | |
+| ↳ P12.4 | Proposals API + CLI | M3 | P12.2, P12.3, P11.4 | todo | |
+| P13 | UI shell + level view *(parent: done when P13.1–P13.4 are)* | M4 | P10 | todo | |
+| ↳ P13.1 | `ui/` scaffold (TypeScript) | M4 | P10.1 | todo | |
+| ↳ P13.2 | Level view: layout + node cards | M4 | P13.1 | todo | |
+| ↳ P13.3 | Edges, ports, entanglement | M4 | P13.2 | todo | |
+| ↳ P13.4 | Navigation + live refresh | M4 | P13.2, P10.4 | todo | |
+| P14 | UI node panel + editing *(parent: done when P14.1–P14.3 are)* | M4 | P13 | todo | |
+| ↳ P14.1 | Panel + set status | M4 | P13.4, P10.3 | todo | |
+| ↳ P14.2 | Body editor | M4 | P14.1 | todo | |
+| ↳ P14.3 | Structure actions | M4 | P14.1 | todo | |
+| P15 | UI runs + proposal review *(parent: done when P15.1–P15.4 are)* | M4 | P12, P14 | todo | |
+| ↳ P15.1 | Transcript renderer | M4 | P13.1, P11.1 | todo | |
+| ↳ P15.2 | Runs in the node panel | M4 | P15.1, P14.1, P11.4 | todo | |
+| ↳ P15.3 | Proposal overlay | M4 | P13.3, P12.4 | todo | |
+| ↳ P15.4 | Proposal editing + accept/reject | M4 | P15.3 | todo | |
+| P16 | Frames index + history API *(parent: done when P16.1–P16.2 are)* | M5 | P10 | todo | |
+| ↳ P16.1 | Frames table | M5 | P06.2, P10.4 | todo | |
+| ↳ P16.2 | History API | M5 | P16.1, P10.2 | todo | |
+| P17 | Playback scrubber + delivery overlay *(parent: done when P17.1–P17.2 are)* | M5 | P15, P16 | todo | |
+| ↳ P17.1 | Scrubber | M5 | P16.2, P15.4 | todo | |
+| ↳ P17.2 | Delivery overlay | M5 | P17.1, P05.1 | todo | |
+| P18 | `apm-implementer` *(parent: done when P18.1–P18.2 are)* | M6 | P15 | todo | |
+| ↳ P18.1 | Implementer agent + runner support | M6 | P12.4 | todo | |
+| ↳ P18.2 | Implement in the UI | M6 | P18.1, P15.2 | todo | |
+| P19 | `apm-reconciler` *(parent: done when P19.1–P19.2 are)* | M7 | P18 | todo | |
+| ↳ P19.1 | `apm reconcile` | M7 | P17.2, P07.2 | todo | |
+| ↳ P19.2 | Reconciler agent | M7 | P19.1, P11.4 | todo | |
 | P20 | v1 release: package name, docs, publish | — | P19 | todo | |
 
 **Parallel tracks:** after P03, P04 and P05 can proceed in parallel. After P10, three tracks can run side by side: the runner (P11 → P12), the UI (P13 → P14) and history (P16). They join again at P15 and P17.
+
+A child phase can start as soon as *its own* dependencies are done, which is often before its parent's: for example, P05.1 (git wrapper) needs only P01b, and P05.2 (write lock) needs only P02.2. The child splits for P03–P19 are sized from P02's (roughly 150–300 lines each, tests included); a child that turns out bigger when built is split again (§12.1).
 
 ### 12.3 Phases
 
@@ -516,167 +584,411 @@ Each phase is **one branch → one PR into `main`**. Phases are small enough to 
 - Commit this document to the repo and add the phase breakdown.
 - *Exit:* merged; the tracker exists.
 
-**P01 — Workspace scaffold + CI**
-- pnpm 12 workspace with `packages/core` and `packages/app`. `plugin/` is added in P08 and `packages/ui` in P13, so that neither lands as an empty placeholder. Node 24 is pinned via `engines` and `.nvmrc`, and the workspace uses the `packageManager` field.
-- TypeScript 7 in strict mode, ESM only. `tsc -b` with project references builds `core` and `app` to `dist/` for publishing; a root `tsconfig.json` typechecks sources, tests and configs in one `noEmit` pass.
-- **Run from source, no build step in development.** Node 24 strips types natively, so the code keeps to erasable TypeScript (`erasableSyntaxOnly`) and imports relative files with `.ts` extensions, which `tsc` rewrites to `.js` on build. Workspace packages export `./src/index.ts`; `publishConfig.exports` points at `dist/` for publishing. Node, Vitest and `tsc` all resolve `@apm/core` to its source.
-- Tooling (confirmed): **Vitest** + **fast-check** for tests (colocated `*.test.ts`), **Biome** for lint and format.
-- `apm` binary entry in `packages/app` that implements only `--version` and `--help`.
-- GitHub Actions workflow on PRs and `main` to run install (frozen lockfile), lint, typecheck, build, test, and a smoke test of the built binary. It runs on `ubuntu-latest` and `macos-latest`, because the file locking and git behaviour tested later differ between them.
-- *Exit:* a fresh clone runs `pnpm i && pnpm build && pnpm test` green; CI is green on the PR; `pnpm apm --version` prints the version.
+**P01 — Workspace scaffold + CI** *(done in TypeScript, #2; replaced by P01b)*
+- Delivered a pnpm/TypeScript workspace (`packages/core`, `packages/app`) with Biome, Vitest + fast-check, an `apm --version` binary, and a CI matrix on `ubuntu-latest` and `macos-latest`. The backend then moved to Python (§1), so P01b replaces all of it; the CI matrix carries over.
+- *Exit:* met at the time (#2).
+
+**P01b — Python backend scaffold + CI** · depends on P01
+- A uv project at the repo root: `pyproject.toml` (`uv_build` backend, src layout, `requires-python >= 3.14`), `.python-version`, and a committed `uv.lock`. One distribution with an `apm` console script; `python -m apm` works too.
+- Dev tools in the `dev` dependency group: ruff (lint and format, line length 100, PEP 8 naming), ty, pytest and Hypothesis.
+- `apm --version` and `apm --help` only (Typer), with the version read from the installed package's metadata.
+- GitHub Actions on PRs and `main`, on `ubuntu-latest` and `macos-latest`: `uv sync --locked`, `ruff format --check`, `ruff check`, `ty check`, `pytest`, `uv build`, and a smoke run of `apm --version` from the built wheel.
+- Removes P01's TypeScript toolchain (`packages/`, pnpm, tsconfig, Biome, Vitest). `ui/` brings TypeScript back for the UI alone in P13.1.
+- *Exit:* a fresh clone runs `uv sync && uv run pytest` green; CI is green on the PR; `uv run apm --version` prints the version.
 
 **P02 — Node model, IDs and file I/O** (§3.2–3.4, §3.7)
 
-Decomposed into five PRs (first attempt, #3, was ~1,150 lines). Stacked in the order below; the dependencies are the real ones.
+Decomposed into five PRs (first attempt, #3, was ~1,150 lines of TypeScript). Stacked in the order below on P01b; the dependencies are the real ones.
 
 - *Exit (checked when all children are done):* property test shows `parse(serialize(g)) ≡ g`, and that serialization is byte-stable (serializing twice gives identical bytes); golden-file tests pass; handle-ambiguity tests pass.
 
-**P02.1 — Node model + IDs and handles** · depends on P01
-- Types: `Node`, `Kind`, `Status`, `Delivery`, plus the reserved `external` and `variant_of` fields.
-- `newId()` (UUIDv7, in creation order even within one ms), `handle()` (last 8 hex), `handles()` (lengthens only colliding handles, §3.7) and `resolveHandle()` with typed `invalid` / `unknown` / `ambiguous` errors.
+**P02.1 — Node model + IDs and handles** · depends on P01b
+- Types: `Node` and `Delivery` (frozen dataclasses), the `Kind` and `Status` enums, plus the reserved `External` and `variant_of` fields.
+- `new_id()` (UUIDv7 from the standard library's `uuid.uuid7()`, in creation order even within one ms), `handle()` (last 8 hex), `handles()` (lengthens only colliding handles, §3.7) and `resolve_handle()`, which raises `HandleError` with code `invalid`, `unknown` or `ambiguous`.
 - *Exit:* ID ordering, ambiguity, collision and "never match the timestamp prefix" tests pass; a property test shows every displayed handle resolves back to its node.
 
 **P02.2 — Plan-repo paths, atomic writes, bodies** · depends on P02.1
-- Paths inside `.apm/`; `writeFileAtomic` (temp file + rename); `readFileIfExists`; `bodyPath` refuses anything but a node ID, so input can't escape `nodes/`.
-- `nodes/<id>.md`: `renderBody()` (Intent / Acceptance criteria / Notes, §3.3), `readBody` (missing → empty), `writeBody`.
+- Paths inside `.apm/`; `write_file_atomic` (temp file + `os.replace`); `read_file_if_exists`; `body_path` refuses anything but a node ID, so input can't escape `nodes/`.
+- `nodes/<id>.md`: `render_body()` (Intent / Acceptance criteria / Notes, §3.3), `read_body` (missing → empty), `write_body`.
 - *Exit:* round-trip and no-leftover-temp-file tests; path-escape tests; template snapshot tests.
 
 **P02.3 — `apm.yaml` config** · depends on P02.2
-- Schema (zod + `yaml`) with defaults, strict keys, and `line:col` YAML errors. Empty keys (YAML `null`) count as not set, so a commented-out block falls back to defaults. `defaultRepo()`.
+- Schema (pydantic + PyYAML) with defaults, strict keys and types, and `line:col` YAML errors. Empty keys (YAML `null`) count as not set, so a commented-out block falls back to defaults. `default_repo()`.
 - *Exit:* the §3.4 example parses; defaults, empty-key and each validation error are tested.
 
 **P02.4 — `graph.ndjson` parser** · depends on P02.1
-- The per-line schema and `parseGraph`: canonicalizes hand-written input (any order, CRLF, blank lines, byte-order mark, `null`s, missing `kind`/`status`, duplicate deps), and reports **every** bad line as `graph.ndjson:<line>: <field>: <problem>`. Whole-graph checks are P03.
+- The per-line pydantic schema and `parse_graph`: canonicalizes hand-written input (any order, CRLF, blank lines, byte-order mark, `null`s, missing `kind`/`status`, duplicate deps), and reports **every** bad line as `graph.ndjson:<line>: <field>: <problem>`. Whole-graph checks are P03.
 - *Exit:* golden and hand-written fixtures parse to the same graph; each error case is reported with its line number.
 
 **P02.5 — `graph.ndjson` serializer + graph file I/O** · depends on P02.2, P02.4
-- `serializeGraph` / `serializeNode`: byte-stable (id order, fixed key order, nulls and empties omitted). Every line is checked against the parser's schema first, and a node the parser would reject throws `InvalidNodeError` instead of being written. `readGraphFile` / `writeGraphFile`.
+- `serialize_graph` / `serialize_node`: byte-stable (id order, fixed key order, nulls and empties omitted). Every line is checked against the parser's schema first, and a node the parser would reject raises `InvalidNodeError` instead of being written. `read_graph_file` / `write_graph_file`.
 - *Exit:* the P02 exit criteria above, plus a property test that anything written reads back, and a test that a refused write leaves the existing file untouched.
 
 **P03 — Invariants and computed status** (§2.3, §2.4)
-- An in-memory `Graph` with a children index, ancestor walk, and computed depth.
-- `validate(graph)` returns structured `errors` (I1–I4, I7) and `warnings` (I6), each with a code and the node IDs involved.
-- Computed state: `blocked`, `ready`, `progress` (over leaves that aren't dropped), and the dropped-dependency flag.
-- *Exit:* one or more unit tests per invariant; a fast-check generator of valid graphs; derived-status tests, including a dependency on a `dropped` node.
+
+Decomposed into four PRs. P03.2 → P03.3 are stacked; P03.4 needs only P03.1 and can go in parallel with them.
+
+- *Exit (checked when all children are done):* one or more unit tests per invariant; a Hypothesis strategy for valid graphs; derived-status tests, including a dependency on a `dropped` node.
+
+**P03.1 — In-memory `Graph` + test generator** · depends on P02
+- `Graph` built from parsed nodes: by-id map, children index, `ancestors()`, `descendants()`, `is_leaf()`, `is_ancestor()`, computed `depth()`. Read-only; `mutate()` (P05) builds a new one per op.
+- `graphs()`: a Hypothesis strategy in `tests/strategies.py` for **valid** graphs (tree + acyclic deps, delivery on leaves only), shared by later phases' property tests.
+- *Exit:* index and walk tests on fixtures; a property test that every generated graph's walks agree with a naive recomputation.
+
+**P03.2 — `validate()` + structural invariants (I1, I4, I7)** · depends on P03.1
+- `validate(graph)` → `{ errors, warnings }`, each issue `{ code, message, nodes }`.
+- I1 (one parent, parent exists, no containment cycle), I4 (every `depends_on` target exists), I7 (only leaves carry `delivery`).
+- *Exit:* a failing fixture per check, naming the nodes involved; every generated graph validates clean.
+
+**P03.3 — Dependency invariants (I2, I3) + I6 warning** · depends on P03.2
+- I2: dependency cycle detection over all nodes, reporting one cycle path. I3: no dependency on an ancestor or descendant. I6 warning: a `done` parent with unfinished children.
+- *Exit:* cycle, self-loop, ancestor and descendant fixtures; a property test that adding any back edge to a generated graph is caught by I2.
+
+**P03.4 — Computed status** · depends on P03.1
+- `blocked`, `ready`, `progress` (done leaves ÷ leaves that aren't dropped, whole subtree), and the dropped-dependency flag.
 - *Decides:* open question 2 (parent status). The v1 default stays: parent status is stored, and I6 raises a warning.
+- *Exit:* derived-status tests, including a dependency on a `dropped` node and a subtree that is entirely dropped.
 
 **P04 — Lifting and level views** (§2.2, I5)
-- `levelView(graph, root | null)` returns the children of `root`, the lifted edges with their counts and underlying edges, and boundary ports (incoming and outgoing, each naming the outside node).
-- Entanglement (I5): cycle detection on the lifted edges of each level, reporting the nodes in the cycle. `checkAll()` runs it at every level for `apm check`.
-- *Exit:* fixture tests cover deep cross-level edges, merged duplicates and ports; a property test confirms every underlying edge is accounted for **exactly once** at each level (drawn, internal or port).
+
+Decomposed into three PRs. P04.2 and P04.3 both build on P04.1 and can go in parallel.
+
+- *Exit (checked when all children are done):* fixture tests cover deep cross-level edges, merged duplicates and ports; a property test confirms every underlying edge is accounted for **exactly once** at each level (drawn, internal or port).
+
+**P04.1 — Lifted edges** · depends on P03.1
+- `level_view(graph, root)` (`root=None` for the top level): the children of `root`, and each edge inside the subtree mapped to its child-of-`root` ancestors (§2.2): drawn (`a ≠ b`, merged with a count and the underlying edges) or internal (hidden).
+- *Exit:* fixtures for sibling edges, deep cross-level edges, merged duplicates and internal edges.
+
+**P04.2 — Boundary ports** · depends on P04.1
+- Edges with one end outside `root` become incoming or outgoing ports, each naming the outside node and the inside child it attaches to.
+- *Exit:* port fixtures (including the top level, which has none); the exactly-once property test over generated graphs.
+
+**P04.3 — Entanglement (I5) + `check_all()`** · depends on P04.1, P03.3
+- Cycle detection on each level's lifted edges, reporting the nodes in the cycle. `check_all()` runs `validate()` plus I5 at every level; it backs `apm check`.
+- *Exit:* an entangled fixture is reported at the right level only; a clean generated graph with no lifted cycles reports none.
 
 **P05 — `mutate()`, write lock, git commits, `init`** (§3.1, §3.5, §6.2)
-- Git wrapper over `execFile` providing `add`, `commit` (with trailers), `rev-parse`, `show`, `log` and `is-ancestor`.
-- `.cache/write.lock`: created with `O_EXCL` and holding the PID, hostname and a timestamp. It is stale if the PID is dead. Acquisition retries with a timeout.
-- `mutate(op, fn)` follows the 5 steps in §6.2 and emits `graph.changed` in-process. Ops: `create, update, move, delete, link, unlink, status, deliver, decompose, edit-body`.
-- `initProject()` creates `.apm/` (`git init -b main`), `apm.yaml`, an empty `graph.ndjson`, and `.apm/.gitignore`; writes `.apm-link`; appends `.apm/` to the code repo's `.gitignore`; and makes the first commit.
-- Project discovery: `APM_PROJECT`, otherwise walk up from the cwd to find `.apm-link`.
-- *Decides:* whether deleting a node with children is refused or requires `--recursive` (proposed: refuse unless recursive; a recursive delete is one commit).
-- *Exit (= M1):*
+
+Decomposed into six PRs. P05.1, P05.2 and P05.3 are independent of each other; P05.4 joins them, and P05.5 → P05.6 stack on it.
+
+- *Exit (checked when all children are done; = M1):*
   - A property test over random op sequences shows I1–I4 hold after every committed op, and that a rejected op leaves HEAD and the working tree untouched.
   - A multi-process test with N processes calling `mutate()` concurrently produces N commits and loses no updates.
   - A stale lock is recovered.
   - Trailers round-trip through `git log`.
 
+**P05.1 — Git wrapper** · depends on P01
+- `subprocess`-based `add`, `commit` (subject, body and trailers per §3.5), `rev-parse`, `show`, `log` (with trailer parsing) and `is-ancestor`. Typed errors carrying git's stderr.
+- A `temp_repo` pytest fixture, reused by every later phase that touches git.
+- *Exit:* trailers written by `commit` round-trip through `log`; each command is tested against a real temp repo.
+
+**P05.2 — Write lock** · depends on P02.2
+- `.cache/write.lock` created with `O_EXCL`, holding PID, hostname and a timestamp. Stale if the PID is dead on this host. Acquisition retries with a timeout; release only removes a lock this process owns.
+- *Exit:* contention and timeout tests; a stale lock (dead PID) is recovered; a multi-process test shows the lock is never held twice.
+
+**P05.3 — `init_project()` + project discovery** · depends on P05.1, P02.3, P02.5
+- `init_project()`: `.apm/` (`git init -b main`), `apm.yaml`, empty `graph.ndjson`, `.apm/.gitignore`, `.apm-link`, `.apm/` appended to the code repo's `.gitignore`, and the first commit. Refuses to run over an existing project.
+- `find_project()`: `APM_PROJECT`, otherwise walk up from the cwd to `.apm-link`.
+- *Exit:* init in a temp repo yields exactly the §3.1 layout and one commit; discovery tests from nested directories and via `APM_PROJECT`.
+
+**P05.4 — `mutate()` core** · depends on P05.1, P05.2, P05.3, P03.3
+- `mutate(op, fn)` follows the 5 steps in §6.2: lock, reload, apply `fn` to a draft, validate (I1–I4, I7), write `graph.ndjson` and bodies, commit with trailers, emit `graph.changed` in-process. A rejected op restores the files it wrote and makes no commit.
+- *Exit:* a rejected op leaves HEAD and the working tree untouched; the N-process concurrency test produces N commits with no lost updates.
+
+**P05.5 — Node ops: create, update, status, deliver, edit-body** · depends on P05.4
+- Typed op functions on top of `mutate()`, each one commit with the §3.5 subject and trailers. `create` writes the body template.
+- *Exit:* one test per op checking the graph, the body file and the commit message.
+
+**P05.6 — Structure ops: move, delete, link, unlink + op property test** · depends on P05.5
+- `move`, `delete` (removes incoming edges and the body file in the same op), `link`, `unlink`.
+- *Decides:* whether deleting a node with children is refused or requires `--recursive` (proposed: refuse unless recursive; a recursive delete is one commit).
+- *Exit:* one test per op; the random-op-sequence property test from the P05 exit criteria.
+
 #### M2: CLI, MCP, dogfood
 
 **P06 — SQLite index + FTS** (§4)
-- A `node:sqlite` wrapper behind a small interface, so `better-sqlite3` can be swapped in. WAL mode; migrations keyed by `schema_version`.
-- Tables `nodes`, `edges`, `closure`, `nodes_fts` and `meta` only. `frames` lands in P16; `runs`, `run_events` and `proposals` land in P11–P12.
-- `ensureFresh()` compares HEAD with `last_indexed_sha` and rebuilds on a history rewrite. `mutate()` updates the index after each commit. `search(query)`. `reindex()`.
-- *Exit:* deleting `.cache/` and then reading rebuilds an identical index; a history rewrite is detected; FTS covers titles and bodies.
+
+Decomposed into three PRs, stacked.
+
+- *Exit (checked when all children are done):* deleting `.cache/` and then reading rebuilds an identical index; a history rewrite is detected; FTS covers titles and bodies.
+
+**P06.1 — SQLite wrapper + migrations** · depends on P05.3
+- A thin wrapper over the standard library's `sqlite3`; opening the database checks that FTS5 is available. WAL mode; the `meta` table; migrations keyed by `schema_version`.
+- *Exit:* migrations apply once and in order; reopening an existing DB is a no-op.
+
+**P06.2 — Graph tables + freshness** · depends on P06.1, P05.4
+- `nodes`, `edges`, `closure` (including self at depth 0). `ensure_fresh()` compares HEAD with `last_indexed_sha`, indexes forward, and rebuilds when the old HEAD isn't an ancestor. `reindex()`. `mutate()` updates the index after each commit.
+- `frames` lands in P16; `runs`, `run_events` and `proposals` land in P11–P12.
+- *Exit:* deleting `.cache/` rebuilds an identical index; a rewrite (reset to an older commit plus a new commit) triggers a rebuild; closure matches `Graph.ancestors()` on generated graphs.
+
+**P06.3 — FTS5 search** · depends on P06.2
+- `nodes_fts` over title + body, kept current by the same indexing path; `search(query)` returning ranked node IDs.
+- *Exit:* search finds words from titles and bodies, and a body edited after indexing is found by its new text only.
 
 **P07 — `apm` CLI** (§10)
-- Every §10 command except `serve`, `mcp`, `run` and `proposal`, which arrive with their subsystems. Includes `apm commit` for hand edits (described in §10's prose but missing from its command list).
-- A shared outline formatter (`1c0b9a44 [work/todo·ready] Title → 7d2e0f11`), reused by the MCP in P08.
-- `node edit` via `$EDITOR`. `link --remote`, `clone`, `push` and `pull` wrap git.
-- Non-zero exit codes on errors, and `--json` output on read commands for scripting.
-- *Exit:* end-to-end tests drive the built binary through init → add → nest → link → status → check → commit → reindex in a temp repo.
+
+Every §10 command except `serve`, `mcp`, `run` and `proposal`, which arrive with their subsystems. Includes `apm commit` for hand edits (described in §10's prose but missing from its command list). Decomposed into five PRs: P07.1 first; P07.2 → P07.3 → P07.4 are stacked, and P07.5 can go in parallel with them.
+
+- *Exit (checked when all children are done):* end-to-end tests drive the `apm` command through init → add → nest → link → status → check → commit → reindex in a temp repo.
+
+**P07.1 — CLI framework, outline, `init`, `node ls`** · depends on P05.3, P03.4
+- The Typer app: project discovery, handle resolution with readable ambiguity errors, non-zero exit codes on errors, and `--json` output on read commands.
+- The shared outline formatter (`1c0b9a44 [work/todo·ready] Title → 7d2e0f11`), reused by the MCP in P08.
+- `apm init` and `apm node ls [--root h] [--depth n]`.
+- *Exit:* formatter snapshot tests; e2e tests of `init` and `node ls` against the `apm` command, including an ambiguous handle and `--json`.
+
+**P07.2 — Node commands** · depends on P07.1, P05.6
+- `node add`, `show`, `mv`, `rm`, `status`; `link-dep`, `unlink-dep`.
+- *Exit:* e2e test of each command, checking the resulting commit; invariant violations exit non-zero with the invariant named.
+
+**P07.3 — `node edit`, `check`, `commit`** · depends on P07.2, P04.3
+- `node edit` via `$EDITOR` → `edit-body` commit (nothing if unchanged). `apm check` prints `check_all()` errors and warnings. `apm commit` validates hand edits in `.apm/` and commits them as `edit-body` or `update`.
+- *Exit:* e2e with a scripted `$EDITOR`; `check` on a broken and an entangled fixture; `commit` refuses an invalid hand edit.
+
+**P07.4 — `ready` + `reindex`** · depends on P07.3, P06.3
+- `apm ready [--root h]` and `apm reindex`.
+- *Exit:* the full e2e flow from the P07 exit criteria.
+
+**P07.5 — Plan-repo remote: `link --remote`, `clone`, `push`, `pull`** · depends on P07.1
+- Thin git wrappers; `link --remote` records the remote in `.apm-link`, and `clone` reads it on a fresh checkout.
+- *Exit:* e2e against a bare temp repo as the remote: link → push → clone elsewhere → pull.
 
 **P08 — `apm mcp` + plugin skeleton + skills** (§6.4, §8)
-- A stdio server on `@modelcontextprotocol/sdk` that exposes every §6.4 tool, with zod input schemas and outline-style output.
-- `APM_RUN_SCOPE` enforcement for `read`, `node:<id>` and `project`.
+
+Decomposed into four PRs. P08.1 → P08.2 → P08.3 are stacked; P08.4 needs only P08.1.
+
+- *Exit (checked when all children are done):* an in-process MCP client calls every tool; every scope has tests for both allowed and refused calls; `claude --plugin-dir ./plugin` lists the APM tools and skills.
+
+**P08.1 — MCP server + read tools** · depends on P07.1, P06.3
+- A stdio server on the official `mcp` Python SDK; `apm mcp`. `apm_get_graph`, `apm_get_node`, `apm_search`, `apm_ready`, with typed input schemas and outline-style output.
+- *Exit:* an in-process client calls each read tool against a fixture project.
+
+**P08.2 — MCP write tools** · depends on P08.1, P05.6
+- `apm_create_nodes` (batch, one commit), `apm_update_node`, `apm_move_node`, `apm_link` / `apm_unlink`, `apm_set_status`, `apm_attach_delivery` (leaves only).
+- *Exit:* each tool produces exactly one commit; invalid input returns a tool error naming the invariant.
+
+**P08.3 — `APM_RUN_SCOPE` enforcement** · depends on P08.2
+- `read`, `node:<id>` and `project` scopes, checked before any tool runs; an unknown scope refuses every write.
+- *Exit:* allowed and refused calls tested for every scope and tool.
+
+**P08.4 — Plugin skeleton + skills** · depends on P08.1
 - `plugin/`: `.claude-plugin/plugin.json`, `.mcp.json`, and the `apm-node-format` and `apm-decompose` skills. The agent definitions land with their phases (P12, P18, P19).
-- *Exit:* an in-process MCP client calls every tool; every scope has tests for both allowed and refused calls; `claude --plugin-dir ./plugin` lists the APM tools and skills.
+- *Exit:* `claude --plugin-dir ./plugin` lists the APM tools and skills (checked by hand and recorded in the PR).
 
 **P09 — Dogfood: plan APM in APM**
+
+Stays one PR: it's mostly a data change. A fix found while dogfooding that won't fit goes in its own PR (`P09.1`, `P09.2`, …).
+
 - Run `apm init` in this repo. The plan repo gets its own private remote (to be created by you). This PR commits only `.apm-link` and the `.gitignore` entry to the code repo.
-- Enter the remaining phases (P10+) as nodes through an interactive `claude` session with the plugin, with milestones as the top-level nodes and phases as their children.
+- Enter the remaining phases (P10+) as nodes through an interactive `claude` session with the plugin, with milestones as the top-level nodes, phases as their children and child phases below those.
 - Fix the problems found while dogfooding, and list them in the PR.
 - *Exit (= M2):* the APM plan is maintained in APM; `apm ready` shows the next phase.
 
 #### M3: server, runner, proposals
 
 **P10 — `apm serve`: HTTP/WS core and security** (§6.3)
-- HTTP server + `ws` (proposed: Hono on `@hono/node-server`), bound to `127.0.0.1`. A random token is written to `.cache/server.json`, and every request must carry it: as a header, or as a query parameter for the WS upgrade. `Origin` is checked on every request.
-- Node and edge endpoints: `GET /api/graph?root=` (the `at=` parameter is added in P16), `GET/POST/PATCH/DELETE /api/nodes…`, `POST /api/nodes/:id/move`, `POST/DELETE /api/edges`.
-- WS `graph.changed`, which also fires for commits made by *other* processes (the CLI or MCP) by watching `.apm` refs, with a polling fallback.
-- `apm serve [--port]` prints the tokenized URL.
-- *Exit:* the security tests reject a missing or wrong token, a foreign `Origin` and a non-loopback bind; a CLI mutation shows up as a WS event.
+
+Decomposed into four PRs. P10.1 first; P10.2 → P10.3 stack on it, and P10.4 can go in parallel with them.
+
+- *Exit (checked when all children are done):* the security tests reject a missing or wrong token, a foreign `Origin` and a non-loopback bind; a CLI mutation shows up as a WS event.
+
+**P10.1 — Server core + security** · depends on P07.1, P04.3
+- HTTP server (FastAPI on uvicorn) bound to `127.0.0.1`. A random token written to `.cache/server.json` and required on every request (header, or query parameter for the WS upgrade). `Origin` checked on every request. `apm serve [--port]` prints the tokenized URL.
+- The first real endpoint, `GET /api/graph?root=` (level view with lifted edges, ports and warnings), so the server ships with something that works.
+- *Exit:* the security tests from the P10 exit criteria; `GET /api/graph` matches `level_view()` for a fixture.
+
+**P10.2 — Node read endpoint** · depends on P10.1
+- `GET /api/nodes/:id`: node, body, computed status and the node's history (`git log` of its body and graph line). Runs are added in P11.
+- *Exit:* fixture tests, including an unknown and an ambiguous handle.
+
+**P10.3 — Write endpoints** · depends on P10.2, P05.6
+- `POST /api/nodes`, `PATCH /api/nodes/:id`, `POST /api/nodes/:id/move`, `DELETE /api/nodes/:id`, `POST/DELETE /api/edges`. Invariant violations → 409 with the invariant named.
+- *Exit:* each endpoint produces exactly one commit; each violation is a 409.
+
+**P10.4 — WS `graph.changed`** · depends on P10.1
+- `/ws` with token auth. `graph.changed` fires for in-process mutations and for commits made by *other* processes (the CLI or MCP), by watching `.apm` refs (`watchfiles`) with a polling fallback.
+- *Exit:* a CLI mutation shows up as a WS event; the polling fallback is tested with the watcher disabled.
 
 **P11 — Runner: spawning `claude`, run logs, cancel** (§7.1, §7.3)
-- `runs` and `run_events` tables. A per-run MCP config file injects `APM_PROJECT` and `APM_RUN_SCOPE`. The spawn flags are exactly those in §7.1, with the model and budget taken from `apm.yaml`.
-- stream-json line parser → `run_events` → WS `run.event` / `run.finished`.
-- Limits: `max_concurrent` runs in total and one active run per node (v1 rejects extra runs with 409 rather than queueing them). Cancel sends SIGTERM, then SIGKILL after 5s.
-- `POST/DELETE /api/runs`, resume via `--resume <session>`, and `apm run <agent> <h>`, which calls the server and tails the stream in the terminal.
-- *Exit:* tests against a **fake `claude` script** that emits canned stream-json cover success, failure, cancel and the limits. A real run answers the three "to check at M3" questions in §7.1, and the answers are written back into §7.1.
+
+Decomposed into four PRs, stacked.
+
+- *Exit (checked when all children are done):* tests against a **fake `claude` script** that emits canned stream-json cover success, failure, cancel and the limits. A real run answers the three "to check at M3" questions in §7.1, and the answers are written back into §7.1.
+
+**P11.1 — Run tables, stream-json parser, fake `claude`** · depends on P06.1
+- `runs` and `run_events` tables (migration). A line parser for stream-json that keeps raw lines and extracts the final `result` event. The fake `claude` script and its canned outputs, used by every later runner test.
+- *Exit:* parser tests over canned success, error and truncated streams.
+
+**P11.2 — Spawn a run** · depends on P11.1, P08.3, P10.4
+- The per-run MCP config (injecting `APM_PROJECT` and `APM_RUN_SCOPE`); the argument builder with exactly the §7.1 flags, model and budget from `apm.yaml`; spawn with `asyncio.create_subprocess_exec`, stream each line to `run_events` and WS `run.event`, then `run.finished`.
+- *Exit:* argument-builder snapshot test; fake-`claude` success and failure runs end in the right `runs` state with every event stored.
+
+**P11.3 — Limits, cancel, resume** · depends on P11.2
+- `max_concurrent` in total and one active run per node (extra runs rejected, not queued). Cancel: SIGTERM, then SIGKILL after 5s. Resume via `--resume <session>`.
+- *Exit:* fake-`claude` tests for both limits, cancel of a script that ignores SIGTERM, and resume arguments.
+
+**P11.4 — Runs API + `apm run`** · depends on P11.3, P10.2
+- `POST/DELETE /api/runs`; runs listed on `GET /api/nodes/:id`. `apm run <agent> <h> [--guidance]` calls the server and tails the stream in the terminal.
+- A real run answers the three §7.1 questions; the answers are written into §7.1 in this PR.
+- *Exit:* e2e of `apm run` against a server using the fake `claude`; the §7.1 answers are recorded.
 
 **P12 — Decomposer, critic and proposals** (§7.2)
-- `plugin/agents/apm-decomposer.md` and `apm-critic.md`, the decomposition JSON schema, and the critic's output schema.
-- Pipeline: decomposer → critic → at most one revision → a `proposals` row → WS `proposal.created`.
-- Accept (with optional edits): assign UUIDv7s, resolve keys, enforce additive-only, write bodies from `intent` and `acceptance`, then make one `decompose` commit with `APM-Actor` and `APM-Run` trailers. Reject.
+
+Decomposed into four PRs. P12.2 and P12.3 both build on P12.1 and can go in parallel; P12.4 joins them.
+
+- *Exit (checked when all children are done; = M3):* fixture tests cover bad keys, cycles introduced by a proposal (rejected) and additive-only violations. A real run of `apm run apm-decomposer <h>` → `apm proposal accept` produces exactly one commit.
+
+**P12.1 — Schemas + agent definitions** · depends on P08.4
+- The decomposition JSON schema (§7.2) and the critic's output schema, mirrored as pydantic models. `plugin/agents/apm-decomposer.md` and `apm-critic.md`.
+- *Decides:* open question 1 (the policy for near-duplicates flagged by the critic), written into the critic's instructions.
+- *Exit:* schema tests on valid and invalid fixtures; the agents load with `claude --plugin-dir ./plugin`.
+
+**P12.2 — Proposal pipeline** · depends on P12.1, P11.3
+- The `proposals` table; decomposer → critic → at most one revision → a `proposals` row → WS `proposal.created`.
+- *Exit:* fake-`claude` tests for a clean pass, one revision, a critic that still objects after the revision, and a failed run (no proposal).
+
+**P12.3 — Accepting a proposal** · depends on P12.1, P05.6
+- `accept_proposal(proposal, edits=None)` in core: assign UUIDv7s, resolve keys, enforce additive-only, write bodies from `intent` and `acceptance`, then one `decompose` commit with `APM-Actor` and `APM-Run` trailers.
+- *Exit:* the bad-key, cycle and additive-only fixture tests from the P12 exit criteria; an accepted proposal is exactly one commit.
+
+**P12.4 — Proposals API + CLI** · depends on P12.2, P12.3, P11.4
 - `POST /api/proposals/:id/accept|reject` and `apm proposal ls|show|accept|reject`.
-- *Decides:* open question 1 (the policy for near-duplicates flagged by the critic).
-- *Exit (= M3):* fixture tests cover bad keys, cycles introduced by a proposal (rejected) and additive-only violations. A real run of `apm run apm-decomposer <h>` → `apm proposal accept` produces exactly one commit.
+- *Exit:* e2e with the fake `claude`; then the real `apm run apm-decomposer` → `apm proposal accept` check from the P12 exit criteria.
 
 #### M4: UI
 
 **P13 — UI shell + level view** (§9)
-- `packages/ui` (Vite + React + `@xyflow/react` + elkjs). `apm serve` serves the built UI; in development, Vite proxies requests to the server. The token is read from the URL and kept in `sessionStorage`.
-- Level view: elkjs layered layout; node cards (handle, title, stored and computed status, progress bar, has-children marker); lifted-edge count badges; boundary ports; entanglement banner; double-click to drill down; breadcrumb; live refresh over WS.
-- The view is read-only in this phase.
-- *Exit:* component tests for cards, badges and ports; a Playwright smoke test in CI loads a fixture project and drills down two levels.
+
+Decomposed into four PRs. P13.1 → P13.2 first; P13.3 and P13.4 can then go in parallel. The view is read-only throughout.
+
+- *Exit (checked when all children are done):* component tests for cards, badges and ports; a Playwright smoke test in CI loads a fixture project and drills down two levels.
+
+**P13.1 — `ui/` scaffold (TypeScript)** · depends on P10.1
+- `ui/`: the UI's own pnpm workspace (Vite + React + `@xyflow/react` + elkjs, Biome, Vitest). `apm serve` serves the built UI, which ships inside the wheel; in development, Vite proxies to the server. The token is read from the URL and kept in `sessionStorage`. A typed API client.
+- CI gains a UI job (lint, typecheck, tests, build) and a Playwright job (pytest-playwright) that starts `apm serve` on a fixture project.
+- *Exit:* the Playwright job loads the page and shows the project name.
+
+**P13.2 — Level view: layout + node cards** · depends on P13.1
+- `@xyflow/react` + elkjs layered layout of a level. Node cards: handle, title, stored and computed status, progress bar, has-children marker.
+- *Exit:* card component tests; layout test on a fixture level.
+
+**P13.3 — Edges, ports, entanglement** · depends on P13.2
+- Lifted-edge count badges, boundary ports at the canvas edges, and the entanglement banner.
+- *Exit:* component tests for badges, ports and the banner.
+
+**P13.4 — Navigation + live refresh** · depends on P13.2, P10.4
+- Double-click to drill down, breadcrumb back up, and live refresh on WS `graph.changed`.
+- *Exit:* the Playwright drill-down test from the P13 exit criteria; a CLI mutation re-renders the open level.
 
 **P14 — UI node panel + editing**
-- Node panel: markdown body editor, dependencies (add and remove), delivery display, history (the node's `git log`), and set status. Actions: add child, delete, move.
-- *Exit:* each action round-trips to exactly one commit; an edit made in the CLI appears live in the open panel.
+
+Decomposed into three PRs. P14.2 and P14.3 both build on P14.1 and can go in parallel.
+
+- *Exit (checked when all children are done):* each action round-trips to exactly one commit; an edit made in the CLI appears live in the open panel.
+
+**P14.1 — Panel + set status** · depends on P13.4, P10.3
+- The node panel: metadata, delivery display, history, and set status.
+- *Exit:* Playwright: open a node, set its status, see one new commit in its history.
+
+**P14.2 — Body editor** · depends on P14.1
+- Markdown body editor; saving makes one `edit-body` commit. An edit made in the CLI updates the open panel (with a conflict prompt if there are unsaved local changes).
+- *Exit:* save round-trip; the live CLI-edit test.
+
+**P14.3 — Structure actions** · depends on P14.1
+- Dependencies (add and remove), add child, delete, move.
+- *Exit:* each action round-trips to exactly one commit; a refused action shows the invariant.
 
 **P15 — UI runs + proposal review**
-- The Decompose action (with optional guidance), the node's run list, a live transcript (assistant text and tool calls rendered from stream-json), cancel, and continue (resume).
-- Proposal review: ghost nodes and edges overlaid on the level view, with inline editing of title, kind, intent and acceptance, and removal of children or edges, then Accept or Reject.
-- *Exit (= M4):* a feature is planned entirely in the UI, from a new node → decompose → edit → accept → drill in → decompose again.
+
+Decomposed into four PRs. P15.1 → P15.2 (runs) and P15.3 → P15.4 (proposals) are two parallel stacks.
+
+- *Exit (checked when all children are done; = M4):* a feature is planned entirely in the UI, from a new node → decompose → edit → accept → drill in → decompose again.
+
+**P15.1 — Transcript renderer** · depends on P13.1, P11.1
+- A component that renders stream-json events (assistant text, tool calls and results, the final result) incrementally.
+- *Exit:* component tests over the fake `claude` canned streams.
+
+**P15.2 — Runs in the node panel** · depends on P15.1, P14.1, P11.4
+- Decompose action (with optional guidance), the node's run list, the live transcript over WS, cancel, and continue (resume).
+- *Exit:* Playwright with the fake `claude`: start, watch, cancel, continue.
+
+**P15.3 — Proposal overlay** · depends on P13.3, P12.4
+- Ghost nodes and edges from a pending proposal, overlaid on the level view; opened from `proposal.created`.
+- *Exit:* component tests on a fixture proposal.
+
+**P15.4 — Proposal editing + accept/reject** · depends on P15.3
+- Inline editing of title, kind, intent and acceptance; removal of children or edges; Accept or Reject.
+- *Exit:* Playwright: edit, remove a child, accept → one commit; the M4 walkthrough from the P15 exit criteria.
 
 #### M5: playback
 
 **P16 — Frames index + history API** (§5)
-- A `frames` table built in one `git log --reverse` pass with trailers. It is incremental via `last_indexed_sha`, and a history rewrite triggers a rebuild. WS `index.progress` reports progress on large rebuilds.
+
+Decomposed into two PRs, stacked.
+
+- *Exit (checked when all children are done):* the frame count equals the number of plan commits; `?at=` returns the historical level view; after a rewrite, the frames are rebuilt.
+
+**P16.1 — Frames table** · depends on P06.2, P10.4
+- `frames` built in one `git log --reverse` pass with trailers; incremental via `last_indexed_sha`; a history rewrite triggers a rebuild. WS `index.progress` on large rebuilds.
+- *Exit:* frame count equals commit count; incremental and rewrite tests.
+
+**P16.2 — History API** · depends on P16.1, P10.2
 - A lazy blob loader with an LRU of parsed graphs; `GET /api/frames`; `GET /api/graph?at=<sha>`; per-node body history.
-- *Exit:* the frame count equals the number of plan commits; `?at=` returns the historical level view; after a rewrite, the frames are rebuilt.
+- *Exit:* `?at=` returns the historical level view; LRU eviction test.
 
 **P17 — Playback scrubber + delivery overlay**
-- A timeline scrubber (step, play, labels showing each frame's op and actor). Scrubbing puts the view in read-only mode.
-- Code-repo scan for `APM-Node` trailers, merged into the timeline by timestamp and shown as markers on nodes.
-- *Exit (= M5):* the APM plan (from P09) replays from its first commit.
+
+Decomposed into two PRs, stacked.
+
+- *Exit (checked when all children are done; = M5):* the APM plan (from P09) replays from its first commit.
+
+**P17.1 — Scrubber** · depends on P16.2, P15.4
+- Timeline scrubber (step, play, labels showing each frame's op and actor). Scrubbing puts the view in read-only mode.
+- *Exit:* Playwright: scrub back, edits are disabled, return to live.
+
+**P17.2 — Delivery overlay** · depends on P17.1, P05.1
+- Code-repo scan for `APM-Node` trailers (in core, reused by P19), merged into the timeline by timestamp and shown as markers on nodes.
+- *Exit:* scan tests on a temp code repo; the P17 replay check.
 
 #### M6–M7: delivery
 
 **P18 — `apm-implementer`** (§7.4)
-- The `apm-implementer` agent and the `apm-deliver` skill (branch naming, the `APM-Node` trailer, a PR body template).
+
+Decomposed into two PRs, stacked.
+
+- *Exit (checked when all children are done; = M6):* a ready leaf becomes a PR whose commits carry `APM-Node` and whose node shows the delivery.
+
+**P18.1 — Implementer agent + runner support** · depends on P12.4
+- The `apm-implementer` agent and the `apm-deliver` skill (branch naming, the `APM-Node` trailer, a PR body template; PR via `gh` when available, then `apm_attach_delivery` and `in_progress`).
 - The runner starts it in a worktree (`-w apm/<handle>-<slug>`) with scope `node:<id>` and the `allowed_tools` from `apm.yaml`. The **server** refuses to start it on a node that isn't a ready leaf.
-- A PR is opened through `gh` when it's available. Delivery is attached, and the node is set to `in_progress`.
-- The UI gains an Implement button on ready leaves and shows the delivery.
-- *Exit (= M6):* a ready leaf becomes a PR whose commits carry `APM-Node` and whose node shows the delivery.
+- *Exit:* argument-builder and refusal tests; a real run on a toy ready leaf yields a PR (recorded in the PR).
+
+**P18.2 — Implement in the UI** · depends on P18.1, P15.2
+- An Implement button on ready leaves, and the delivery (branch, commits, PR) shown on the node.
+- *Exit:* Playwright with the fake `claude`; the P18 exit check.
 
 **P19 — `apm-reconciler`**
-- The `apm-reconciler` agent (scope `project`). It reads `APM-Node` trailers and PR state, then updates status.
-- *Decides:* how much of this is deterministic code (a trailer scan plus `gh pr view`) and how much is left to the agent. Recommendation: do the deterministic work in an `apm reconcile` command, and keep the agent for ambiguous cases.
-- Triggers: run manually, and once when `apm serve` starts.
-- *Exit (= M7):* merging a PR moves its node to `done` with no manual step.
+
+Decomposed into two PRs, stacked.
+
+- *Decides:* how much of this is deterministic code (a trailer scan plus `gh pr view`) and how much is left to the agent. Recommendation: do the deterministic work in an `apm reconcile` command, and keep the agent for ambiguous cases. The split below assumes the recommendation.
+- *Exit (checked when all children are done; = M7):* merging a PR moves its node to `done` with no manual step.
+
+**P19.1 — `apm reconcile`** · depends on P17.2, P07.2
+- Trailer scan plus `gh pr view` → status updates, as one commit with `APM-Actor: reconciler`. Runs manually, and once when `apm serve` starts.
+- *Exit:* tests with a stubbed `gh`: merged → `done`, open → unchanged, closed unmerged → reported, not changed.
+
+**P19.2 — Reconciler agent** · depends on P19.1, P11.4
+- The `apm-reconciler` agent (scope `project`), started for the cases `apm reconcile` reports as ambiguous.
+- *Exit:* a real merge moves its node to `done` with no manual step.
 
 **P20 — v1 release**
+
+Stays one PR: mostly docs and a workflow, which don't count toward the size limit.
+
 - *Decides:* open question 4 (the package name) and open question 3 (whether to auto-commit hand edits).
-- README, install instructions for the plugin, `npx` install, and an npm publish workflow.
-- *Exit:* `npx <pkg> init` works on a clean machine.
+- README, install instructions for the plugin, `uvx` / `uv tool install`, and a PyPI publish workflow (trusted publishing).
+- *Exit:* `uvx <pkg> init` works on a clean machine.
 
 ---
 
@@ -700,4 +1012,4 @@ Each question is resolved in the phase noted in §12.3 (Q1 → P12, Q2 → P03, 
 1. **Duplicates across parents.** Because subtasks can't be shared, how should a near-duplicate be handled? v1: the critic flags it and you decide. Candidate policy: move it up to the lowest common ancestor.
 2. **Parent status.** v1 stores it and warns on I6. Should it instead be fully derived from the children once a node has any?
 3. **Auto-committing hand edits.** v1 requires an explicit `apm commit`. Is a server-side file watcher with a debounce worth it?
-4. **Package name.** `apm` is taken on npm (Atom's old package manager). Choose a scoped name or a new name before publishing.
+4. **Package name.** `apm` is taken on both PyPI and npm (Atom's old package manager). Choose a new distribution name before publishing; the command can stay `apm`.
