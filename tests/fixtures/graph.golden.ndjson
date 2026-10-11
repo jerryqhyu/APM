@@ -1,0 +1,4 @@
+{"id":"0192e9d0-55aa-7c12-9f00-aa11bb22cc33","parent":"0192f2c8-1a0d-7e33-8c41-5b2a9d0e7f10","title":"Graph model and file I/O","kind":"work","status":"done"}
+{"id":"0192f2c8-1a0d-7e33-8c41-5b2a9d0e7f10","title":"APM v1","kind":"work","status":"in_progress"}
+{"id":"0192f3a1-7c4e-7b91-a2d5-3f8e1c0b9a44","parent":"0192f2c8-1a0d-7e33-8c41-5b2a9d0e7f10","title":"Stream agent output to the UI","kind":"work","status":"in_progress","depends_on":["0192e9d0-55aa-7c12-9f00-aa11bb22cc33"],"delivery":{"repo":"app","branch":"apm/1c0b9a44-stream-output","commits":["a1b2c3d","e4f5a6b7c8d9"],"pr":"https://github.com/jerry/app/pull/12"}}
+{"id":"01930a00-0000-7000-8000-00000000d0d0","parent":"0192f2c8-1a0d-7e33-8c41-5b2a9d0e7f10","title":"Pick a layout engine — \"elkjs\" vs dagre","kind":"decision","status":"dropped","external":{"provider":"github","id":"42","synced_at":"2026-09-20T12:00:00Z","synced_hash":"abc123"},"variant_of":"0192f3a1-7c4e-7b91-a2d5-3f8e1c0b9a44"}
