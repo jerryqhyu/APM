@@ -1,5 +1,5 @@
 {"id":"01a0ccda-9c10-7404-9787-d046500ad29b","title":"Project decisions","kind":"work","status":"in_progress"}
-{"id":"01a0ccda-9c11-7093-829c-176f32047a7d","parent":"01a0ccda-9c10-7404-9787-d046500ad29b","title":"Language: TypeScript end-to-end, Node 24 LTS","kind":"decision","status":"done"}
+{"id":"01a0ccda-9c11-7093-829c-176f32047a7d","parent":"01a0ccda-9c10-7404-9787-d046500ad29b","title":"Language: TypeScript end-to-end, Node 24 LTS","kind":"decision","status":"dropped"}
 {"id":"01a0ccda-9c12-76ab-88ea-0104888a2295","parent":"01a0ccda-9c10-7404-9787-d046500ad29b","title":"Graph model: Compound graph: containment tree + dependency DAG; cross-level edges stored once and lifted for display","kind":"decision","status":"done"}
 {"id":"01a0ccda-9c13-714b-9bb4-ca3db2b2ab3c","parent":"01a0ccda-9c10-7404-9787-d046500ad29b","title":"Plan storage: Separate git repo at `.apm/`, ignored by the code repo and linked to it by a committed `.apm-link`","kind":"decision","status":"done"}
 {"id":"01a0ccda-9c14-7759-a744-af190185834f","parent":"01a0ccda-9c10-7404-9787-d046500ad29b","title":"Source of truth: `graph.ndjson` (structure + metadata) + `nodes/<id>.md` (prose only)","kind":"decision","status":"done"}
@@ -45,8 +45,8 @@
 {"id":"01a0cce0-35d4-738d-af7c-df2b57c872d5","parent":"01a0ccda-a011-71de-83b8-f86f805aa927","title":"P18: `apm-implementer`","kind":"work","status":"todo"}
 {"id":"01a0cce1-241d-76dc-8899-14faf4a17e79","parent":"01a0ccda-a012-72ca-a793-8d559950d62e","title":"P19: `apm-reconciler`","kind":"work","status":"todo"}
 {"id":"01a0cce1-2806-7179-b447-1f32f673170b","title":"P20: v1 release","kind":"work","status":"todo","depends_on":["01a0ccda-9c1f-77cf-b733-3e424b87077e","01a0ccda-9c20-72af-b804-220210bbc6f4","01a0cce1-241d-76dc-8899-14faf4a17e79"]}
-{"id":"01a0cd2b-67a8-72d8-bfa5-5d1bfc95427f","parent":"01a0ccda-9c10-7404-9787-d046500ad29b","title":"Tooling: Vitest + fast-check for tests, Biome for lint and format","kind":"decision","status":"done"}
-{"id":"01a0cd2b-67a9-7133-b34b-8d74bf934d6d","parent":"01a0ccda-9c10-7404-9787-d046500ad29b","title":"Run from source in development: no build step","kind":"decision","status":"done"}
+{"id":"01a0cd2b-67a8-72d8-bfa5-5d1bfc95427f","parent":"01a0ccda-9c10-7404-9787-d046500ad29b","title":"Tooling: Vitest + fast-check for tests, Biome for lint and format","kind":"decision","status":"dropped"}
+{"id":"01a0cd2b-67a9-7133-b34b-8d74bf934d6d","parent":"01a0ccda-9c10-7404-9787-d046500ad29b","title":"Run from source in development: no build step","kind":"decision","status":"dropped"}
 {"id":"01a0cd2b-67aa-7780-96bc-357ecfb93ccc","parent":"01a0ccda-9c10-7404-9787-d046500ad29b","title":"CI runs on ubuntu-latest and macos-latest","kind":"decision","status":"done"}
 {"id":"01a0cfa3-9780-7290-bd98-3db1d1a18467","parent":"01a0ccda-9c10-7404-9787-d046500ad29b","title":"PRs are at most 300 counted lines; a bigger phase is decomposed into child phases","kind":"decision","status":"done"}
 {"id":"01a0cfa3-9781-7095-aec4-b6421107e1ad","parent":"01a0ccda-9c10-7404-9787-d046500ad29b","title":"Stacked child PRs merge in order with merge commits, not squash","kind":"decision","status":"done"}
