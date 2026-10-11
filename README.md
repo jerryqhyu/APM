@@ -4,18 +4,21 @@ A local-first project manager built for working with AI agents. See [plans.md](p
 
 ## Development
 
-Requires Node 24+ and pnpm (enable it with `corepack enable pnpm`; the version is pinned in `package.json`).
+The backend is Python 3.14, managed with [uv](https://docs.astral.sh/uv/). uv installs the pinned Python (`.python-version`) and the locked dependencies (`uv.lock`) on first use.
 
 ```bash
-pnpm install
-pnpm apm --version   # run the CLI straight from source, no build needed
-pnpm test            # vitest
-pnpm typecheck       # tsc, no emit
-pnpm lint            # biome; `pnpm format` fixes formatting
-pnpm build           # emit packages/*/dist
+uv sync                  # create .venv with the project and its dev tools
+uv run apm --version     # run the CLI from source
+uv run pytest            # tests (pytest + Hypothesis)
+uv run ty check          # type check
+uv run ruff check        # lint; `uv run ruff format` formats
+uv build                 # build the wheel and sdist into dist/
 ```
 
-| Package | Contents |
+| Path | Contents |
 |---|---|
-| `packages/core` | graph model, invariants, lifting, git I/O, index, `mutate()` |
-| `packages/app` | the `apm` binary: CLI, `serve`, `mcp` |
+| `src/apm/core/` | graph model, invariants, lifting, git I/O, index, `mutate()` (from P02) |
+| `src/apm/cli.py` | the `apm` command: CLI, `serve`, `mcp` |
+| `tests/` | tests, mirroring `src/apm/` |
+
+The web UI (`ui/`, TypeScript) arrives in P13.
