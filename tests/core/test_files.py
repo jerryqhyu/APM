@@ -2,9 +2,39 @@ from pathlib import Path
 
 import pytest
 
-from apm.core.files import body_path, read_file_if_exists, write_file_atomic
+from apm.core.files import (
+    body_path,
+    read_file_if_exists,
+    read_graph_file,
+    write_file_atomic,
+    write_graph_file,
+)
+from apm.core.model import Node
+from apm.core.ndjson import GraphParseError, InvalidNodeError
 
 ID = "0192f3a1-7c4e-7b91-a2d5-3f8e1c0b9a44"
+GOOD = Node(id=ID, title="t")
+
+
+def test_graph_file_round_trips_through_disk(tmp_path: Path) -> None:
+    write_graph_file(tmp_path, [GOOD])
+    assert read_graph_file(tmp_path) == [GOOD]
+    assert [p.name for p in tmp_path.iterdir()] == ["graph.ndjson"]  # no temp files left behind
+
+
+def test_a_refused_graph_write_leaves_the_existing_file_alone(tmp_path: Path) -> None:
+    write_graph_file(tmp_path, [GOOD])
+    before = (tmp_path / "graph.ndjson").read_bytes()
+    with pytest.raises(InvalidNodeError, match="title: must be a single line"):
+        write_graph_file(tmp_path, [Node(id=ID, title="two\nlines")])
+    assert (tmp_path / "graph.ndjson").read_bytes() == before
+    assert read_graph_file(tmp_path) == [GOOD]
+
+
+def test_graph_parse_errors_name_graph_ndjson(tmp_path: Path) -> None:
+    (tmp_path / "graph.ndjson").write_text("{\n")
+    with pytest.raises(GraphParseError, match=r"^graph\.ndjson:1: invalid JSON"):
+        read_graph_file(tmp_path)
 
 
 def test_write_file_atomic_creates_parents_and_replaces_content(tmp_path: Path) -> None:

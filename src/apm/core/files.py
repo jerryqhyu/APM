@@ -2,10 +2,12 @@
 
 import os
 import secrets
+from collections.abc import Iterable
 from pathlib import Path
 
 from apm.core.ids import is_node_id
-from apm.core.model import NodeId
+from apm.core.model import Node, NodeId
+from apm.core.ndjson import parse_graph, serialize_graph
 
 GRAPH_FILE = "graph.ndjson"
 NODES_DIR = "nodes"
@@ -25,6 +27,15 @@ def body_path(apm_dir: Path, node_id: NodeId) -> Path:
     if not is_node_id(node_id):
         raise ValueError(f"not a node id: {node_id!r}")
     return apm_dir / NODES_DIR / f"{node_id}.md"
+
+
+def read_graph_file(apm_dir: Path) -> list[Node]:
+    return parse_graph(graph_path(apm_dir).read_text(encoding="utf-8", newline=""), GRAPH_FILE)
+
+
+def write_graph_file(apm_dir: Path, nodes: Iterable[Node]) -> None:
+    """Serializes before touching the disk, so a refused write leaves the existing file alone."""
+    write_file_atomic(graph_path(apm_dir), serialize_graph(nodes))
 
 
 def write_file_atomic(path: Path, data: str) -> None:
