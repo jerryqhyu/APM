@@ -1,1 +1,1 @@
-packages/core/fixtures/*.ndjson -text
+tests/fixtures/*.ndjson -text
