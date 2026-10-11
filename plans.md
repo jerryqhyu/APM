@@ -490,7 +490,7 @@ Each phase is **one branch → one PR into `main`**, or, when it's too big for t
 |---|---|---|---|---|---|
 | P00 | Phased implementation plan (this doc) | — | — | done | [#1](https://github.com/jerryqhyu/APM/pull/1) |
 | P01 | Workspace scaffold + CI *(TypeScript; replaced by P01b)* | M1 | P00 | done | [#2](https://github.com/jerryqhyu/APM/pull/2) |
-| P01b | Python backend scaffold + CI | M1 | P01 | todo | |
+| P01b | Python backend scaffold + CI | M1 | P01 | in review | [#14](https://github.com/jerryqhyu/APM/pull/14) |
 | P02 | Node model, IDs and file I/O *(parent: done when P02.1–P02.5 are)* | M1 | P01b | in progress | ~~[#3](https://github.com/jerryqhyu/APM/pull/3)~~ (split) |
 | ↳ P02.1 | Node model + IDs and handles | M1 | P01b | in review | [#4](https://github.com/jerryqhyu/APM/pull/4) |
 | ↳ P02.2 | Plan-repo paths, atomic writes, bodies | M1 | P02.1 | in review | [#5](https://github.com/jerryqhyu/APM/pull/5) |
