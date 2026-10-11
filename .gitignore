@@ -1,5 +1,14 @@
-node_modules/
+# Python
+__pycache__/
+*.py[cod]
+.venv/
 dist/
-coverage/
-*.tsbuildinfo
+build/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.hypothesis/
+.coverage
+htmlcov/
+
 .DS_Store
