@@ -109,6 +109,7 @@ async def test_a_decomposer_run_becomes_a_reviewed_proposal(
         "APM_RUN_SCOPE": "read",
         "APM_ACTOR": "agent:apm-decomposer",
         "APM_RUN": run.id,
+        "APM_NODE": node,
     }
 
 

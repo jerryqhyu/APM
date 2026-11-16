@@ -163,6 +163,7 @@ def mcp_config(project: Project, spec: AgentSpec, node_id: NodeId, run_id: str) 
                     "APM_RUN_SCOPE": scope,
                     "APM_ACTOR": f"agent:{spec.name}",
                     "APM_RUN": run_id,
+                    "APM_NODE": node_id,
                 },
             }
         }

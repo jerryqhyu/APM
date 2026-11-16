@@ -12,3 +12,7 @@ build/
 htmlcov/
 
 .DS_Store
+
+# Web UI
+ui/node_modules/
+src/apm/server/static/

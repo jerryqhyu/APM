@@ -199,6 +199,17 @@ def test_errors_come_back_as_tool_errors(plan: tuple[Project, str, str, str]) ->
     assert "I7" in session.refused("apm_attach_delivery", node=parent, branch="x")
 
 
+def test_get_node_defaults_to_the_node_the_run_is_about(
+    plan: tuple[Project, str, str, str],
+) -> None:
+    project, _, first, second = plan
+    ids = {handle(n): n for n in load_graph(project).nodes}
+    focused = Session(project, "read", APM_NODE=ids[second])
+    assert focused.call("apm_get_node").splitlines()[1] == f"id: {ids[second]}"
+    assert focused.call("apm_get_node", node=first).splitlines()[1] == f"id: {ids[first]}"
+    assert "which node?" in Session(project, "read").refused("apm_get_node")
+
+
 def test_scope_parsing() -> None:
     node_id = "01930000-0000-7000-8000-00000000000a"
     assert Scope.parse(None) == Scope("project")

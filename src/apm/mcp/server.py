@@ -38,6 +38,8 @@ from apm.core.validate import InvariantError
 SCOPE_ENV = "APM_RUN_SCOPE"
 ACTOR_ENV = "APM_ACTOR"
 RUN_ENV = "APM_RUN"
+NODE_ENV = "APM_NODE"
+"""The node a run was started on: what `apm_get_node` shows when it isn't told which."""
 
 INSTRUCTIONS = """\
 APM is the project plan: a nested graph of nodes. Each node has a short handle (8 hex chars), a
@@ -112,6 +114,7 @@ def build_server(project: Project | None = None, env: Mapping[str, str] | None =
     scope = Scope.parse(env.get(SCOPE_ENV))
     actor = env.get(ACTOR_ENV) or "agent:claude"
     run = env.get(RUN_ENV) or None
+    focus = env.get(NODE_ENV) or None
     server = MCPServer("apm", instructions=INSTRUCTIONS)
 
     def current() -> tuple[Project, Graph]:
@@ -155,9 +158,16 @@ def build_server(project: Project | None = None, env: Mapping[str, str] | None =
         return format_outline(graph, scope_id, depth) or "(the plan has no nodes yet)"
 
     @tool
-    def apm_get_node(node: Annotated[str, Field(description="Handle or id.")]) -> str:
+    def apm_get_node(
+        node: Annotated[
+            str | None, Field(description="Handle or id. Omit for the node you were started on.")
+        ] = None,
+    ) -> str:
         """One node in full: state, parent, children, dependencies, delivery and body."""
         found, graph = current()
+        node = node or focus
+        if not node:
+            raise ToolError("which node? Pass its handle, e.g. apm_get_node(node='1c0b9a44')")
         node_id = resolve_handle(node, graph.nodes)
         states, names = compute_states(graph), handles(graph.nodes)
         n = graph[node_id]
