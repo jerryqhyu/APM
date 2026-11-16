@@ -402,7 +402,7 @@ def node_mv(
 ) -> None:
     """Move a node, with everything under it, to another parent."""
     if (parent is None) != top:
-        raise typer.BadParameter("give a new parent, or --top")
+        raise OpError("give a new parent, or --top")
     project = find_project()
     graph = load_graph(project)
     target = None if parent is None else resolve(graph, parent)

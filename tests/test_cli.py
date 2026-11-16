@@ -132,7 +132,7 @@ def test_set_move_link_and_delete(cwd: Project) -> None:
     assert f"parent: {b} B" in apm("node", "show", child)
     apm("node", "mv", child, "--top")
     assert "parent:" not in apm("node", "show", child)
-    assert "give a new parent, or --top" in apm("node", "mv", child, code=2)
+    assert "give a new parent, or --top" in apm("node", "mv", child, code=1)
 
     assert apm("link-dep", a, b).strip() == "linked"
     assert f"→ {b}" in apm("node", "show", a)
