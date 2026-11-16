@@ -8,7 +8,7 @@ import json
 import sqlite3
 import time
 import uuid
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -112,7 +112,7 @@ class Store:
             )
 
     @contextmanager
-    def _db(self) -> Iterator[sqlite3.Connection]:
+    def _db(self) -> Generator[sqlite3.Connection]:
         """A short-lived connection per call: safe from any thread or process."""
         db = sqlite3.connect(self.path, timeout=10.0)
         db.row_factory = sqlite3.Row
