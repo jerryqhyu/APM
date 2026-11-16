@@ -1,6 +1,6 @@
 # APM — Design Plan
 
-**Status:** v6 draft, scoped for v1 · design only: the phase breakdown was abandoned and will be redone from this plan · **Last updated:** 2026-11-16
+**Status:** v6 draft, scoped for v1 · M1 (core) is implemented; the rest is design, with no phase breakdown yet · **Last updated:** 2026-11-16
 
 APM is a local-first project manager built for working with AI agents. A project is a **nested graph of nodes**: you start with a big idea, then break it down with Claude agents, level by level, until each piece is small enough to ship as a commit or PR. The plan lives in its own git repo, so every change to it can be traced and **played back** from the project's first node onward.
 
@@ -14,6 +14,7 @@ v1 = a Python backend with a TypeScript web UI, one user on one machine, one cod
 |---|---|---|
 | Language | **Python 3.14** for the backend (core, CLI, server, MCP), managed with **uv**; TypeScript only for the web UI | The standard library covers UUIDv7, SQLite with FTS5 and subprocess git; first-class MCP and Claude Agent SDKs; fast, strict tooling (uv, ruff, ty). The UI stays TypeScript because it runs in the browser. Installed with `uvx` / `uv tool install`. Replaces TypeScript-everywhere, before any core code merged |
 | Graph model | Compound graph: containment **tree** + dependency **DAG**; cross-level edges stored once and *lifted* for display | Unlimited depth, zoom into any node, no hand-copying edges between levels |
+| Graph library | **networkx**: containment and dependencies are two digraphs over the same node ids | Traversal, cycle detection and strongly connected components come from a well-tested library instead of hand-written walks |
 | Plan storage | Separate git repo at `.apm/`, ignored by the code repo and linked to it by a committed `.apm-link` | No CI runs on plan commits; works with a protected `main`; history holds only plan changes |
 | Source of truth | `graph.ndjson` (structure + metadata) + `nodes/<id>.md` (prose only) | Each field lives in exactly one place, so the two can't drift |
 | IDs | UUIDv7; the short handle is the **last** 8 hex chars | Sorts by creation time; new nodes append at the end of the file, so diffs stay small |
@@ -54,9 +55,9 @@ Stored: `todo | in_progress | done | dropped`.
 
 Computed (never stored, so it can't go stale):
 
-- **blocked**: `todo` and at least one dependency is not `done`.
-- **ready**: `todo` and not blocked.
-- **progress** (parents): done leaves ÷ leaves that aren't dropped, across the whole subtree.
+- **blocked**: `todo` and at least one dependency is not `done`. Dependencies are inherited: a node also waits on whatever its ancestors wait on, so the children of a blocked parent are blocked too.
+- **ready**: `todo`, not blocked, and not under a `dropped` ancestor.
+- **progress** (parents): done leaves ÷ leaves that aren't dropped, across the whole subtree. A leaf under a `dropped` ancestor counts as dropped.
 - A node that depends on a `dropped` node is flagged. It is **not** treated as unblocked.
 
 ### 2.4 Invariants
@@ -161,7 +162,7 @@ APM-Actor: agent:apm-decomposer        # or user
 APM-Run: <run-id>                      # optional
 ```
 
-Ops: `create, update, move, delete, link, unlink, status, deliver, decompose, edit-body`.
+Ops: `create, update, move, delete, link, unlink, status, deliver, decompose, edit-body`. The plan repo's first commit is `init <name>`, with `APM-Op: init`.
 
 Commits are made through the `git` CLI (`subprocess` with an argument list, never a shell), so your identity, signing, and hooks apply.
 
@@ -246,7 +247,7 @@ plugin/          Claude Code plugin (agents, skills, .mcp.json)
 ```
 
 - **Backend:** Python 3.14, one distribution with an `apm` console script, managed with **uv** (committed `uv.lock`, `uv_build` backend, src layout). **ruff** lints and formats, **ty** type-checks, **pytest** + **Hypothesis** test. Names follow PEP 8: snake_case for modules, functions, variables and fields, PascalCase for classes; ruff's pep8-naming rules enforce it.
-- **Libraries:** pydantic (validating `graph.ndjson` lines, `apm.yaml`, and API and MCP inputs), PyYAML, Typer, FastAPI + uvicorn, and the `mcp` SDK. The standard library covers UUIDv7 (`uuid.uuid7()`), SQLite with FTS5 (`sqlite3`) and git (`subprocess`).
+- **Libraries:** networkx (the in-memory graph: `Graph.tree` and `Graph.deps` are `networkx.DiGraph`s), pydantic (validating `graph.ndjson` lines, `apm.yaml`, and API and MCP inputs), PyYAML, Typer, FastAPI + uvicorn, and the `mcp` SDK. The standard library covers UUIDv7 (`uuid.uuid7()`), SQLite with FTS5 (`sqlite3`) and git (`subprocess`).
 - **Core is synchronous** and uses `pathlib` throughout. The server calls it from a worker thread and runs agent subprocesses with `asyncio`.
 - **Python style:** type hints on everything `ty` checks, `pathlib` for paths, frozen dataclasses for value types, and pydantic only at input boundaries (files, API, MCP).
 - **Tests mirror the code:** tests under `tests/` mirror `src/apm/` (`tests/core/test_ids.py` tests `apm/core/ids.py`); shared Hypothesis strategies live in `tests/strategies.py`. End-to-end tests run the `apm` command against throwaway git repos in a temp dir.
@@ -264,6 +265,11 @@ plugin/          Claude Code plugin (agents, skills, .mcp.json)
 5. Update the index, release the lock, and emit `graph.changed`.
 
 Any process can call `mutate()`. The server doesn't have to be running for the CLI or MCP to work.
+
+- **All or nothing.** A change that breaks an invariant is refused before anything is written. If the commit itself fails (a hook refuses, say), the files and the git index are put back as they were.
+- **Hand edits are never swept up.** `mutate()` stages only the files it writes. If one of those has uncommitted changes, it refuses and asks you to commit them first (`apm commit`, §10).
+- **An operation that changes nothing makes no commit.**
+- **Not built yet:** updating the index arrives with the index (M2), and `graph.changed` with the server (M3).
 
 ### 6.3 Server
 
@@ -465,7 +471,7 @@ apm push · apm pull              git push/pull for .apm
 | **M6** | `apm-implementer` (worktrees, trailers, `gh` PR) | A ready leaf becomes a PR that links back to its node |
 | **M7** | `apm-reconciler` | A merged PR moves its node to `done` with no manual step |
 
-Milestones are the roadmap. The breakdown into PR-sized pieces is still to be planned.
+Milestones are the roadmap. **M1 is implemented** in `src/apm/core/`. The breakdown of M2 onward into PR-sized pieces is still to be planned.
 
 ---
 
@@ -487,5 +493,5 @@ Milestones are the roadmap. The breakdown into PR-sized pieces is still to be pl
 2. **Parent status.** v1 stores it and warns on I6. Should it instead be fully derived from the children once a node has any?
 3. **Auto-committing hand edits.** v1 requires an explicit `apm commit`. Is a server-side file watcher with a debounce worth it?
 4. **Package name.** `apm` is taken on both PyPI and npm (Atom's old package manager). Choose a new distribution name before publishing; the command can stay `apm`.
-5. **Deleting a node with children.** Refuse it, or require `--recursive`? Proposed: refuse unless recursive; a recursive delete is one commit.
+5. **Deleting a node with children.** Refuse it, or require `--recursive`? Proposed: refuse unless recursive; a recursive delete is one commit. The core implements the proposal for now.
 6. **Reconciler split.** How much of reconciling is deterministic code (a trailer scan plus `gh pr view`) and how much is left to the agent? Recommendation: do the deterministic work in an `apm reconcile` command, and keep the agent for ambiguous cases.

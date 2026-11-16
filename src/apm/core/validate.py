@@ -1,0 +1,139 @@
+"""The graph invariants (plans.md §2.4).
+
+`validate()` checks everything except entanglement (I5), which needs the level views and lives in
+`apm.core.lifting`. Errors (I1 to I4, I7) stop a write; warnings (I6) are only reported.
+"""
+
+from collections.abc import Sequence
+from dataclasses import dataclass
+from typing import Literal
+
+import networkx as nx
+
+from apm.core.graph import Graph
+from apm.core.ids import handle
+from apm.core.model import NodeId, Status
+
+type InvariantCode = Literal["I1", "I2", "I3", "I4", "I5", "I6", "I7"]
+
+
+@dataclass(frozen=True, slots=True)
+class Issue:
+    code: InvariantCode
+    message: str
+    nodes: tuple[NodeId, ...]
+    """The nodes involved, the offending node first."""
+
+
+@dataclass(frozen=True, slots=True)
+class Report:
+    errors: tuple[Issue, ...] = ()
+    warnings: tuple[Issue, ...] = ()
+
+    @property
+    def ok(self) -> bool:
+        """True if there are no errors. Warnings don't count."""
+        return not self.errors
+
+
+class InvariantError(ValueError):
+    """A change was refused because it would break a hard invariant."""
+
+    def __init__(self, issues: Sequence[Issue]) -> None:
+        super().__init__("\n".join(f"{i.code}: {i.message}" for i in issues))
+        self.issues = tuple(issues)
+
+
+def validate(graph: Graph) -> Report:
+    errors = [
+        *_containment(graph),
+        *_dependency_cycles(graph),
+        *_dependency_targets(graph),
+        *_delivery_on_leaves(graph),
+    ]
+    return Report(tuple(errors), tuple(_done_parents(graph)))
+
+
+def _containment(graph: Graph) -> list[Issue]:
+    """I1: every parent exists, and containment has no cycles."""
+    issues = [
+        Issue("I1", f"{handle(n.id)}: parent {n.parent} doesn't exist", (n.id,))
+        for n in graph.nodes.values()
+        if n.parent is not None and n.parent not in graph
+    ]
+    # Each node has one parent, so containment cycles never share a node: listing them is cheap.
+    for cycle in sorted(_rotate(c) for c in nx.simple_cycles(graph.tree)):
+        issues.append(Issue("I1", f"containment cycle: {_path(cycle)}", tuple(cycle)))
+    return issues
+
+
+def _dependency_cycles(graph: Graph) -> list[Issue]:
+    """I2: `depends_on` is acyclic. One issue per tangle, with one cycle from it as the example."""
+    issues = []
+    tangles = [c for c in nx.strongly_connected_components(graph.deps) if len(c) > 1]
+    tangles += [{n} for n in nx.nodes_with_selfloops(graph.deps)]
+    for tangle in sorted(tangles, key=min):
+        edges = nx.find_cycle(graph.deps.subgraph(tangle), min(tangle))
+        cycle = [u for u, _ in edges]
+        issues.append(Issue("I2", f"dependency cycle: {_path(cycle)}", tuple(sorted(tangle))))
+    return issues
+
+
+def _dependency_targets(graph: Graph) -> list[Issue]:
+    """I4: every dependency exists. I3: none is the node's own ancestor or descendant."""
+    issues = []
+    for node in graph.nodes.values():
+        ancestors = set(graph.ancestors(node.id))
+        for dep in node.depends_on:
+            if dep not in graph:
+                issues.append(
+                    Issue("I4", f"{handle(node.id)}: dependency {dep} doesn't exist", (node.id,))
+                )
+            elif dep in ancestors:
+                issues.append(_related(node.id, dep, "ancestor"))
+            elif graph.is_ancestor(node.id, dep):
+                issues.append(_related(node.id, dep, "descendant"))
+    return issues
+
+
+def _related(node_id: NodeId, dep: NodeId, relation: str) -> Issue:
+    message = f"{handle(node_id)} depends on its own {relation} {handle(dep)}"
+    return Issue("I3", message, (node_id, dep))
+
+
+def _delivery_on_leaves(graph: Graph) -> list[Issue]:
+    """I7: only leaves carry `delivery`."""
+    return [
+        Issue("I7", f"{handle(n.id)} has children, so it can't carry a delivery", (n.id,))
+        for n in graph.nodes.values()
+        if n.delivery is not None and not graph.is_leaf(n.id)
+    ]
+
+
+_UNFINISHED = (Status.TODO, Status.IN_PROGRESS)
+
+
+def _done_parents(graph: Graph) -> list[Issue]:
+    """I6: a `done` parent has no unfinished children."""
+    issues = []
+    for node in graph.nodes.values():
+        if node.status is not Status.DONE:
+            continue
+        open_children = [c for c in graph.children(node.id) if graph[c].status in _UNFINISHED]
+        if open_children:
+            count = (
+                f"{len(open_children)} unfinished child{'ren' if len(open_children) > 1 else ''}"
+            )
+            message = f"{handle(node.id)} is done but has {count}"
+            issues.append(Issue("I6", message, (node.id, *open_children)))
+    return issues
+
+
+def _rotate(cycle: list[NodeId]) -> list[NodeId]:
+    """The same cycle, starting from its smallest id, so reports are stable."""
+    start = cycle.index(min(cycle))
+    return cycle[start:] + cycle[:start]
+
+
+def _path(cycle: Sequence[NodeId]) -> str:
+    return " → ".join(handle(n) for n in (*cycle, cycle[0]))
