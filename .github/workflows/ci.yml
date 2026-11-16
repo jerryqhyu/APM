@@ -18,7 +18,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # macOS as well as Linux: file locking and git behaviour differ between them.
+        # macOS as well as Linux: file locking, process groups and git behaviour differ between them.
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
@@ -31,6 +31,20 @@ jobs:
       - run: uv run ruff check
       - run: uv run ty check
       - run: uv run pytest
+      # The UI is built into the package before the wheel, so the wheel carries it.
+      - name: Build the web UI
+        working-directory: ui
+        run: |
+          npm install --global pnpm@10.28.0
+          pnpm install --frozen-lockfile
+          pnpm build
       - run: uv build
       - name: Smoke-test the built wheel
-        run: uv run --isolated --no-project --with dist/*.whl apm --version
+        run: |
+          uv run --isolated --no-project --with dist/*.whl apm --version
+          uv run --isolated --no-project --with dist/*.whl python -c "
+          import pathlib, apm.server.app as app, apm.runner.agents as agents
+          assert (app.STATIC_DIR / 'index.html').is_file(), 'the wheel has no UI'
+          assert (agents.PLUGIN_DIR / '.claude-plugin' / 'plugin.json').is_file(), 'the wheel has no plugin'
+          assert (agents.PLUGIN_DIR / 'agents' / 'apm-decomposer.md').is_file()
+          "

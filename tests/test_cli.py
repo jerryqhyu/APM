@@ -1,5 +1,6 @@
 import json
 import os
+import socket
 import subprocess
 import sys
 import time
@@ -11,7 +12,7 @@ import pytest
 from typer.testing import CliRunner
 
 from apm import __version__
-from apm.cli import app
+from apm.cli import app, open_when_listening
 from apm.core.git import git, log
 from apm.core.project import Project, load_graph
 from apm.server.security import load_or_create_token
@@ -313,3 +314,16 @@ def test_serve_prints_a_url_that_works(cwd: Project) -> None:
 
     # The token is kept, so a bookmarked URL still works after a restart.
     assert load_or_create_token(cwd.apm_dir) == token
+
+
+def test_the_browser_opens_only_once_the_server_listens(monkeypatch: pytest.MonkeyPatch) -> None:
+    opened: list[str] = []
+    monkeypatch.setattr("webbrowser.open", opened.append)
+    with socket.socket() as server:
+        server.bind(("127.0.0.1", 0))
+        port = server.getsockname()[1]
+        open_when_listening(port, "http://x", timeout=0.3)
+        assert opened == []  # bound but not listening yet
+        server.listen()
+        open_when_listening(port, "http://x", timeout=2)
+    assert opened == ["http://x"]

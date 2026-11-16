@@ -9,6 +9,8 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import webbrowser
 from collections.abc import Callable
 from pathlib import Path
@@ -464,13 +466,25 @@ def serve(
     typer.echo(f"APM is running at {url}")
     typer.echo("Only this machine can reach it. Press Ctrl+C to stop.")
     if open_browser:
-        webbrowser.open(url)
+        threading.Thread(target=open_when_listening, args=(port, url), daemon=True).start()
     uvicorn.run(
         create_app(project, token, extra_origins=origins),
         host="127.0.0.1",
         port=port,
         log_level="warning",
     )
+
+
+def open_when_listening(port: int, url: str, timeout: float = 15.0) -> None:
+    """Opens the browser once the server accepts connections, so the page never loads too early."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=0.5):
+                webbrowser.open(url)
+                return
+        except OSError:
+            time.sleep(0.1)
 
 
 def free_port(preferred: int) -> int:

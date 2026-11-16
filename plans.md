@@ -1,6 +1,6 @@
 # APM — Design Plan
 
-**Status:** v6 draft, scoped for v1 · M1 (core) is implemented; the rest is design, with no phase breakdown yet · **Last updated:** 2026-11-16
+**Status:** v7 · v1 is implemented except playback (M5) and the SQLite index; §11 has the state of each milestone · **Last updated:** 2026-11-16
 
 APM is a local-first project manager built for working with AI agents. A project is a **nested graph of nodes**: you start with a big idea, then break it down with Claude agents, level by level, until each piece is small enough to ship as a commit or PR. The plan lives in its own git repo, so every change to it can be traced and **played back** from the project's first node onward.
 
@@ -18,11 +18,12 @@ v1 = a Python backend with a TypeScript web UI, one user on one machine, one cod
 | Plan storage | Separate git repo at `.apm/`, ignored by the code repo and linked to it by a committed `.apm-link` | No CI runs on plan commits; works with a protected `main`; history holds only plan changes |
 | Source of truth | `graph.ndjson` (structure + metadata) + `nodes/<id>.md` (prose only) | Each field lives in exactly one place, so the two can't drift |
 | IDs | UUIDv7; the short handle is the **last** 8 hex chars | Sorts by creation time; new nodes append at the end of the file, so diffs stay small |
-| Local DB | SQLite (the standard library's `sqlite3`) in `.apm/.cache/`, not committed | Queries, replay frames, run logs. Can be deleted at any time |
+| Local DB | SQLite (the standard library's `sqlite3`) in `.apm/.cache/`, not committed | Run logs and proposals. Can be deleted at any time |
 | History | Git commits with structured trailers, indexed into SQLite | Git records the state and trailers record the intent, with no custom event log to maintain |
 | Writes | `core.mutate()` under a file lock, callable from any process | No daemon required; writes happen one at a time, so updates aren't lost |
 | Agents | Server spawns `claude` CLI; agents call back through the APM MCP | The server controls runs; the MCP is how agents read and write data |
 | Planning writes | Agents return **proposals** (`--json-schema`); nothing is committed until you accept | Rejected ideas stay out of the history; nothing is half-written if a run fails |
+| Reconciling | Plain code (`apm reconcile`), not an agent | "Did it merge?" has a definite answer: the PR's state, or whether the commits are on the default branch |
 | Packaging | Agents + skills + MCP ship as one Claude Code plugin | The same plugin serves spawned runs and your own terminal sessions |
 | Scope | Single user, single machine, one code repo (config already shaped for many repos) | Fastest route to a working slice |
 
@@ -179,9 +180,21 @@ Every delivery commit in the code repo carries `APM-Node: <full-uuid>`. This is 
 
 ---
 
-## 4. Local index (SQLite)
+## 4. Local database (SQLite)
 
-`.apm/.cache/apm.db`, using the standard library's `sqlite3` (FTS5 is required; opening the database checks for it). WAL mode.
+`.apm/.cache/apm.db`, using the standard library's `sqlite3`. WAL mode. It holds only what matters on this machine:
+
+```sql
+meta(key PK, value)                           -- schema_version
+runs(id PK, node_id, agent, session_id, status, started, ended, cost_usd, error,
+     prompt, parent_run, pid)
+run_events(run_id, seq, ts, json)             -- the stream-json events a transcript needs
+proposals(id PK, node_id, run_id, json, review, status, created, resolved)
+```
+
+Deleting `.cache/` loses run logs and pending proposals, never anything about the project itself.
+
+**No index of the plan yet.** Reads parse `graph.ndjson` into the in-memory graph each time, and search scans titles and bodies directly. At the size of a real plan (hundreds of nodes) that is instant, and there is nothing to keep in sync. The tables below are the design for when it stops being enough, and for playback (§5):
 
 ```sql
 nodes(id PK, parent, title, kind, status, depth)
@@ -189,21 +202,13 @@ edges(src, dst, PRIMARY KEY(src, dst))
 closure(ancestor, descendant, depth)          -- containment, incl. self at depth 0
 nodes_fts                                     -- FTS5 over title + body
 frames(seq PK, sha, ts, op, actor, node_ids)  -- one row per plan commit
-meta(key PK, value)                           -- last_indexed_sha, schema_version
-runs(id PK, node_id, agent, session_id, status, started, ended, cost_usd, error)
-run_events(run_id, seq, ts, json)             -- raw stream-json lines
-proposals(id PK, node_id, run_id, json, status, created)
 ```
-
-The `closure` table makes subtree queries and lifting lookups ("which child of R contains u") a single indexed query each.
-
-**Rebuild rule:** everything above `runs` can be rebuilt from git with `apm reindex`. Deleting `.cache/` loses only run logs and pending proposals, never anything about the project itself.
-
-**Keeping it current:** before each read, compare `.apm` HEAD with `last_indexed_sha`. If HEAD has moved forward, index only the new commits. If history was rewritten (the old HEAD isn't an ancestor), rebuild from scratch.
 
 ---
 
 ## 5. History and playback
+
+**Not built yet.** A node's own history (the plan commits that touched it) is shown in the UI; the timeline below is the design for M5.
 
 Build the frames in one pass:
 
@@ -224,7 +229,7 @@ git -C .apm show <sha>:graph.ndjson        # one blob per frame
 ```
                 ┌──────────────────── apm.core ──────────────────────┐
                 │ graph model · lifting · invariants · mutate()      │
-                │ git I/O · indexer · SQLite                         │
+                │ git I/O · SQLite (runs, proposals)                 │
                 └────▲──────────────────▲───────────────────▲────────┘
                      │                  │                   │
                apm CLI            apm serve             apm mcp (stdio)
@@ -237,13 +242,15 @@ git -C .apm show <sha>:graph.ndjson        # one blob per frame
 ### 6.1 Layout (one Python package, one `apm` command)
 
 ```
-src/apm/core/    graph, invariants, lifting, git, index, mutate (no web or CLI dependencies)
-src/apm/cli.py   the `apm` command (Typer): every CLI command, plus `serve` and `mcp`
-src/apm/server/  FastAPI app (HTTP + WebSocket) and the runner, served by uvicorn
+src/apm/core/    graph, invariants, lifting, git, mutate, store (no web or CLI dependencies)
+src/apm/cli.py   the `apm` command (Typer)
 src/apm/mcp/     stdio MCP server on the official `mcp` SDK
+src/apm/runner/  starting `claude` on a node: agent specs, the command line, run logs
+src/apm/server/  FastAPI app (HTTP + WebSocket), served by uvicorn; `static/` is the built UI
+src/apm/plugin/  Claude Code plugin (agents, skills, .mcp.json): ships inside the wheel
 tests/           pytest + Hypothesis, mirroring src/apm/
-ui/              TypeScript: vite + react + @xyflow/react + elkjs; its build ships inside the wheel
-plugin/          Claude Code plugin (agents, skills, .mcp.json)
+ui/              TypeScript: vite + react + @xyflow/react + elkjs; `pnpm build` writes into
+                 src/apm/server/static/, so the wheel carries the UI
 ```
 
 - **Backend:** Python 3.14, one distribution with an `apm` console script, managed with **uv** (committed `uv.lock`, `uv_build` backend, src layout). **ruff** lints and formats, **ty** type-checks, **pytest** + **Hypothesis** test. Names follow PEP 8: snake_case for modules, functions, variables and fields, PascalCase for classes; ruff's pep8-naming rules enforce it.
@@ -269,49 +276,63 @@ Any process can call `mutate()`. The server doesn't have to be running for the C
 - **All or nothing.** A change that breaks an invariant is refused before anything is written. If the commit itself fails (a hook refuses, say), the files and the git index are put back as they were.
 - **Hand edits are never swept up.** `mutate()` stages only the files it writes. If one of those has uncommitted changes, it refuses and asks you to commit them first (`apm commit`, §10).
 - **An operation that changes nothing makes no commit.**
-- **Not built yet:** updating the index arrives with the index (M2), and `graph.changed` with the server (M3).
+- **`graph.changed`** is announced by the server, which watches the plan repo's HEAD. That way it fires for every commit, whoever made it: the UI, the CLI, or an agent through the MCP.
 
 ### 6.3 Server
 
-- Binds to **127.0.0.1 only**, and every request must carry a random token stored in `.cache/server.json` (the UI gets it from the URL `apm serve` prints). The server can launch agents that run tools, so a web page from any other site must not be able to POST to it.
-- It also checks the `Origin` header.
+The server can start agents that run tools, so a web page from any other site must not be able to reach it. Three checks, all of which must pass:
+
+- It binds to **127.0.0.1 only**, and refuses a request whose `Host` isn't a loopback name. That stops DNS rebinding.
+- If the browser sends an `Origin`, it must be this server.
+- Every `/api` request carries a random token (`Authorization: Bearer …`), and so does the WebSocket (`?token=`). The UI gets it from the URL `apm serve` prints. The token is kept in `.cache/server.json` between runs, so a bookmarked URL keeps working.
 
 ```
-GET    /api/graph?root=<id>&at=<sha>        level view (lifted edges, ports, warnings)
-GET    /api/nodes/:id                       node + body + history + runs
+GET    /api/project                         name, agents, counts
+GET    /api/tree                            every node with its computed state; errors, warnings
+GET    /api/graph?root=<id>                 one level: nodes, lifted edges, ports, entanglement
+GET    /api/nodes/:id                       node + body + links + history + runs + proposals
+GET    /api/ready?root= · /api/search?q=
 POST   /api/nodes · PATCH /api/nodes/:id · POST /api/nodes/:id/move · DELETE /api/nodes/:id
 POST   /api/edges · DELETE /api/edges
-POST   /api/runs            { agent, node_id, guidance? }
-DELETE /api/runs/:id        cancel
-POST   /api/proposals/:id/accept   { edits? }
+GET    /api/runs?node_id=&status= · GET /api/runs/:id?after=<seq>
+POST   /api/runs            { agent, node_id, guidance?, critic? }
+POST   /api/runs/:id/continue   { message }
+DELETE /api/runs/:id        stop
+GET    /api/proposals?status= · GET /api/proposals/:id
+POST   /api/proposals/:id/accept   { children? }   the edited or trimmed list, if you changed it
 POST   /api/proposals/:id/reject
-GET    /api/frames
-WS     /ws   graph.changed · run.event · run.finished · proposal.created · index.progress
+WS     /ws   graph.changed · run.started · run.event · run.finished
+             · proposal.created · proposal.resolved
 ```
+
+Node ids in the API can be full ids or handles.
 
 ### 6.4 MCP (`apm mcp`, stdio)
 
-Calls core directly (no HTTP), so it works even when the server isn't running.
+Calls core directly (no HTTP), so it works even when the server isn't running. Every tool takes handles and returns short text, not JSON.
 
 | Tool | Notes |
 |---|---|
-| `apm_get_graph(root?, depth?)` | Returns a **compact outline**, not JSON: `1c0b9a44 [work/todo·ready] Stream agent output → 7d2e0f11` |
-| `apm_get_node(id)` | metadata + body |
-| `apm_search(query)` | FTS |
-| `apm_ready(root?)` | ready leaves: "what can be worked on now" |
-| `apm_create_nodes(nodes[])` | batch; one commit |
-| `apm_update_node(id, {title?, kind?, body?})` | |
-| `apm_move_node(id, parent)` | |
-| `apm_link / apm_unlink(from, to)` | |
-| `apm_set_status(id, status, note?)` | |
-| `apm_attach_delivery(id, {branch?, commits?, pr?})` | leaves only |
+| `apm_get_graph(root?, depth?)` | The **compact outline**: `1c0b9a44 [work/todo·ready] Stream agent output → 7d2e0f11` |
+| `apm_get_node(node?)` | State, links, delivery and body. Without `node`: the node the run was started on |
+| `apm_search(query)` | Titles and bodies |
+| `apm_ready(root?)` | Ready leaves: "what can be worked on now" |
+| `apm_check()` | Invariant errors and warnings |
+| `apm_create_nodes(nodes[])` | Batch; one commit. Nodes in the batch can depend on each other by `key` |
+| `apm_update_node(node, title?, kind?, body?)` | |
+| `apm_move_node(node, parent?)` | |
+| `apm_link / apm_unlink(node, depends_on)` | |
+| `apm_set_status(node, status, note?)` | |
+| `apm_attach_delivery(node, branch?, commits?, pr?)` | Leaves only |
 
 **Finding the project:** use `APM_PROJECT` if it's set; otherwise walk up from cwd looking for `.apm-link`. (Implementer worktrees don't contain `.apm/`, so spawned runs always set `APM_PROJECT`.)
 
 **Scoping (`APM_RUN_SCOPE`):**
-- `read`: all write tools are refused. Used by the decomposer and critic.
+- `read`: all write tools are refused. Used by the decomposer, critic and assistant.
 - `node:<id>`: only `set_status` / `attach_delivery` / `update_node(body)` on that node. Used by the implementer.
-- `project`: no restriction. Used by the reconciler and by interactive sessions.
+- `project` (the default): no restriction. Used by your own interactive sessions.
+
+**Attribution:** `APM_ACTOR` and `APM_RUN` become the `APM-Actor` and `APM-Run` trailers of every commit the session makes. `APM_NODE` names the node a run is about.
 
 ---
 
@@ -319,49 +340,60 @@ Calls core directly (no HTTP), so it works even when the server isn't running.
 
 ### 7.1 Runner
 
-The runner lives in `apm serve`, and the CLI calls it through `apm run`. Each run:
+The runner is a library (`apm.runner`). `apm serve` hosts one for the UI, and `apm run` hosts its own, so the CLI works without the server. Each run:
 
 1. Inserts a `runs` row and generates a session UUID.
-2. Writes a per-run MCP config (injecting `APM_PROJECT` and `APM_RUN_SCOPE`).
-3. Spawns:
+2. Writes a per-run MCP config (`.cache/runs/<id>.mcp.json`) with `APM_PROJECT`, `APM_RUN_SCOPE`, `APM_ACTOR`, `APM_RUN` and `APM_NODE`.
+3. Spawns, from the code repo, with stdin closed:
 
 ```bash
 claude -p "$PROMPT" \
-  --agent apm-decomposer \
+  --agent apm:apm-decomposer \
   --plugin-dir "$APM_PLUGIN" \
   --mcp-config "$RUN_MCP_JSON" --strict-mcp-config \
   --setting-sources project \
   --permission-prompts none \
-  --allowedTools "mcp__apm__apm_get_graph,mcp__apm__apm_get_node,Read,Grep,Glob" \
-  --json-schema "$DECOMPOSITION_SCHEMA" \
-  --max-budget-usd 2.00 \
-  --model opus \
+  --allowedTools "Read,Grep,Glob,mcp__apm__apm_get_graph,mcp__apm__apm_get_node,…" \
+  --max-budget-usd 2 \
+  --output-format stream-json --verbose \
   --session-id "$SESSION_UUID" \
-  --output-format stream-json --verbose --include-partial-messages
+  --model opus \
+  --json-schema "$DECOMPOSITION_SCHEMA"
 ```
 
-4. Streams each stdout line → `run_events` → WS `run.event`.
-5. When the run exits, parses the final `result` event and saves structured output as a **proposal**.
+4. Reads stdout line by line. The events a transcript needs (`system` init, `assistant`, `user`, `result`) go to `run_events` and out as `run.event`; the rest is dropped.
+5. When the run exits, reads the final `result` event: cost, session id, and the structured answer.
 
-Limits: `max_concurrent` runs in total and one active run per node. Cancel = SIGTERM, then SIGKILL after 5s.
+Limits: `max_concurrent` pipelines in total and one per node; a request beyond that is refused (HTTP 409), not queued. Stop = SIGTERM to the process group, then SIGKILL after 5s. A run still marked running whose host process has died is marked failed the next time a runner starts.
 
 **Why each flag is there:**
-- The MCP is passed with `--mcp-config` rather than through the plugin's `.mcp.json`, so each run can inject its own env vars. `--strict-mcp-config` keeps your personal MCP servers out of runs.
-- `--permission-prompts none` means a headless run is denied instead of hanging forever on a prompt.
+- The MCP is passed with `--mcp-config` rather than through the plugin's `.mcp.json`, so each run can inject its own env vars. `--strict-mcp-config` keeps your personal MCP servers out of runs, and also drops the plugin's own MCP entry (checked: with it, only the per-run server is connected).
+- `--permission-prompts none` means a headless run is denied instead of hanging forever on a prompt. So an agent can use exactly the tools in `--allowedTools` and nothing else.
+- `--agent` needs the plugin's namespace: `apm:apm-decomposer` (checked).
+- `--json-schema` output arrives in the `result` event as `structured_output` (checked).
+- No `--include-partial-messages`: whole messages arrive block by block, which is live enough for a transcript and far fewer events to store.
 
-**To check at M3:**
-- whether agents from a `--plugin-dir` need a namespaced `--agent` name
-- whether `--json-schema` output arrives in the `stream-json` `result` event
-- whether `--strict-mcp-config` also removes the plugin's own MCP entry (it should, and that's what we want)
+**What each agent may use** (`apm.runner.agents`), on top of which `apm.yaml` can add `allowed_tools`, a `model` and a `budget_usd` per agent:
+
+| Agent | Scope | Built-in tools | Extra |
+|---|---|---|---|
+| `apm-decomposer` | `read` | Read, Grep, Glob | returns a decomposition (JSON schema) |
+| `apm-critic` | `read` | Read, Grep, Glob | returns a review (JSON schema); only started by the pipeline |
+| `apm-implementer` | `node:<id>` | Read, Grep, Glob, Edit, Write, `Bash(git *)`, `Bash(gh pr *)` | `--permission-mode acceptEdits`, `--worktree` |
+| `apm-assistant` | `read` | Read, Grep, Glob | free-form answer |
+
+The implementer can run your tests only if you allow the command, e.g. `allowed_tools: ["Bash(uv run *)"]` under `runner.agents.apm-implementer` in `apm.yaml`.
 
 ### 7.2 Proposals (planning never auto-commits)
 
 ```
-decomposer ──json──▶ critic ──issues?──▶ decomposer (1 revision max) ──▶ proposal
+decomposer ──json──▶ critic ──revise?──▶ decomposer (1 revision max) ──▶ proposal
                                                                           │
                                    UI shows ghost children ◀──────────────┘
                                    you edit / trim / accept ──▶ mutate(decompose) → 1 commit
 ```
+
+Each step is its own run, linked by `parent_run`. The critic returns `{ verdict: accept | revise, summary, issues[] }`. On `revise`, the decomposer's own session is resumed once with the review. A critic that fails doesn't sink the proposal: it is stored unreviewed. The critic can be skipped per run.
 
 Decomposition schema: new nodes don't have IDs yet, so they use temporary keys.
 
@@ -371,107 +403,122 @@ Decomposition schema: new nodes don't have IDs yet, so they use temporary keys.
   "children": [
     { "key": "a", "title": "string", "kind": "work|decision",
       "intent": "string", "acceptance": ["string"],
-      "depends_on_keys": ["b"], "depends_on_ids": ["<existing uuid>"] }
+      "depends_on_keys": ["b"], "depends_on_ids": ["<handle or id of an existing node>"] }
   ],
   "warnings": ["string"]
 }
 ```
 
-When a proposal is accepted, the server assigns UUIDv7s, resolves the keys, runs the invariant checks, and commits.
+When a proposal is accepted, the children get UUIDv7s, the keys are resolved, the invariants are checked, and one `decompose` commit is made, with the agent as `APM-Actor` and the run as `APM-Run`. You can accept an edited or trimmed list. A proposal is claimed before it is applied, so it can't be accepted twice; if applying fails, it goes back to pending.
 
 v1: decomposing a node that already has children is **additive only**. It can add children and edges, and it cannot modify or remove existing ones.
 
 ### 7.3 Sessions
 
-`runs.session_id` records every Claude session for each node. "Continue" on a node resumes its most recent session with `--resume <id>`. `--fork-session` is reserved for v2 variants.
+`runs.session_id` records every Claude session for each node. Sending a follow-up message to a finished run resumes its session with `--resume <id>`, as a new run, from the directory the session started in (an implementer's is its worktree). `--fork-session` is reserved for v2 variants.
 
 ### 7.4 Implementer
 
-- **Only offered for ready leaves** (every dependency done).
-- Spawned with `-w apm/<handle>-<slug>` so it works in its own worktree and your checkout is never touched.
+- **Only offered for a leaf that can start:** ready (every dependency done), or already in progress.
+- Spawned with `--worktree apm-<handle>-<slug>`, so it works in its own worktree under `.claude/worktrees/` and your checkout is never touched. `apm init` ignores that folder.
 - Scope `node:<id>`.
-- Commits carry `APM-Node:`. It opens a PR if `gh` is available.
-- Before exiting it calls `apm_attach_delivery` and `apm_set_status(in_progress)`. The node becomes `done` when you mark it, or when the reconciler finds the PR merged.
+- It works on branch `apm/<handle>-<slug>`. Commits carry `APM-Node:`. It opens a PR if `gh` is available.
+- It calls `apm_set_status(in_progress)` when it starts and `apm_attach_delivery` when the work is pushed, and ticks the acceptance criteria it verified in the node's body.
+
+### 7.5 Reconciling
+
+`apm reconcile` marks an in-progress node `done` when its work has merged. It also runs once when `apm serve` starts. It is plain code:
+
+- A node with a pull request is merged when `gh pr view` says the PR is. That covers squash merges.
+- Otherwise it is merged when every delivery commit is on the code repo's default branch.
+- If neither can be determined (no `gh`, offline, a commit this clone doesn't have), the node is left alone.
 
 ---
 
 ## 8. Agents and skills (plugin)
 
 ```
-plugin/
+src/apm/plugin/
   .claude-plugin/plugin.json
   agents/
     apm-decomposer.md     node → proposal (read-only scope, json-schema)
-    apm-critic.md         proposal → issues: gaps, overlap, untestable criteria,
-                          near-duplicates elsewhere in the graph, entanglement
+    apm-critic.md         proposal → review: gaps, overlap, untestable criteria,
+                          near-duplicates elsewhere in the graph, bad dependencies
     apm-implementer.md    ready leaf → worktree → commits → PR → attach delivery
-    apm-reconciler.md     code-repo log (APM-Node trailers, PR state) → status updates
+    apm-assistant.md      a question about a node → an answer; changes nothing
   skills/
-    apm-node-format/      node fields, body sections, handles, invariants
+    apm-node-format/      node fields, body sections, handles, the rules, what follows from them
     apm-decompose/        what a good breakdown looks like: 3–7 children, no overlap,
                           explicit deps, testable acceptance, prefer sibling edges
-    apm-deliver/          branch naming, trailer format, PR body template linking the node
-  .mcp.json               { "apm": { "command": "apm", "args": ["mcp"] } }  (interactive use)
+    apm-deliver/          branch naming, trailer format, PR body, recording the delivery
+  .mcp.json               { "mcpServers": { "apm": { "command": "apm", "args": ["mcp"] } } }
 ```
 
-In interactive use, `claude --plugin-dir <apm>/plugin` gives your own terminal session the same tools and skills.
+In your own terminal, `claude --plugin-dir "$(apm plugin-path)"` gives the session the same tools, skills and subagents, with `project` scope.
 
 ---
 
 ## 9. UI
 
-- **Level view:** shows the children of the current node (the top level to start), laid out as a layered DAG with elkjs and drawn with React Flow. Double-click a node to go into it; a breadcrumb takes you back up.
-- **Node card:** handle, title, status (including computed blocked/ready), a child-progress bar, and a small "has children" marker.
-- **Edges:** lifted edges show a count badge. Boundary ports appear at the canvas edges. Any entanglement warning shows in a banner.
+- **Outline:** the whole plan as a collapsible tree down the left, with each node's state and progress.
+- **Level view:** shows the children of the current node (the top level to start), laid out left to right with elkjs (what a node needs is on its left) and drawn with React Flow. Double-click a node to go into it; a breadcrumb takes you back up. Drag from one node to another to add a dependency.
+- **Node card:** state (including computed ready/blocked), handle, title, a child-progress bar, and markers for a running agent and a waiting proposal.
+- **Edges:** lifted edges show a count badge. Edges that leave the level show as dashed stubs naming the outside node; clicking one goes there. Entangled nodes are highlighted under a banner.
 - **Node panel:**
-  - markdown body editor
-  - dependencies
+  - title, status and kind, edited in place
+  - description (markdown), with an editor
+  - what it waits on, what it depends on (add and remove), what needs it
   - delivery (branch, commits, PR)
-  - history
-  - runs, with a live streaming transcript
-  - actions: *Add child · Decompose (with optional guidance) · Implement (ready leaves) · Set status*
-- **Proposals:** shown as ghost nodes and edges. You can edit or remove any of them before choosing Accept or Reject.
-- **Playback:** a timeline scrubber at the bottom. Scrubbing puts the view in read-only mode; delivery markers from the code repo sit along the timeline.
+  - runs, each with a live transcript, a Stop button, and a box to send a follow-up message
+  - history: the plan commits that touched the node
+  - actions: *Open · Add child · Decompose · Implement · Ask · Move · Delete*
+- **Proposals:** shown as dashed ghost nodes and edges on the level they would land in. The review dialog shows the rationale, the critic's review and the agent's warnings; you can edit any child, leave children out, and accept or reject.
+- **Top bar:** search (titles and bodies), what's ready, proposals waiting, agents running, and problems in the plan. Each takes you to the node.
+- **Live:** every view refreshes when the plan changes, whoever changed it.
+- **Playback** (not built, M5): a timeline scrubber at the bottom. Scrubbing puts the view in read-only mode; delivery markers from the code repo sit along the timeline.
 
 ---
 
 ## 10. CLI (v1)
 
 ```
-apm init                         create .apm/, .apm-link, gitignore entry, first commit
+apm init [--name]                create .apm/, .apm-link, gitignore entries, first commit
+apm serve [--port] [--no-open]   the web UI on this machine only; prints a tokenized URL
+apm node add <title> [-p h] [--kind decision] [--dep h] [--intent "..."]
+apm node ls [--root h] [--depth n]     outline view
+apm node show <h> · set <h> [--title] [--kind] · status <h> <s> [--note]
+apm node mv <h> <parent|--top> · rm <h> [-r] · edit <h>
+apm link-dep <from> <to> · apm unlink-dep <from> <to>
+apm ready [--root h] · apm search <query>
+apm run <decomposer|implementer|assistant> <h> [-g "..."] [--no-critic]
+apm proposal ls [--all] · show <id> · accept <id> [--only key] · reject <id>
+apm reconcile                    mark nodes done whose PR or commits have merged
+apm check                        validate invariants, report warnings (exit code 1 on errors)
+apm commit                       validate and commit edits made by hand in .apm/
 apm link --remote <url>          set the plan repo remote and record it in .apm-link
 apm clone                        clone the plan repo named in .apm-link (for a fresh checkout)
-apm serve [--port]               server + UI; prints a tokenized URL
-apm mcp                          stdio MCP server
-apm node add <title> [--parent h] [--kind decision]
-apm node ls [--root h] [--depth n]     outline view
-apm node show <h> · mv <h> <parent|--top> · rm <h> · status <h> <s> · edit <h>
-apm link-dep <from> <to> · apm unlink-dep <from> <to>
-apm ready [--root h]
-apm run <agent> <h> [--guidance "..."]
-apm proposal ls · show <id> · accept <id> · reject <id>
-apm check                        validate invariants, report warnings
-apm reindex
 apm push · apm pull              git push/pull for .apm
+apm mcp                          stdio MCP server (Claude Code starts it)
+apm plugin-path                  where the Claude Code plugin is
 ```
 
-`apm node edit <h>` opens the body in `$EDITOR` and commits it as `edit-body` when you close the editor. If you edit files directly in `.apm/`, run `apm check` and then `apm commit`: it validates the changes and commits the dirty files as `edit-body` (or `update` if `graph.ndjson` changed).
+`apm node ls`, `node show`, `ready` and `search` take `--json`. Every command accepts a handle: any unambiguous suffix of an id, at least 4 hex characters.
+
+`apm node edit <h>` opens the body in `$EDITOR` and commits it as `edit-body` when you close the editor. If you edit files directly in `.apm/`, run `apm commit`: it validates the changes and commits the dirty files as `edit-body` (or `update` if `graph.ndjson` changed).
 
 ---
 
 ## 11. Build plan
 
-| M | Deliverable | Exit criteria |
-|---|---|---|
-| **M1** | `core`: model, ndjson/md I/O, invariants, lifting, `mutate()` + lock, git commits with trailers | Property tests (Hypothesis) confirm I1–I4 hold across random op sequences; lifting and entanglement tests pass |
-| **M2** | `apm` CLI + `apm mcp` + plugin skeleton + skills | **Dogfood: plan APM itself** with the CLI and an interactive `claude` session |
-| **M3** | `apm serve`: runner, decomposer + critic, proposals, SQLite runs | `apm run apm-decomposer <h>` → proposal → `apm proposal accept` → one commit; the three M3 CLI checks in §7.1 are answered |
-| **M4** | UI: level view, drill-down, node panel, live run stream, proposal review | Planning a feature entirely in the UI, start to finish |
-| **M5** | Indexer frames + playback scrubber + delivery overlay | Replaying the APM plan from its first commit |
-| **M6** | `apm-implementer` (worktrees, trailers, `gh` PR) | A ready leaf becomes a PR that links back to its node |
-| **M7** | `apm-reconciler` | A merged PR moves its node to `done` with no manual step |
-
-Milestones are the roadmap. **M1 is implemented** in `src/apm/core/`. The breakdown of M2 onward into PR-sized pieces is still to be planned.
+| M | Deliverable | Exit criteria | State |
+|---|---|---|---|
+| **M1** | `core`: model, ndjson/md I/O, invariants, lifting, `mutate()` + lock, git commits with trailers | Property tests (Hypothesis) confirm I1–I4 hold across random op sequences; lifting and entanglement tests pass | **Built** |
+| **M2** | `apm` CLI + `apm mcp` + plugin + skills | **Dogfood: plan APM itself** with the CLI and an interactive `claude` session | **Built**, except the SQLite index (§4). Dogfooding is yours to start |
+| **M3** | `apm serve`: runner, decomposer + critic, proposals, SQLite runs | `apm run decomposer <h>` → proposal → `apm proposal accept` → one commit; the three CLI checks in §7.1 are answered | **Built**; verified with a real run |
+| **M4** | UI: level view, drill-down, node panel, live run stream, proposal review | Planning a feature entirely in the UI, start to finish | **Built**; verified in a browser with a real run |
+| **M5** | Indexer frames + playback scrubber + delivery overlay | Replaying the APM plan from its first commit | Not built |
+| **M6** | `apm-implementer` (worktrees, trailers, `gh` PR) | A ready leaf becomes a PR that links back to its node | **Built**; verified with a real run up to the commit. Opening a PR is untested (the test repo had no remote) |
+| **M7** | Reconciling | A merged PR moves its node to `done` with no manual step | **Built** as `apm reconcile` (§7.5); the PR path is tested against a stand-in for `gh` |
 
 ---
 
@@ -494,4 +541,5 @@ Milestones are the roadmap. **M1 is implemented** in `src/apm/core/`. The breakd
 3. **Auto-committing hand edits.** v1 requires an explicit `apm commit`. Is a server-side file watcher with a debounce worth it?
 4. **Package name.** `apm` is taken on both PyPI and npm (Atom's old package manager). Choose a new distribution name before publishing; the command can stay `apm`.
 5. **Deleting a node with children.** Refuse it, or require `--recursive`? Proposed: refuse unless recursive; a recursive delete is one commit. The core implements the proposal for now.
-6. **Reconciler split.** How much of reconciling is deterministic code (a trailer scan plus `gh pr view`) and how much is left to the agent? Recommendation: do the deterministic work in an `apm reconcile` command, and keep the agent for ambiguous cases.
+6. **Reconciler split.** Decided: reconciling is plain code (`apm reconcile`, §7.5), with no agent. Still open: whether ambiguous cases (a PR closed without merging, a branch deleted) deserve an agent, or a flag for you to resolve.
+7. **Cleaning up worktrees.** An implementer's worktree stays under `.claude/worktrees/` after its run. Should `apm reconcile` remove it once the node is done?
