@@ -202,6 +202,14 @@ def unlink_dep(src: str, dst: str) -> None:
     report(result, "unlinked")
 
 
+@app.command()
+def mcp() -> None:
+    """Run the MCP server on stdio. Claude Code starts this; you rarely run it yourself."""
+    from apm.mcp.server import main as serve_mcp
+
+    serve_mcp()
+
+
 @app.command("plugin-path")
 def plugin_path() -> None:
     """Print where the Claude Code plugin is: `claude --plugin-dir "$(apm plugin-path)"`."""
