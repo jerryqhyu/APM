@@ -45,6 +45,7 @@ from apm.core.proposals import (
     parse_decomposition,
     reject_proposal,
 )
+from apm.core.reconcile import describe, reconcile
 from apm.core.search import search
 from apm.core.status import compute_states, ready_leaves
 from apm.core.store import Proposal, Store
@@ -176,6 +177,17 @@ def ready(
         return
     for node_id in ids:
         typer.echo(format_node_line(graph, node_id, states, names))
+
+
+@app.command("reconcile")
+@command
+def reconcile_() -> None:
+    """Mark in-progress nodes done when their pull request or commits have merged."""
+    lines = describe(reconcile(find_project()))
+    for line in lines:
+        typer.echo(line)
+    if not lines:
+        typer.echo("nothing to reconcile")
 
 
 @app.command("search")
@@ -447,6 +459,8 @@ def serve(
     write_server_file(project.apm_dir, token=token, port=port)
     origins = frozenset({"http://localhost:5173", "http://127.0.0.1:5173"}) if dev else frozenset()
     url = f"http://127.0.0.1:{port}/?token={token}"
+    for line in describe(reconcile(project)):
+        typer.echo(line)
     typer.echo(f"APM is running at {url}")
     typer.echo("Only this machine can reach it. Press Ctrl+C to stop.")
     if open_browser:

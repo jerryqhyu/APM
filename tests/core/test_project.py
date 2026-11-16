@@ -50,15 +50,15 @@ def test_init_records_the_code_repos_origin_and_makes_a_safe_repo_key(tmp_path: 
 def test_init_links_the_plan_repo_and_ignores_it(project: Project) -> None:
     code = project.code_dir
     assert json.loads((code / ".apm-link").read_text()) == {"path": ".apm", "remote": None}
-    assert (code / ".gitignore").read_text() == ".apm/\n"
+    assert (code / ".gitignore").read_text() == ".apm/\n.claude/worktrees/\n"
 
 
 @pytest.mark.parametrize(
     ("before", "after"),
     [
-        ("node_modules/\n", "node_modules/\n.apm/\n"),
-        ("dist", "dist\n.apm/\n"),
-        ("a\n.apm/\nb\n", "a\n.apm/\nb\n"),
+        ("node_modules/\n", "node_modules/\n.apm/\n.claude/worktrees/\n"),
+        ("dist", "dist\n.apm/\n.claude/worktrees/\n"),
+        ("a\n.apm/\nb\n", "a\n.apm/\nb\n.claude/worktrees/\n"),
     ],
 )
 def test_init_adds_to_an_existing_gitignore_once(tmp_path: Path, before: str, after: str) -> None:
