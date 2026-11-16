@@ -1,6 +1,6 @@
 # APM
 
-A local-first project manager built for working with AI agents. See [plans.md](plans.md) for the design and the phased implementation plan (§12).
+A local-first project manager built for working with AI agents. See [plans.md](plans.md) for the design.
 
 ## Development
 

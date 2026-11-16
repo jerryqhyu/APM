@@ -1,10 +1,10 @@
 # APM — Design Plan
 
-**Status:** v4 draft, scoped for v1 · phased implementation plan in §12 · **Last updated:** 2026-09-22
+**Status:** v6 draft, scoped for v1 · design only: the phase breakdown was abandoned and will be redone from this plan · **Last updated:** 2026-11-16
 
 APM is a local-first project manager built for working with AI agents. A project is a **nested graph of nodes**: you start with a big idea, then break it down with Claude agents, level by level, until each piece is small enough to ship as a commit or PR. The plan lives in its own git repo, so every change to it can be traced and **played back** from the project's first node onward.
 
-v1 = TypeScript, one user on one machine, one code repo, Claude CLI integration, a local web UI.
+v1 = a Python backend with a TypeScript web UI, one user on one machine, one code repo, Claude CLI integration.
 
 ---
 
@@ -12,12 +12,12 @@ v1 = TypeScript, one user on one machine, one code repo, Claude CLI integration,
 
 | Topic | Decision | Why |
 |---|---|---|
-| Language | TypeScript end-to-end, Node 24 LTS | One toolchain for core, server, MCP, UI; best Claude/MCP SDK support; `npx` install |
+| Language | **Python 3.14** for the backend (core, CLI, server, MCP), managed with **uv**; TypeScript only for the web UI | The standard library covers UUIDv7, SQLite with FTS5 and subprocess git; first-class MCP and Claude Agent SDKs; fast, strict tooling (uv, ruff, ty). The UI stays TypeScript because it runs in the browser. Installed with `uvx` / `uv tool install`. Replaces TypeScript-everywhere, before any core code merged |
 | Graph model | Compound graph: containment **tree** + dependency **DAG**; cross-level edges stored once and *lifted* for display | Unlimited depth, zoom into any node, no hand-copying edges between levels |
 | Plan storage | Separate git repo at `.apm/`, ignored by the code repo and linked to it by a committed `.apm-link` | No CI runs on plan commits; works with a protected `main`; history holds only plan changes |
 | Source of truth | `graph.ndjson` (structure + metadata) + `nodes/<id>.md` (prose only) | Each field lives in exactly one place, so the two can't drift |
 | IDs | UUIDv7; the short handle is the **last** 8 hex chars | Sorts by creation time; new nodes append at the end of the file, so diffs stay small |
-| Local DB | SQLite (`node:sqlite`) in `.apm/.cache/`, not committed | Queries, replay frames, run logs. Can be deleted at any time |
+| Local DB | SQLite (the standard library's `sqlite3`) in `.apm/.cache/`, not committed | Queries, replay frames, run logs. Can be deleted at any time |
 | History | Git commits with structured trailers, indexed into SQLite | Git records the state and trailers record the intent, with no custom event log to maintain |
 | Writes | `core.mutate()` under a file lock, callable from any process | No daemon required; writes happen one at a time, so updates aren't lost |
 | Agents | Server spawns `claude` CLI; agents call back through the APM MCP | The server controls runs; the MCP is how agents read and write data |
@@ -98,7 +98,7 @@ Computed (never stored, so it can't go stale):
 One node per line, sorted by `id`. Keys are always written in the same order; null and empty fields are left out.
 
 ```json
-{"id":"0192f3a1-7c4e-7b91-a2d5-3f8e1c0b9a44","parent":"0192f2c8-1a0d-7e33-8c41-5b2a9d0e7f10","title":"Stream agent output to the UI","kind":"work","status":"in_progress","depends_on":["0192e9d0-…"],"delivery":{"repo":"app","branch":"apm/1c0b9a44-stream-output","commits":["a1b2c3d"],"pr":null}}
+{"id":"0192f3a1-7c4e-7b91-a2d5-3f8e1c0b9a44","parent":"0192f2c8-1a0d-7e33-8c41-5b2a9d0e7f10","title":"Stream agent output to the UI","kind":"work","status":"in_progress","depends_on":["0192e9d0-…"],"delivery":{"repo":"app","branch":"apm/1c0b9a44-stream-output","commits":["a1b2c3d"],"pr":"https://github.com/jerry/app/pull/12"}}
 ```
 
 Fields: `id, parent, title, kind, status, depends_on, delivery, external, variant_of`.
@@ -108,6 +108,15 @@ Fields: `id, parent, title, kind, status, depends_on, delivery, external, varian
 - No `session`: Claude session IDs only mean something on one machine, so they're kept in SQLite.
 - `external` is reserved for issue sync: `{ provider, id, synced_at, synced_hash }`.
 - `variant_of` is reserved for competing breakdowns (v2).
+- `delivery.pr` is the pull request URL.
+
+Format rules (the serializer's output is byte-stable, so the same graph always produces the same file):
+
+- Key order is the field order above; nested objects follow the same rules.
+- `kind` and `status` are always written. `depends_on` is sorted and de-duplicated.
+- Hand-written lines may be in any order, use `null` for absent fields, start with a byte-order mark, and leave out `kind`/`status` (defaults: `work`/`todo`). The next write puts them in canonical form.
+- Unknown keys are errors, so a typo can't be silently dropped. IDs must be lowercase UUIDv7s; titles must be one non-blank line.
+- The writer checks every node against the same rules as the reader and refuses to write one it couldn't read back, so a bad value can never make the file unloadable.
 
 ### 3.3 `nodes/<uuid>.md`: prose only
 
@@ -136,7 +145,7 @@ runner:
   agents:
     apm-decomposer: { model: opus }
     apm-critic:     { model: sonnet }
-    apm-implementer:{ model: opus, budget_usd: 5.00, allowed_tools: ["Bash(git *)", "Bash(npm test*)"] }
+    apm-implementer: { model: opus, budget_usd: 5.00, allowed_tools: ["Bash(git *)", "Bash(npm test*)"] }
 ```
 
 ### 3.5 Commit format (plan repo)
@@ -154,7 +163,7 @@ APM-Run: <run-id>                      # optional
 
 Ops: `create, update, move, delete, link, unlink, status, deliver, decompose, edit-body`.
 
-Commits are made through the `git` CLI (`execFile`), so your identity, signing, and hooks apply.
+Commits are made through the `git` CLI (`subprocess` with an argument list, never a shell), so your identity, signing, and hooks apply.
 
 ### 3.6 Code-repo trailer
 
@@ -163,14 +172,15 @@ Every delivery commit in the code repo carries `APM-Node: <full-uuid>`. This is 
 ### 3.7 IDs and handles
 
 - Stored IDs are full UUIDv7 values.
-- The **handle** is the last 8 hex chars (`1c0b9a44`). All CLI and MCP inputs accept an unambiguous handle suffix.
+- The **handle** is the last 8 hex chars (`1c0b9a44`). All CLI and MCP inputs accept an unambiguous handle suffix of at least 4 hex chars, or a full ID (with or without hyphens, any case).
+- Those 8 chars are 32 random bits, so two nodes can share them (about a 1% chance somewhere in a 10,000-node project). Where that happens, both are displayed with as many extra chars as it takes to tell them apart.
 - ⚠ Do **not** use the leading characters. In UUIDv7 those are the timestamp, so nodes created within about a minute of each other share their first 8 characters.
 
 ---
 
 ## 4. Local index (SQLite)
 
-`.apm/.cache/apm.db`, using `node:sqlite` (fallback: `better-sqlite3`). WAL mode.
+`.apm/.cache/apm.db`, using the standard library's `sqlite3` (FTS5 is required; opening the database checks for it). WAL mode.
 
 ```sql
 nodes(id PK, parent, title, kind, status, depth)
@@ -211,7 +221,7 @@ git -C .apm show <sha>:graph.ndjson        # one blob per frame
 ## 6. Components
 
 ```
-                ┌──────────────────── @apm/core ─────────────────────┐
+                ┌──────────────────── apm.core ──────────────────────┐
                 │ graph model · lifting · invariants · mutate()      │
                 │ git I/O · indexer · SQLite                         │
                 └────▲──────────────────▲───────────────────▲────────┘
@@ -223,14 +233,25 @@ git -C .apm show <sha>:graph.ndjson        # one blob per frame
                                  web UI
 ```
 
-### 6.1 Packages (pnpm workspace, one published binary)
+### 6.1 Layout (one Python package, one `apm` command)
 
 ```
-packages/core   graph, invariants, lifting, git, index, mutate
-packages/app    the `apm` binary: CLI commands + `serve` + `mcp`
-packages/ui     vite + react + @xyflow/react + elkjs
-plugin/         Claude Code plugin (agents, skills, .mcp.json)
+src/apm/core/    graph, invariants, lifting, git, index, mutate (no web or CLI dependencies)
+src/apm/cli.py   the `apm` command (Typer): every CLI command, plus `serve` and `mcp`
+src/apm/server/  FastAPI app (HTTP + WebSocket) and the runner, served by uvicorn
+src/apm/mcp/     stdio MCP server on the official `mcp` SDK
+tests/           pytest + Hypothesis, mirroring src/apm/
+ui/              TypeScript: vite + react + @xyflow/react + elkjs; its build ships inside the wheel
+plugin/          Claude Code plugin (agents, skills, .mcp.json)
 ```
+
+- **Backend:** Python 3.14, one distribution with an `apm` console script, managed with **uv** (committed `uv.lock`, `uv_build` backend, src layout). **ruff** lints and formats, **ty** type-checks, **pytest** + **Hypothesis** test. Names follow PEP 8: snake_case for modules, functions, variables and fields, PascalCase for classes; ruff's pep8-naming rules enforce it.
+- **Libraries:** pydantic (validating `graph.ndjson` lines, `apm.yaml`, and API and MCP inputs), PyYAML, Typer, FastAPI + uvicorn, and the `mcp` SDK. The standard library covers UUIDv7 (`uuid.uuid7()`), SQLite with FTS5 (`sqlite3`) and git (`subprocess`).
+- **Core is synchronous** and uses `pathlib` throughout. The server calls it from a worker thread and runs agent subprocesses with `asyncio`.
+- **Python style:** type hints on everything `ty` checks, `pathlib` for paths, frozen dataclasses for value types, and pydantic only at input boundaries (files, API, MCP).
+- **Tests mirror the code:** tests under `tests/` mirror `src/apm/` (`tests/core/test_ids.py` tests `apm/core/ids.py`); shared Hypothesis strategies live in `tests/strategies.py`. End-to-end tests run the `apm` command against throwaway git repos in a temp dir.
+- **No dead surface:** a command, endpoint or tool is registered only once it works. Nothing ships as a "not implemented" stub.
+- **UI:** TypeScript in its own pnpm workspace under `ui/` (Biome, Vitest), because it runs in the browser. It talks to the backend only over HTTP and WebSocket (§6.3), so the two sides share no code.
 
 ### 6.2 Write concurrency
 
@@ -436,7 +457,7 @@ apm push · apm pull              git push/pull for .apm
 
 | M | Deliverable | Exit criteria |
 |---|---|---|
-| **M1** | `core`: model, ndjson/md I/O, invariants, lifting, `mutate()` + lock, git commits with trailers | Property tests (fast-check) confirm I1–I4 hold across random op sequences; lifting and entanglement tests pass |
+| **M1** | `core`: model, ndjson/md I/O, invariants, lifting, `mutate()` + lock, git commits with trailers | Property tests (Hypothesis) confirm I1–I4 hold across random op sequences; lifting and entanglement tests pass |
 | **M2** | `apm` CLI + `apm mcp` + plugin skeleton + skills | **Dogfood: plan APM itself** with the CLI and an interactive `claude` session |
 | **M3** | `apm serve`: runner, decomposer + critic, proposals, SQLite runs | `apm run apm-decomposer <h>` → proposal → `apm proposal accept` → one commit; the three M3 CLI checks in §7.1 are answered |
 | **M4** | UI: level view, drill-down, node panel, live run stream, proposal review | Planning a feature entirely in the UI, start to finish |
@@ -444,205 +465,11 @@ apm push · apm pull              git push/pull for .apm
 | **M6** | `apm-implementer` (worktrees, trailers, `gh` PR) | A ready leaf becomes a PR that links back to its node |
 | **M7** | `apm-reconciler` | A merged PR moves its node to `done` with no manual step |
 
-Each milestone is split into PR-sized phases in §12.
+Milestones are the roadmap. The breakdown into PR-sized pieces is still to be planned.
 
 ---
 
-## 12. Implementation phases
-
-Each phase is **one branch → one PR into `main`**. Phases are small enough to review in one sitting, and each leaves `main` green and usable. A milestone is complete when its last phase merges and the milestone's exit criteria (§11) are met.
-
-### 12.1 Conventions (every phase)
-
-- **Branch:** `phase/NN-<slug>` (e.g. `phase/02-model-io`). Squash-merge into `main`.
-- **PR title:** `P<NN>: <phase title>`. **PR body:** goal, scope delivered, the phase's exit criteria as a ticked checklist, anything deferred, and follow-ups.
-- **CI must pass:** typecheck, lint, and tests (from P01 onward).
-- **Keep the plan true:** each PR updates its row in the tracker (§12.2), and edits the design sections if the implementation diverged from them. The plan doc is never allowed to drift from the code.
-- **No dead surface:** a command, endpoint or tool is registered only once it works. Nothing ships as a "not implemented" stub.
-- **Tests live with the code:** unit and property tests in the package; end-to-end tests run the built `apm` binary against throwaway git repos in a temp dir.
-- From **P09** onward, phase status is also tracked in APM itself (dogfooding). This file stays the design reference.
-
-### 12.2 Tracker
-
-| Phase | Title | M | Depends on | Status | PR |
-|---|---|---|---|---|---|
-| P00 | Phased implementation plan (this doc) | — | — | done | [#1](https://github.com/jerryqhyu/APM/pull/1) |
-| P01 | Workspace scaffold + CI | M1 | P00 | in review | [#2](https://github.com/jerryqhyu/APM/pull/2) |
-| P02 | Node model, IDs and file I/O | M1 | P01 | todo | |
-| P03 | Invariants and computed status | M1 | P02 | todo | |
-| P04 | Lifting and level views | M1 | P03 | todo | |
-| P05 | `mutate()`, write lock, git commits, `init` | M1 | P03 | todo | |
-| P06 | SQLite index + FTS | M2 | P05 | todo | |
-| P07 | `apm` CLI | M2 | P04, P06 | todo | |
-| P08 | `apm mcp` + plugin skeleton + skills | M2 | P07 | todo | |
-| P09 | Dogfood: plan APM in APM | M2 | P08 | todo | |
-| P10 | `apm serve`: HTTP/WS core and security | M3 | P07 | todo | |
-| P11 | Runner: spawning `claude`, run logs, cancel | M3 | P10 | todo | |
-| P12 | Decomposer, critic and proposals | M3 | P11 | todo | |
-| P13 | UI shell + level view | M4 | P10 | todo | |
-| P14 | UI node panel + editing | M4 | P13 | todo | |
-| P15 | UI runs + proposal review | M4 | P12, P14 | todo | |
-| P16 | Frames index + history API | M5 | P10 | todo | |
-| P17 | Playback scrubber + delivery overlay | M5 | P15, P16 | todo | |
-| P18 | `apm-implementer` | M6 | P15 | todo | |
-| P19 | `apm-reconciler` | M7 | P18 | todo | |
-| P20 | v1 release: package name, docs, publish | — | P19 | todo | |
-
-**Parallel tracks:** after P03, P04 and P05 can proceed in parallel. After P10, three tracks can run side by side: the runner (P11 → P12), the UI (P13 → P14) and history (P16). They join again at P15 and P17.
-
-### 12.3 Phases
-
-#### M1: core
-
-**P00 — Phased implementation plan**
-- Commit this document to the repo and add the phase breakdown.
-- *Exit:* merged; the tracker exists.
-
-**P01 — Workspace scaffold + CI**
-- pnpm 12 workspace with `packages/core` and `packages/app`. `plugin/` is added in P08 and `packages/ui` in P13, so that neither lands as an empty placeholder. Node 24 is pinned via `engines` and `.nvmrc`, and the workspace uses the `packageManager` field.
-- TypeScript 7 in strict mode, ESM only. `tsc -b` with project references builds `core` and `app` to `dist/` for publishing; a root `tsconfig.json` typechecks sources, tests and configs in one `noEmit` pass.
-- **Run from source, no build step in development.** Node 24 strips types natively, so the code keeps to erasable TypeScript (`erasableSyntaxOnly`) and imports relative files with `.ts` extensions, which `tsc` rewrites to `.js` on build. Workspace packages export `./src/index.ts`; `publishConfig.exports` points at `dist/` for publishing. Node, Vitest and `tsc` all resolve `@apm/core` to its source.
-- Tooling (confirmed): **Vitest** + **fast-check** for tests (colocated `*.test.ts`), **Biome** for lint and format.
-- `apm` binary entry in `packages/app` that implements only `--version` and `--help`.
-- GitHub Actions workflow on PRs and `main` to run install (frozen lockfile), lint, typecheck, build, test, and a smoke test of the built binary. It runs on `ubuntu-latest` and `macos-latest`, because the file locking and git behaviour tested later differ between them.
-- *Exit:* a fresh clone runs `pnpm i && pnpm build && pnpm test` green; CI is green on the PR; `pnpm apm --version` prints the version.
-
-**P02 — Node model, IDs and file I/O** (§3.2–3.4, §3.7)
-- Types: `Node`, `Kind`, `Status`, `Delivery`, plus the reserved `external` and `variant_of` fields (parsed and preserved, otherwise unused).
-- UUIDv7 generation, `handle()` (the last 8 hex chars) and `resolveHandle(suffix)`, which errors on an ambiguous or unknown suffix.
-- `graph.ndjson` serializer: sorts by `id`, writes keys in a fixed order, and omits null and empty values. The parser reports errors with line numbers.
-- `nodes/<id>.md` read/write, and the body template for new nodes (Intent / Acceptance criteria / Notes).
-- `apm.yaml` schema (zod + `yaml`) with defaults.
-- *Exit:* property test shows `parse(serialize(g)) ≡ g`, and that serialization is byte-stable (serializing twice gives identical bytes); golden-file tests pass; handle-ambiguity tests pass.
-
-**P03 — Invariants and computed status** (§2.3, §2.4)
-- An in-memory `Graph` with a children index, ancestor walk, and computed depth.
-- `validate(graph)` returns structured `errors` (I1–I4, I7) and `warnings` (I6), each with a code and the node IDs involved.
-- Computed state: `blocked`, `ready`, `progress` (over leaves that aren't dropped), and the dropped-dependency flag.
-- *Exit:* one or more unit tests per invariant; a fast-check generator of valid graphs; derived-status tests, including a dependency on a `dropped` node.
-- *Decides:* open question 2 (parent status). The v1 default stays: parent status is stored, and I6 raises a warning.
-
-**P04 — Lifting and level views** (§2.2, I5)
-- `levelView(graph, root | null)` returns the children of `root`, the lifted edges with their counts and underlying edges, and boundary ports (incoming and outgoing, each naming the outside node).
-- Entanglement (I5): cycle detection on the lifted edges of each level, reporting the nodes in the cycle. `checkAll()` runs it at every level for `apm check`.
-- *Exit:* fixture tests cover deep cross-level edges, merged duplicates and ports; a property test confirms every underlying edge is accounted for **exactly once** at each level (drawn, internal or port).
-
-**P05 — `mutate()`, write lock, git commits, `init`** (§3.1, §3.5, §6.2)
-- Git wrapper over `execFile` providing `add`, `commit` (with trailers), `rev-parse`, `show`, `log` and `is-ancestor`.
-- `.cache/write.lock`: created with `O_EXCL` and holding the PID, hostname and a timestamp. It is stale if the PID is dead. Acquisition retries with a timeout.
-- `mutate(op, fn)` follows the 5 steps in §6.2 and emits `graph.changed` in-process. Ops: `create, update, move, delete, link, unlink, status, deliver, decompose, edit-body`.
-- `initProject()` creates `.apm/` (`git init -b main`), `apm.yaml`, an empty `graph.ndjson`, and `.apm/.gitignore`; writes `.apm-link`; appends `.apm/` to the code repo's `.gitignore`; and makes the first commit.
-- Project discovery: `APM_PROJECT`, otherwise walk up from the cwd to find `.apm-link`.
-- *Decides:* whether deleting a node with children is refused or requires `--recursive` (proposed: refuse unless recursive; a recursive delete is one commit).
-- *Exit (= M1):*
-  - A property test over random op sequences shows I1–I4 hold after every committed op, and that a rejected op leaves HEAD and the working tree untouched.
-  - A multi-process test with N processes calling `mutate()` concurrently produces N commits and loses no updates.
-  - A stale lock is recovered.
-  - Trailers round-trip through `git log`.
-
-#### M2: CLI, MCP, dogfood
-
-**P06 — SQLite index + FTS** (§4)
-- A `node:sqlite` wrapper behind a small interface, so `better-sqlite3` can be swapped in. WAL mode; migrations keyed by `schema_version`.
-- Tables `nodes`, `edges`, `closure`, `nodes_fts` and `meta` only. `frames` lands in P16; `runs`, `run_events` and `proposals` land in P11–P12.
-- `ensureFresh()` compares HEAD with `last_indexed_sha` and rebuilds on a history rewrite. `mutate()` updates the index after each commit. `search(query)`. `reindex()`.
-- *Exit:* deleting `.cache/` and then reading rebuilds an identical index; a history rewrite is detected; FTS covers titles and bodies.
-
-**P07 — `apm` CLI** (§10)
-- Every §10 command except `serve`, `mcp`, `run` and `proposal`, which arrive with their subsystems. Includes `apm commit` for hand edits (described in §10's prose but missing from its command list).
-- A shared outline formatter (`1c0b9a44 [work/todo·ready] Title → 7d2e0f11`), reused by the MCP in P08.
-- `node edit` via `$EDITOR`. `link --remote`, `clone`, `push` and `pull` wrap git.
-- Non-zero exit codes on errors, and `--json` output on read commands for scripting.
-- *Exit:* end-to-end tests drive the built binary through init → add → nest → link → status → check → commit → reindex in a temp repo.
-
-**P08 — `apm mcp` + plugin skeleton + skills** (§6.4, §8)
-- A stdio server on `@modelcontextprotocol/sdk` that exposes every §6.4 tool, with zod input schemas and outline-style output.
-- `APM_RUN_SCOPE` enforcement for `read`, `node:<id>` and `project`.
-- `plugin/`: `.claude-plugin/plugin.json`, `.mcp.json`, and the `apm-node-format` and `apm-decompose` skills. The agent definitions land with their phases (P12, P18, P19).
-- *Exit:* an in-process MCP client calls every tool; every scope has tests for both allowed and refused calls; `claude --plugin-dir ./plugin` lists the APM tools and skills.
-
-**P09 — Dogfood: plan APM in APM**
-- Run `apm init` in this repo. The plan repo gets its own private remote (to be created by you). This PR commits only `.apm-link` and the `.gitignore` entry to the code repo.
-- Enter the remaining phases (P10+) as nodes through an interactive `claude` session with the plugin, with milestones as the top-level nodes and phases as their children.
-- Fix the problems found while dogfooding, and list them in the PR.
-- *Exit (= M2):* the APM plan is maintained in APM; `apm ready` shows the next phase.
-
-#### M3: server, runner, proposals
-
-**P10 — `apm serve`: HTTP/WS core and security** (§6.3)
-- HTTP server + `ws` (proposed: Hono on `@hono/node-server`), bound to `127.0.0.1`. A random token is written to `.cache/server.json`, and every request must carry it: as a header, or as a query parameter for the WS upgrade. `Origin` is checked on every request.
-- Node and edge endpoints: `GET /api/graph?root=` (the `at=` parameter is added in P16), `GET/POST/PATCH/DELETE /api/nodes…`, `POST /api/nodes/:id/move`, `POST/DELETE /api/edges`.
-- WS `graph.changed`, which also fires for commits made by *other* processes (the CLI or MCP) by watching `.apm` refs, with a polling fallback.
-- `apm serve [--port]` prints the tokenized URL.
-- *Exit:* the security tests reject a missing or wrong token, a foreign `Origin` and a non-loopback bind; a CLI mutation shows up as a WS event.
-
-**P11 — Runner: spawning `claude`, run logs, cancel** (§7.1, §7.3)
-- `runs` and `run_events` tables. A per-run MCP config file injects `APM_PROJECT` and `APM_RUN_SCOPE`. The spawn flags are exactly those in §7.1, with the model and budget taken from `apm.yaml`.
-- stream-json line parser → `run_events` → WS `run.event` / `run.finished`.
-- Limits: `max_concurrent` runs in total and one active run per node (v1 rejects extra runs with 409 rather than queueing them). Cancel sends SIGTERM, then SIGKILL after 5s.
-- `POST/DELETE /api/runs`, resume via `--resume <session>`, and `apm run <agent> <h>`, which calls the server and tails the stream in the terminal.
-- *Exit:* tests against a **fake `claude` script** that emits canned stream-json cover success, failure, cancel and the limits. A real run answers the three "to check at M3" questions in §7.1, and the answers are written back into §7.1.
-
-**P12 — Decomposer, critic and proposals** (§7.2)
-- `plugin/agents/apm-decomposer.md` and `apm-critic.md`, the decomposition JSON schema, and the critic's output schema.
-- Pipeline: decomposer → critic → at most one revision → a `proposals` row → WS `proposal.created`.
-- Accept (with optional edits): assign UUIDv7s, resolve keys, enforce additive-only, write bodies from `intent` and `acceptance`, then make one `decompose` commit with `APM-Actor` and `APM-Run` trailers. Reject.
-- `POST /api/proposals/:id/accept|reject` and `apm proposal ls|show|accept|reject`.
-- *Decides:* open question 1 (the policy for near-duplicates flagged by the critic).
-- *Exit (= M3):* fixture tests cover bad keys, cycles introduced by a proposal (rejected) and additive-only violations. A real run of `apm run apm-decomposer <h>` → `apm proposal accept` produces exactly one commit.
-
-#### M4: UI
-
-**P13 — UI shell + level view** (§9)
-- `packages/ui` (Vite + React + `@xyflow/react` + elkjs). `apm serve` serves the built UI; in development, Vite proxies requests to the server. The token is read from the URL and kept in `sessionStorage`.
-- Level view: elkjs layered layout; node cards (handle, title, stored and computed status, progress bar, has-children marker); lifted-edge count badges; boundary ports; entanglement banner; double-click to drill down; breadcrumb; live refresh over WS.
-- The view is read-only in this phase.
-- *Exit:* component tests for cards, badges and ports; a Playwright smoke test in CI loads a fixture project and drills down two levels.
-
-**P14 — UI node panel + editing**
-- Node panel: markdown body editor, dependencies (add and remove), delivery display, history (the node's `git log`), and set status. Actions: add child, delete, move.
-- *Exit:* each action round-trips to exactly one commit; an edit made in the CLI appears live in the open panel.
-
-**P15 — UI runs + proposal review**
-- The Decompose action (with optional guidance), the node's run list, a live transcript (assistant text and tool calls rendered from stream-json), cancel, and continue (resume).
-- Proposal review: ghost nodes and edges overlaid on the level view, with inline editing of title, kind, intent and acceptance, and removal of children or edges, then Accept or Reject.
-- *Exit (= M4):* a feature is planned entirely in the UI, from a new node → decompose → edit → accept → drill in → decompose again.
-
-#### M5: playback
-
-**P16 — Frames index + history API** (§5)
-- A `frames` table built in one `git log --reverse` pass with trailers. It is incremental via `last_indexed_sha`, and a history rewrite triggers a rebuild. WS `index.progress` reports progress on large rebuilds.
-- A lazy blob loader with an LRU of parsed graphs; `GET /api/frames`; `GET /api/graph?at=<sha>`; per-node body history.
-- *Exit:* the frame count equals the number of plan commits; `?at=` returns the historical level view; after a rewrite, the frames are rebuilt.
-
-**P17 — Playback scrubber + delivery overlay**
-- A timeline scrubber (step, play, labels showing each frame's op and actor). Scrubbing puts the view in read-only mode.
-- Code-repo scan for `APM-Node` trailers, merged into the timeline by timestamp and shown as markers on nodes.
-- *Exit (= M5):* the APM plan (from P09) replays from its first commit.
-
-#### M6–M7: delivery
-
-**P18 — `apm-implementer`** (§7.4)
-- The `apm-implementer` agent and the `apm-deliver` skill (branch naming, the `APM-Node` trailer, a PR body template).
-- The runner starts it in a worktree (`-w apm/<handle>-<slug>`) with scope `node:<id>` and the `allowed_tools` from `apm.yaml`. The **server** refuses to start it on a node that isn't a ready leaf.
-- A PR is opened through `gh` when it's available. Delivery is attached, and the node is set to `in_progress`.
-- The UI gains an Implement button on ready leaves and shows the delivery.
-- *Exit (= M6):* a ready leaf becomes a PR whose commits carry `APM-Node` and whose node shows the delivery.
-
-**P19 — `apm-reconciler`**
-- The `apm-reconciler` agent (scope `project`). It reads `APM-Node` trailers and PR state, then updates status.
-- *Decides:* how much of this is deterministic code (a trailer scan plus `gh pr view`) and how much is left to the agent. Recommendation: do the deterministic work in an `apm reconcile` command, and keep the agent for ambiguous cases.
-- Triggers: run manually, and once when `apm serve` starts.
-- *Exit (= M7):* merging a PR moves its node to `done` with no manual step.
-
-**P20 — v1 release**
-- *Decides:* open question 4 (the package name) and open question 3 (whether to auto-commit hand edits).
-- README, install instructions for the plugin, `npx` install, and an npm publish workflow.
-- *Exit:* `npx <pkg> init` works on a clean machine.
-
----
-
-## 13. Deferred (v2+)
+## 12. Deferred (v2+)
 
 - Competing breakdowns: `--fork-session` + `variant_of`, compared side by side
 - GitHub Issues / Linear / Jira sync (the `external` field is already reserved)
@@ -654,12 +481,11 @@ Each phase is **one branch → one PR into `main`**. Phases are small enough to 
 
 ---
 
-## 14. Open questions
-
-Each question is resolved in the phase noted in §12.3 (Q1 → P12, Q2 → P03, Q3 and Q4 → P20).
-
+## 13. Open questions
 
 1. **Duplicates across parents.** Because subtasks can't be shared, how should a near-duplicate be handled? v1: the critic flags it and you decide. Candidate policy: move it up to the lowest common ancestor.
 2. **Parent status.** v1 stores it and warns on I6. Should it instead be fully derived from the children once a node has any?
 3. **Auto-committing hand edits.** v1 requires an explicit `apm commit`. Is a server-side file watcher with a debounce worth it?
-4. **Package name.** `apm` is taken on npm (Atom's old package manager). Choose a scoped name or a new name before publishing.
+4. **Package name.** `apm` is taken on both PyPI and npm (Atom's old package manager). Choose a new distribution name before publishing; the command can stay `apm`.
+5. **Deleting a node with children.** Refuse it, or require `--recursive`? Proposed: refuse unless recursive; a recursive delete is one commit.
+6. **Reconciler split.** How much of reconciling is deterministic code (a trailer scan plus `gh pr view`) and how much is left to the agent? Recommendation: do the deterministic work in an `apm reconcile` command, and keep the agent for ambiguous cases.
