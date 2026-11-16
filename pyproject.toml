@@ -29,6 +29,7 @@ dev = [
     "httpx>=0.28.1",
     "hypothesis>=6.168.5",
     "pytest>=9.1.1",
+    "pytest-asyncio>=1.5.0",
     "ruff>=0.17.0",
     "ty>=0.0.86",
     "types-networkx>=3.6.1.20261114",
@@ -58,4 +59,5 @@ select = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = ["-ra", "--strict-markers", "--strict-config"]
+asyncio_mode = "auto"
 xfail_strict = true

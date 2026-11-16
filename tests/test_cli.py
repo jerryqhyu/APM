@@ -2,6 +2,9 @@ import json
 import os
 import subprocess
 import sys
+import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 import pytest
@@ -11,6 +14,8 @@ from apm import __version__
 from apm.cli import app
 from apm.core.git import git, log
 from apm.core.project import Project, load_graph
+from apm.server.security import load_or_create_token
+from tests.runner.fake import FakeClaude
 
 runner = CliRunner()
 
@@ -209,3 +214,102 @@ def test_link_push_clone_and_pull(cwd: Project, tmp_path: Path) -> None:
     os.chdir(other)
     apm("pull")
     assert "Second node" in apm("node", "ls")
+
+
+# --- runs, proposals and the server -------------------------------------------------------------
+
+
+def test_run_a_decomposer_then_accept_part_of_its_proposal(
+    cwd: Project, fake_claude: FakeClaude
+) -> None:
+    node = add("File I/O")
+    output = apm("run", "decomposer", node, "--guidance", "Keep it small.")
+    assert "▶ apm-decomposer" in output
+    assert "I am apm-decomposer" in output
+    assert "▶ apm-critic" in output
+    assert "— finished · $0.25" in output
+    proposal = next(
+        line.split()[1].rstrip(":") for line in output.splitlines() if line.startswith("proposal ")
+    )
+    assert f"next: apm proposal show {proposal}" in output
+    assert "Keep it small." in fake_claude.calls[0]["argv"][1]
+
+    assert apm("proposal", "ls").strip() == f"{proposal} [pending] 2 children for {node}"
+    shown = apm("proposal", "show", proposal)
+    assert "Parse first, then write." in shown
+    assert "[a] Parse (work)" in shown
+    assert "[b] Write (work) → a" in shown
+    assert "- rejects bad lines" in shown
+    assert "review: accept. Looks fine." in shown
+
+    created = apm("proposal", "accept", proposal, "--only", "a")
+    assert created.split()[1:] == ["Parse"]
+    assert load_graph(cwd).children(next(iter(load_graph(cwd).children(None)))) != ()
+    assert apm("proposal", "ls").strip() == "no proposals"
+    assert "[accepted]" in apm("proposal", "ls", "--all")
+    assert "already accepted" in apm("proposal", "accept", proposal, code=1)
+    assert "no proposal nope" in apm("proposal", "show", "nope", code=1)
+
+
+def test_reject_a_proposal_and_report_a_failed_run(cwd: Project, fake_claude: FakeClaude) -> None:
+    node = add("File I/O")
+    output = apm("run", "apm-decomposer", node, "--no-critic")
+    proposal = next(
+        line.split()[1].rstrip(":") for line in output.splitlines() if line.startswith("proposal ")
+    )
+    assert apm("proposal", "reject", proposal).strip() == "rejected"
+    assert load_graph(cwd).is_leaf(next(iter(load_graph(cwd).nodes)))
+
+    fake_claude.mode("fail")
+    failed = apm("run", "assistant", node, code=1)
+    assert "✗ failed: claude exited with code 1: boom: something broke" in failed
+
+    parent = add("Parent")
+    add("Child", "-p", parent)
+    assert "only a leaf can be implemented" in apm("run", "implementer", parent, code=1)
+    assert "unknown agent" in apm("run", "critic", node, code=1)
+
+
+def test_serve_prints_a_url_that_works(cwd: Project) -> None:
+    add("Served node")
+    process = subprocess.Popen(
+        [sys.executable, "-m", "apm", "serve", "--no-open", "--port", "0"],
+        cwd=cwd.code_dir,
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert process.stdout is not None
+        url = process.stdout.readline().split()[-1]
+        assert url.startswith("http://127.0.0.1:")
+        base, token = url.split("/?token=")
+        saved = json.loads((cwd.apm_dir / ".cache" / "server.json").read_text())
+        assert (saved["token"], saved["pid"]) == (token, process.pid)
+        assert f":{saved['port']}" in base
+
+        def get(path: str, auth: str | None) -> tuple[int, bytes]:
+            request = urllib.request.Request(base + path)
+            if auth:
+                request.add_header("Authorization", f"Bearer {auth}")
+            for _ in range(100):
+                try:
+                    with urllib.request.urlopen(request) as response:
+                        return response.status, response.read()
+                except urllib.error.HTTPError as err:
+                    return err.code, err.read()
+                except urllib.error.URLError:
+                    time.sleep(0.1)  # still starting
+            raise AssertionError("the server never came up")
+
+        status, body = get("/api/tree", token)
+        assert status == 200
+        assert [n["title"] for n in json.loads(body)["nodes"]] == ["Served node"]
+        assert get("/api/tree", "wrong")[0] == 401
+        assert get("/api/tree", None)[0] == 401
+        assert get("/", None)[0] == 200
+    finally:
+        process.terminate()
+        process.wait(timeout=10)
+
+    # The token is kept, so a bookmarked URL still works after a restart.
+    assert load_or_create_token(cwd.apm_dir) == token

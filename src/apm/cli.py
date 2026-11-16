@@ -1,12 +1,15 @@
 """The `apm` command (plans.md §10)."""
 
+import asyncio
 import functools
 import json
 import os
 import shlex
+import socket
 import subprocess
 import sys
 import tempfile
+import webbrowser
 from collections.abc import Callable
 from pathlib import Path
 from typing import Annotated, Any
@@ -29,16 +32,25 @@ from apm.core.ndjson import GraphParseError, InvalidNodeError
 from apm.core.outline import format_node_line, format_outline
 from apm.core.project import (
     LINK_FILE,
+    Project,
     ProjectError,
     find_project,
     init_project,
     load_graph,
 )
-from apm.core.proposals import ProposalError
+from apm.core.proposals import (
+    ProposalError,
+    ProposalResolvedError,
+    accept_proposal,
+    parse_decomposition,
+    reject_proposal,
+)
 from apm.core.search import search
 from apm.core.status import compute_states, ready_leaves
+from apm.core.store import Proposal, Store
 from apm.core.validate import InvariantError
 from apm.core.views import all_nodes_view, node_view
+from apm.runner.agents import RunRefused
 
 HELP = {"help_option_names": ["-h", "--help"]}
 app = typer.Typer(name="apm", no_args_is_help=True, add_completion=False, context_settings=HELP)
@@ -57,6 +69,7 @@ EXPECTED_ERRORS = (
     GitError,
     LockTimeoutError,
     ProposalError,
+    ProposalResolvedError,
 )
 
 Json = Annotated[bool, typer.Option("--json", help="Print JSON instead of text.")]
@@ -406,6 +419,197 @@ def node_edit(handle: str) -> None:
     before = read_body(project.apm_dir, node_id) or render_body()
     after = edit_text(before, suffix=f"-{handle}.md")
     report(ops.edit_body(project, node_id, after), "saved")
+
+
+# --- the server, runs and proposals -------------------------------------------------------------
+
+
+@app.command()
+@command
+def serve(
+    port: Annotated[
+        int, typer.Option(help="Port to listen on. If taken, a free one is used.")
+    ] = 4100,
+    open_browser: Annotated[bool, typer.Option("--open/--no-open", help="Open the UI.")] = True,
+    dev: Annotated[
+        bool, typer.Option(hidden=True, help="Also accept the Vite dev server.")
+    ] = False,
+) -> None:
+    """Start the web UI on this machine only."""
+    import uvicorn
+
+    from apm.server.app import create_app
+    from apm.server.security import load_or_create_token, write_server_file
+
+    project = find_project()
+    token = load_or_create_token(project.apm_dir)
+    port = free_port(port)
+    write_server_file(project.apm_dir, token=token, port=port)
+    origins = frozenset({"http://localhost:5173", "http://127.0.0.1:5173"}) if dev else frozenset()
+    url = f"http://127.0.0.1:{port}/?token={token}"
+    typer.echo(f"APM is running at {url}")
+    typer.echo("Only this machine can reach it. Press Ctrl+C to stop.")
+    if open_browser:
+        webbrowser.open(url)
+    uvicorn.run(
+        create_app(project, token, extra_origins=origins),
+        host="127.0.0.1",
+        port=port,
+        log_level="warning",
+    )
+
+
+def free_port(preferred: int) -> int:
+    """`preferred` if nothing is listening there, otherwise a port the system picks."""
+    for candidate in (preferred, 0):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                probe.bind(("127.0.0.1", candidate))
+            except OSError:
+                continue
+            return probe.getsockname()[1]
+    raise OpError("no free port to listen on")
+
+
+@app.command()
+@command
+def run(
+    agent: Annotated[str, typer.Argument(help="decomposer, implementer or assistant.")],
+    handle: str,
+    guidance: Annotated[str, typer.Option("--guidance", "-g", help="What you want from it.")] = "",
+    critic: Annotated[
+        bool, typer.Option("--critic/--no-critic", help="Review the breakdown.")
+    ] = True,
+) -> None:
+    """Run an agent on a node and follow it here."""
+    from apm.runner.runner import Runner
+    from apm.runner.transcript import format_event
+
+    project = find_project()
+    node_id = resolve(load_graph(project), handle)
+    name = agent if agent.startswith("apm-") else f"apm-{agent}"
+    store = Store(project.apm_dir)
+    failed = []
+
+    def show(event: dict[str, Any]) -> None:
+        if event["type"] == "run.started":
+            typer.echo(f"▶ {event['run']['agent']} (run {event['run']['id']})")
+        elif event["type"] == "run.event":
+            for line in format_event(event["event"]["data"]):
+                typer.echo(line)
+        elif event["type"] == "run.finished" and event["run"]["status"] != "succeeded":
+            failed.append(event["run"])
+            typer.echo(f"✗ {event['run']['status']}: {event['run']['error'] or ''}", err=True)
+        elif event["type"] == "proposal.created":
+            proposal = event["proposal"]
+            count = len(proposal["data"]["children"])
+            typer.echo(f"proposal {proposal['id']}: {count} children")
+            typer.echo(f"next: apm proposal show {proposal['id']}")
+
+    async def go() -> None:
+        runner = Runner(project, store, show)
+        try:
+            runner.start(name, node_id, guidance, critic=critic)
+            await runner.wait(node_id)
+        finally:
+            await runner.shutdown()
+
+    try:
+        asyncio.run(go())
+    except RunRefused as err:
+        raise OpError(str(err)) from None
+    if failed:
+        raise typer.Exit(1)
+
+
+proposal_app = typer.Typer(
+    no_args_is_help=True, help="Review what agents proposed.", context_settings=HELP
+)
+app.add_typer(proposal_app, name="proposal")
+
+
+@proposal_app.command("ls")
+@command
+def proposal_ls(
+    everything: Annotated[bool, typer.Option("--all", help="Include resolved ones.")] = False,
+) -> None:
+    """List proposals waiting for your decision."""
+    project = find_project()
+    names = handles(load_graph(project).nodes)
+    proposals = Store(project.apm_dir).list_proposals(status=None if everything else "pending")
+    for p in proposals:
+        target = names.get(p.node_id, "(deleted)")
+        typer.echo(f"{p.id} [{p.status}] {len(p.data.get('children', []))} children for {target}")
+    if not proposals:
+        typer.echo("no proposals")
+
+
+@proposal_app.command("show")
+@command
+def proposal_show(proposal_id: str) -> None:
+    """Show a proposal: the children it would create, and the review."""
+    project = find_project()
+    proposal = _proposal(project, proposal_id)
+    data = parse_decomposition(proposal.data)
+    graph = load_graph(project)
+    target = graph[proposal.node_id].title if proposal.node_id in graph else "(deleted)"
+    typer.echo(f"proposal {proposal.id} [{proposal.status}] for: {target}")
+    if data.rationale:
+        typer.echo(f"\n{data.rationale}")
+    for child in data.children:
+        needs = [*child.depends_on_keys, *child.depends_on_ids]
+        typer.echo(
+            f"\n[{child.key}] {child.title} ({child.kind})"
+            + (f" → {', '.join(needs)}" if needs else "")
+        )
+        if child.intent:
+            typer.echo(f"    {child.intent}")
+        for criterion in child.acceptance:
+            typer.echo(f"    - {criterion}")
+    for warning in data.warnings:
+        typer.echo(f"\nwarning: {warning}")
+    if proposal.review:
+        review = proposal.review
+        revised = " (revised once)" if review.get("revised") else ""
+        typer.echo(f"\nreview: {review.get('verdict')}{revised}. {review.get('summary', '')}")
+        for issue in review.get("issues", []):
+            where = f"[{issue['child_key']}] " if issue.get("child_key") else ""
+            typer.echo(f"    {issue.get('severity')}: {where}{issue.get('problem')}")
+
+
+@proposal_app.command("accept")
+@command
+def proposal_accept(
+    proposal_id: str,
+    only: Annotated[list[str] | None, typer.Option("--only", help="Keep only these keys.")] = None,
+) -> None:
+    """Accept a proposal: its children become nodes, in one commit."""
+    project = find_project()
+    store = Store(project.apm_dir)
+    children = None
+    if only:
+        proposal = _proposal(project, proposal_id)
+        children = [c for c in proposal.data.get("children", []) if c.get("key") in only]
+    result = accept_proposal(project, store, proposal_id, children)
+    names = handles(result.graph.nodes)
+    for node_id in result.created:
+        typer.echo(f"{names[node_id]} {result.graph[node_id].title}")
+
+
+@proposal_app.command("reject")
+@command
+def proposal_reject(proposal_id: str) -> None:
+    """Reject a proposal. Nothing is written to the plan."""
+    reject_proposal(Store(find_project().apm_dir), proposal_id)
+    typer.echo("rejected")
+
+
+def _proposal(project: Project, proposal_id: str) -> Proposal:
+    try:
+        return Store(project.apm_dir).get_proposal(proposal_id)
+    except KeyError:
+        raise OpError(f"no proposal {proposal_id} (see `apm proposal ls --all`)") from None
 
 
 def edit_text(text: str, suffix: str = ".md") -> str:

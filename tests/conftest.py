@@ -7,6 +7,7 @@ import pytest
 
 from apm.core.git import CommitMessage, add, commit, git
 from apm.core.project import Project, init_project
+from tests.runner.fake import FakeClaude
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -57,3 +58,9 @@ def project(tmp_path: Path) -> Project:
     code_dir = tmp_path / "my-app"
     code_dir.mkdir()
     return init_project(code_dir)
+
+
+@pytest.fixture
+def fake_claude(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> FakeClaude:
+    """Points the runner at a stand-in for the `claude` CLI."""
+    return FakeClaude(tmp_path, monkeypatch)

@@ -4,7 +4,7 @@ Planning never commits on its own. The decomposer returns JSON in the shape belo
 turns the children into real nodes in one `decompose` commit.
 """
 
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
@@ -16,6 +16,7 @@ from apm.core.model import Kind, NodeId
 from apm.core.mutate import Mutation, OpError
 from apm.core.ops import NewNode, decompose
 from apm.core.project import Project, load_graph
+from apm.core.store import Proposal, Store
 
 NonEmpty = Annotated[str, Field(min_length=1)]
 
@@ -140,6 +141,10 @@ class ProposalError(ValueError):
     """The proposal can't be read or applied as it is."""
 
 
+class ProposalResolvedError(ValueError):
+    """The proposal was already accepted or rejected."""
+
+
 def parse_decomposition(data: object) -> Decomposition:
     try:
         decomposition = Decomposition.model_validate(data)
@@ -193,3 +198,43 @@ def _new_node(graph: Graph, child: ProposedChild) -> NewNode:
         depends_on_keys=child.depends_on_keys,
         body=render_body(intent=child.intent, acceptance=child.acceptance),
     )
+
+
+def accept_proposal(
+    project: Project,
+    store: Store,
+    proposal_id: str,
+    children: list[dict[str, Any]] | None = None,
+) -> Mutation:
+    """Accepts a stored proposal: its children become nodes in one commit. Pass `children` to
+    accept an edited or trimmed list instead of the original. If it can't be applied, the
+    proposal stays pending.
+    """
+    proposal = _claim(store, proposal_id, "accepted")
+    try:
+        data = dict(proposal.data)
+        if children is not None:
+            data["children"] = children
+        run = store.get_run(proposal.run_id) if proposal.run_id else None
+        return accept_decomposition(
+            project,
+            proposal.node_id,
+            parse_decomposition(data),
+            actor=f"agent:{run.agent}" if run else "user",
+            run=proposal.run_id,
+        )
+    except BaseException:
+        store.reopen_proposal(proposal_id)
+        raise
+
+
+def reject_proposal(store: Store, proposal_id: str) -> Proposal:
+    return _claim(store, proposal_id, "rejected")
+
+
+def _claim(store: Store, proposal_id: str, status: Literal["accepted", "rejected"]) -> Proposal:
+    """Marks a pending proposal resolved first, so two callers can't both act on it."""
+    try:
+        return store.resolve_proposal(proposal_id, status)
+    except ValueError as err:
+        raise ProposalResolvedError(str(err)) from None

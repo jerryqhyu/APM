@@ -290,6 +290,14 @@ class Store:
             raise ValueError(f"proposal {proposal_id} is already {proposal.status}")
         return proposal
 
+    def reopen_proposal(self, proposal_id: str) -> None:
+        """Puts a proposal back to pending, when accepting it failed."""
+        with self._db() as db:
+            db.execute(
+                "UPDATE proposals SET status = 'pending', resolved = NULL WHERE id = ?",
+                (proposal_id,),
+            )
+
 
 def _where(**filters: object) -> tuple[str, tuple[object, ...]]:
     used = {key: value for key, value in filters.items() if value is not None}
