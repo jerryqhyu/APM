@@ -1,0 +1,5 @@
+{
+  "name": "apm",
+  "description": "APM: plan a project as a nested graph of nodes, break it down with agents, and deliver each leaf as a PR.",
+  "version": "0.0.0"
+}
