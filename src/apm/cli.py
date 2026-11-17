@@ -543,8 +543,9 @@ def run(
 def ask_in_terminal(request: dict[str, Any]) -> tuple[bool, dict[str, str] | None]:
     """Puts an agent's question or permission prompt to the person at the terminal."""
     if request["kind"] != "question":
-        detail = json.dumps(request["input"], ensure_ascii=False)
-        typer.echo(f"? {request['tool']} wants to run: {request['description'] or detail}")
+        what = request["input"].get("command") or json.dumps(request["input"], ensure_ascii=False)
+        why = f"  ({request['description']})" if request["description"] else ""
+        typer.echo(f"? {request['tool']}: {what}{why}")
         return typer.confirm("  allow?", default=False), None
     answers = {}
     for question in request["input"].get("questions", []):

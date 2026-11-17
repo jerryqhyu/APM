@@ -14,11 +14,11 @@ export function Outline({
   onPick,
 }: {
   nodes: NodeView[];
-  selected: string | null;
+  selected: Set<string>;
   root: string | null;
   running: Set<string>;
   proposed: Set<string>;
-  onPick: (id: string) => void;
+  onPick: (id: string, additive: boolean) => void;
 }) {
   const children = useMemo(() => {
     const map = new Map<string | null, NodeView[]>();
@@ -45,9 +45,9 @@ export function Outline({
       rows.push(
         <div
           key={node.id}
-          className={cx("outline-row", node.id === selected && "selected", node.id === root && "is-root")}
+          className={cx("outline-row", selected.has(node.id) && "selected", node.id === root && "is-root")}
           style={{ paddingLeft: 8 + depth * 14 }}
-          onClick={() => onPick(node.id)}
+          onClick={(e) => onPick(node.id, e.shiftKey || e.metaKey || e.ctrlKey)}
           title={`${node.title} · ${state.label}`}
         >
           {node.children > 0 ? (
@@ -82,7 +82,7 @@ export function Outline({
 
   return (
     <nav className="outline" aria-label="Plan outline">
-      <div className="outline-head">Plan</div>
+      <div className="outline-head">Contents</div>
       {rows.length ? rows : <p className="empty">No nodes yet.</p>}
     </nav>
   );

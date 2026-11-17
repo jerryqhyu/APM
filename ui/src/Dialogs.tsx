@@ -1,10 +1,10 @@
-// The small dialogs: add a node, start an agent, move a node, delete a node.
+// The small dialogs: add a node, start an agent, move, link, merge and delete.
 
 import { useState } from "react";
-import { NodePicker } from "./NodePanel";
-import type { Agent, Kind, NodeView } from "./types";
+import { NodePicker } from "./Details";
+import type { Agent, Kind, Mode, NodeView } from "./types";
 import { Modal } from "./ui";
-import { AGENT_LABEL } from "./util";
+import { errorText } from "./util";
 
 function useSubmit(action: () => Promise<void>) {
   const [busy, setBusy] = useState(false);
@@ -15,7 +15,7 @@ function useSubmit(action: () => Promise<void>) {
     try {
       await action();
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(errorText(err));
       setBusy(false);
     }
   };
@@ -37,7 +37,7 @@ export function AddNodeDialog({
   const { busy, error, submit } = useSubmit(() => onAdd({ title: title.trim(), kind, intent }));
   return (
     <Modal
-      title={parent ? `Add a child to “${parent.title}”` : "Add a node"}
+      title={parent ? `Add a node inside “${parent.title}”` : "Add a node"}
       onClose={onClose}
       footer={
         <>
@@ -75,42 +75,34 @@ export function AddNodeDialog({
   );
 }
 
-const GUIDANCE: Record<string, { label: string; placeholder: string; go: string }> = {
-  "apm-decomposer": {
-    label: "Guidance (optional)",
-    placeholder: "For example: keep it to three steps, or slice by user-visible feature.",
-    go: "Decompose",
-  },
-  "apm-implementer": {
-    label: "Guidance (optional)",
-    placeholder: "Anything Claude should know beyond what the node says.",
-    go: "Start building",
-  },
-  "apm-assistant": {
-    label: "Your question",
-    placeholder: "For example: is this well specified? What would you do first?",
-    go: "Ask",
-  },
+const GUIDANCE: Record<string, { placeholder: string; go: string }> = {
+  "apm-decomposer": { placeholder: "For example: keep it to three steps, or slice by user-visible feature.", go: "Decompose" },
+  "apm-implementer": { placeholder: "Anything Claude should know beyond what the node says.", go: "Start building" },
 };
 
 export function RunAgentDialog({
   agent,
   node,
+  modes,
+  defaultMode,
   onStart,
   onClose,
 }: {
   agent: Agent;
   node: NodeView;
-  onStart: (guidance: string, critic: boolean) => Promise<void>;
+  modes: Mode[];
+  defaultMode: string;
+  onStart: (message: string, critic: boolean, mode: string) => Promise<void>;
   onClose: () => void;
 }) {
-  const [guidance, setGuidance] = useState("");
+  const [message, setMessage] = useState("");
   const [critic, setCritic] = useState(true);
-  const { busy, error, submit } = useSubmit(() => onStart(guidance, critic));
-  const text = GUIDANCE[agent.name] ?? GUIDANCE["apm-assistant"]!;
+  const [mode, setMode] = useState(defaultMode);
+  const { busy, error, submit } = useSubmit(() => onStart(message, critic, mode));
+  const text = GUIDANCE[agent.name] ?? { placeholder: "", go: "Start" };
   return (
     <Modal
-      title={`${AGENT_LABEL[agent.name] ?? agent.name}: “${node.title}”`}
+      title={`${agent.label}: “${node.title}”`}
       onClose={onClose}
       footer={
         <>
@@ -124,16 +116,26 @@ export function RunAgentDialog({
     >
       <p className="hint">{agent.summary}</p>
       <label className="field">
-        <span>{text.label}</span>
+        <span>Guidance (optional)</span>
         <textarea
           rows={4}
-          value={guidance}
+          value={message}
           placeholder={text.placeholder}
-          onChange={(e) => setGuidance(e.target.value)}
+          onChange={(e) => setMessage(e.target.value)}
           onKeyDown={(e) => {
             if ((e.metaKey || e.ctrlKey) && e.key === "Enter") void submit();
           }}
         />
+      </label>
+      <label className="field">
+        <span>Permissions</span>
+        <select value={mode} onChange={(e) => setMode(e.target.value)}>
+          {modes.map((m) => (
+            <option key={m.name} value={m.name}>
+              {m.label}
+            </option>
+          ))}
+        </select>
       </label>
       {agent.name === "apm-decomposer" && (
         <label className="check">
@@ -145,72 +147,137 @@ export function RunAgentDialog({
   );
 }
 
-export function MoveDialog({
-  node,
+/** Picks one other node: the new parent for a move, or the dependency for a link. */
+export function PickNodeDialog({
+  title,
+  hint,
+  placeholder,
   nodes,
-  onMove,
+  exclude,
+  onPick,
   onClose,
+  extra,
 }: {
-  node: NodeView;
+  title: string;
+  hint: string;
+  placeholder: string;
   nodes: NodeView[];
-  onMove: (parent: string | null) => Promise<void>;
+  exclude: Set<string>;
+  onPick: (id: string | null) => Promise<void>;
   onClose: () => void;
+  /** A button for the choice that isn't a node, e.g. "Move to the top level". */
+  extra?: string;
 }) {
   const [error, setError] = useState<string | null>(null);
-  const move = (parent: string | null) => {
+  const pick = (id: string | null) => {
     setError(null);
-    onMove(parent).catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)));
+    onPick(id).catch((err: unknown) => setError(errorText(err)));
   };
   return (
-    <Modal title={`Move “${node.title}”`} onClose={onClose} footer={error && <span className="form-error">{error}</span>}>
-      <p className="hint">Everything inside it moves with it.</p>
-      <NodePicker
-        nodes={nodes}
-        exclude={new Set([node.id, node.parent ?? ""])}
-        placeholder="New parent: type a title…"
-        onPick={move}
-        autoFocus
-      />
-      {node.parent && (
+    <Modal title={title} onClose={onClose} footer={error && <span className="form-error">{error}</span>}>
+      <p className="hint">{hint}</p>
+      <NodePicker nodes={nodes} exclude={exclude} placeholder={placeholder} onPick={pick} autoFocus />
+      {extra && (
         <p>
-          <button onClick={() => move(null)}>Move to the top level</button>
+          <button onClick={() => pick(null)}>{extra}</button>
         </p>
       )}
     </Modal>
   );
 }
 
+export function MergeDialog({
+  nodes,
+  onMerge,
+  onClose,
+}: {
+  nodes: NodeView[];
+  onMerge: (target: string, others: string[], title: string) => Promise<void>;
+  onClose: () => void;
+}) {
+  const [target, setTarget] = useState(nodes[0]!.id);
+  const [title, setTitle] = useState(nodes[0]!.title);
+  const { busy, error, submit } = useSubmit(() =>
+    onMerge(
+      target,
+      nodes.map((n) => n.id).filter((id) => id !== target),
+      title.trim(),
+    ),
+  );
+  return (
+    <Modal
+      title={`Merge ${nodes.length} nodes into one`}
+      onClose={onClose}
+      footer={
+        <>
+          {error && <span className="form-error">{error}</span>}
+          <button onClick={onClose}>Cancel</button>
+          <button className="primary" disabled={busy || !title.trim()} onClick={() => void submit()}>
+            Merge
+          </button>
+        </>
+      }
+    >
+      <p className="hint">
+        One node survives and takes on everything the others had: what is inside them, what they need, what needs
+        them, and their descriptions. The others are deleted.
+      </p>
+      <fieldset className="field">
+        <span>Keep</span>
+        {nodes.map((node) => (
+          <label key={node.id} className="check">
+            <input
+              type="radio"
+              name="merge-target"
+              checked={target === node.id}
+              onChange={() => {
+                setTarget(node.id);
+                setTitle(node.title);
+              }}
+            />
+            {node.title} <code className="handle">{node.handle}</code>
+          </label>
+        ))}
+      </fieldset>
+      <label className="field">
+        <span>Title of the merged node</span>
+        <input value={title} onChange={(e) => setTitle(e.target.value)} />
+      </label>
+    </Modal>
+  );
+}
+
 export function DeleteDialog({
-  node,
-  descendants,
+  nodes,
+  inside,
   onDelete,
   onClose,
 }: {
-  node: NodeView;
-  descendants: number;
+  nodes: NodeView[];
+  /** How many nodes sit inside the ones being deleted. */
+  inside: number;
   onDelete: () => Promise<void>;
   onClose: () => void;
 }) {
   const { busy, error, submit } = useSubmit(onDelete);
+  const what = nodes.length === 1 ? `“${nodes[0]!.title}”` : `${nodes.length} nodes`;
   return (
     <Modal
-      title={`Delete “${node.title}”?`}
+      title={`Delete ${what}?`}
       onClose={onClose}
       footer={
         <>
           {error && <span className="form-error">{error}</span>}
           <button onClick={onClose}>Cancel</button>
           <button className="danger solid" disabled={busy} onClick={() => void submit()}>
-            {descendants ? `Delete it and ${descendants} inside it` : "Delete"}
+            {inside ? `Delete, with the ${inside} inside` : "Delete"}
           </button>
         </>
       }
     >
       <p>
-        {descendants
-          ? `This also deletes the ${descendants} ${descendants === 1 ? "node" : "nodes"} inside it. `
-          : ""}
-        Dependencies on what you delete are removed. The plan's history keeps it: nothing is lost for good.
+        {inside ? `This also deletes the ${inside} ${inside === 1 ? "node" : "nodes"} inside. ` : ""}
+        Dependencies on what you delete are removed. The plan’s history keeps it: nothing is lost for good.
       </p>
     </Modal>
   );

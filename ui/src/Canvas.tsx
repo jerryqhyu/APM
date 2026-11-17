@@ -119,12 +119,11 @@ const NODE_TYPES = { plan: PlanCard, ghost: GhostCard, port: PortChip };
 
 export interface CanvasProps {
   level: Level;
-  selected: string | null;
+  /** Every selected node. Shift-click or ⌘/ctrl-click adds to the selection. */
+  selected: Set<string>;
   running: Set<string>;
   proposals: Proposal[];
-  /** The side panel is open, so the canvas is narrower. */
-  narrow: boolean;
-  onSelect: (id: string | null) => void;
+  onSelect: (id: string | null, additive: boolean) => void;
   onOpen: (id: string) => void;
   onGoTo: (id: string) => void;
   onLink: (src: string, dst: string) => void;
@@ -146,7 +145,6 @@ function CanvasInner({
   selected,
   running,
   proposals,
-  narrow,
   onSelect,
   onOpen,
   onGoTo,
@@ -207,12 +205,11 @@ function CanvasInner({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [signature]);
 
-  // Fit the view when you arrive at a level, and when the side panel opens or closes (that changes
-  // the room there is). A level that merely updates keeps your pan and zoom. The viewport is worked
-  // out from the layout itself, so it never depends on what React Flow has measured so far.
+  // Fit the view when you arrive at a level, or when its shape changes. A level that merely updates
+  // keeps your pan and zoom. The viewport is worked out from the layout itself, so it never depends on what React Flow has measured so far.
   const frame = useRef<HTMLDivElement>(null);
   const topInset = 56 + (proposal ? 64 : 0) + (level.entangled.length ? 64 : 0);
-  const fitKey = `${rootId ?? "top"}:${narrow}:${signature}`;
+  const fitKey = `${rootId ?? "top"}:${signature}`;
   useEffect(() => {
     if (positions.signature !== signature || fitted.current === fitKey || boxes.length === 0) return;
     const timer = window.setTimeout(() => {
@@ -253,7 +250,7 @@ function CanvasInner({
       if (!position) continue;
       const data: PlanData = {
         node,
-        selected: node.id === selected,
+        selected: selected.has(node.id),
         running: running.has(node.id),
         proposed: proposedOn.has(node.id),
         entangled: entangled.has(node.id),
@@ -313,6 +310,20 @@ function CanvasInner({
   return (
     <div className="canvas" ref={frame}>
       <div className="canvas-bar">
+        <nav className="crumbs" aria-label="Where you are">
+          <button className={cx("crumb", !level.root && "here")} onClick={() => onOpen("")}>
+            All
+          </button>
+          {level.breadcrumb.map((crumb, i) => (
+            <span key={crumb.id}>
+              <span className="sep">/</span>
+              <button className={cx("crumb", i === level.breadcrumb.length - 1 && "here")} onClick={() => onOpen(crumb.id)}>
+                {crumb.title}
+              </button>
+            </span>
+          ))}
+        </nav>
+        <span className="spacer" />
         <button className="primary" onClick={onAdd}>
           + Add {level.root ? "child" : "node"}
         </button>
@@ -373,13 +384,13 @@ function CanvasInner({
           minZoom={0.2}
           maxZoom={1.5}
           proOptions={{ hideAttribution: true }}
-          onNodeClick={(_, node) => {
-            if (node.type === "plan") onSelect(node.id);
+          onNodeClick={(event, node) => {
+            if (node.type === "plan") onSelect(node.id, event.shiftKey || event.metaKey || event.ctrlKey);
             else if (node.type === "port") onGoTo((node.data as PortData).port.outside.id);
             else if (node.type === "ghost" && proposal) onReview(proposal);
           }}
           onNodeDoubleClick={(_, node) => node.type === "plan" && onOpen(node.id)}
-          onPaneClick={() => onSelect(null)}
+          onPaneClick={() => onSelect(null, false)}
           onConnect={connect}
         >
           <Background variant={BackgroundVariant.Dots} gap={22} size={1} />

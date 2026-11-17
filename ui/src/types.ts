@@ -93,6 +93,8 @@ export interface Run {
   error: string | null;
   prompt: string;
   parent_run: string | null;
+  /** The permission mode it ran in. */
+  mode: string;
 }
 
 export interface RunEvent {
@@ -131,15 +133,38 @@ export interface Proposal {
 export interface NodeDetail extends NodeView {
   body: string;
   ancestors: NodeRef[];
-  links: { depends_on: NodeRef[]; dependents: NodeRef[]; waiting_on: NodeRef[] };
+  links: { depends_on: NodeRef[]; dependents: NodeRef[]; waiting_on: NodeRef[]; children: NodeRef[] };
   history: HistoryEntry[];
-  runs: Run[];
   proposals: Proposal[];
 }
 
 export interface Agent {
   name: string;
+  label: string;
   summary: string;
+  needs_node: boolean;
+}
+
+export interface Mode {
+  name: string;
+  label: string;
+}
+
+/** Something a running agent is waiting on you for. */
+export interface AgentRequest {
+  id: string;
+  run_id: string;
+  tool: string;
+  input: Record<string, unknown>;
+  description: string;
+  kind: "permission" | "question" | "plan";
+}
+
+export interface Question {
+  question: string;
+  header?: string;
+  multiSelect?: boolean;
+  options: { label: string; description?: string }[];
 }
 
 export interface Project {
@@ -148,6 +173,8 @@ export interface Project {
   code_dir: string;
   head: string | null;
   agents: Agent[];
+  modes: Mode[];
+  default_mode: string;
   counts: { nodes: number; ready: number; proposals: number; running: number };
 }
 
@@ -157,5 +184,7 @@ export type LiveEvent =
   | { type: "run.started"; run: Run }
   | { type: "run.event"; run_id: string; event: RunEvent }
   | { type: "run.finished"; run: Run }
+  | { type: "run.request"; request: AgentRequest }
+  | { type: "run.request_resolved"; run_id: string; id: string }
   | { type: "proposal.created"; proposal: Proposal }
   | { type: "proposal.resolved"; id: string; status: string };
