@@ -5,7 +5,7 @@ import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
-from apm.core.body import read_body, render_body
+from apm.core.files import read_body, render_body
 from apm.core.git import git, log, rev_parse
 from apm.core.ids import handle
 from apm.core.model import Delivery, Kind, Status
@@ -18,6 +18,7 @@ from apm.core.ops import (
     delete_node,
     edit_body,
     link,
+    merge_nodes,
     move_node,
     set_status,
     unlink,
@@ -262,6 +263,88 @@ def test_attach_delivery_checks_the_repo_the_leaf_and_the_values(project: Projec
     assert load_graph(project)[leaf].delivery is None
 
 
+def test_merge_folds_nodes_into_one(project: Project) -> None:
+    upstream = add(project, "Upstream")
+    a = add(project, "A", deps=(upstream,))
+    b = add(project, "B")
+    b_child = add(project, "B child", parent=b)
+    downstream = add(project, "Downstream", deps=(b,))
+    edit_body(project, b, "## Intent\n\nThe B part.\n")
+
+    result = merge_nodes(project, a, [b], title="A and B")
+
+    graph = load_graph(project)
+    assert b not in graph
+    assert graph[a].title == "A and B"
+    assert graph[a].depends_on == (upstream,)  # A's own dependency stays
+    assert graph[b_child].parent == a  # B's children move under A
+    assert graph[downstream].depends_on == (a,)  # what needed B now needs A
+    body = read_body(project.apm_dir, a)
+    assert body.startswith("## Intent")
+    assert body.endswith("---\n\n### Merged from: B\n\n## Intent\n\nThe B part.\n")
+    assert not (project.apm_dir / "nodes" / f"{b}.md").exists()
+    assert subject(project) == f"merge {handle(a)}: 2 nodes"
+    assert set(result.nodes) == {a, b, b_child, downstream}
+    assert log(project.apm_dir)[0].trailers["APM-Op"] == "merge"
+
+
+def test_merge_drops_edges_between_the_merged_nodes_and_skips_empty_bodies(
+    project: Project,
+) -> None:
+    a = add(project, "A")
+    b = add(project, "B", deps=(a,))
+    c = add(project, "C", deps=(b,))
+    merge_nodes(project, a, [b, c, b])  # naming a node twice is harmless
+    graph = load_graph(project)
+    assert set(graph.nodes) == {a}
+    assert graph[a].depends_on == ()
+    assert "Merged from" not in read_body(project.apm_dir, a)  # the others had only the template
+    assert subject(project) == f"merge {handle(a)}: 3 nodes"
+
+
+def test_merging_a_child_into_its_parent_or_the_other_way_round(project: Project) -> None:
+    top = add(project, "Top")
+    parent = add(project, "Parent", parent=top)
+    child = add(project, "Child", parent=parent)
+    sibling = add(project, "Sibling", parent=parent)
+
+    # The child survives: it takes its parent's place, and its sibling moves under it.
+    merge_nodes(project, child, [parent])
+    graph = load_graph(project)
+    assert graph[child].parent == top
+    assert graph[sibling].parent == child
+    assert parent not in graph
+
+
+def test_merge_refusals_change_nothing(project: Project) -> None:
+    a = add(project, "A")
+    b = add(project, "B")
+    with pytest.raises(OpError, match="nothing to merge: pick at least two nodes"):
+        merge_nodes(project, a, [a])
+    with pytest.raises(OpError, match="unknown node"):
+        merge_nodes(project, a, ["01930000-0000-7000-8000-000000000001"])
+    attach_delivery(project, a, branch="apm/a")
+    attach_delivery(project, b, branch="apm/b")
+    with pytest.raises(OpError, match="more than one of these nodes has a delivery"):
+        merge_nodes(project, a, [b])
+
+    # Merging would make a node depend on its own descendant: refused by the invariants.
+    parent = add(project, "Parent")
+    inner = add(project, "Inner", parent=parent)
+    outside = add(project, "Outside", deps=(inner,))
+    with pytest.raises(InvariantError, match="I3"):
+        merge_nodes(project, parent, [outside])
+    assert len(load_graph(project)) == 5
+
+
+def test_a_merge_keeps_the_one_delivery(project: Project) -> None:
+    a = add(project, "A")
+    b = add(project, "B")
+    attach_delivery(project, b, branch="apm/b")
+    merge_nodes(project, a, [b])
+    assert load_graph(project)[a].delivery == Delivery(repo="my-app", branch="apm/b")
+
+
 # --- Random operation sequences ---------------------------------------------------------------
 
 STATUSES = st.sampled_from(Status)
@@ -275,6 +358,7 @@ OPS = st.one_of(
     st.tuples(st.just("delete"), PICK, st.booleans()),
     st.tuples(st.just("deliver"), PICK),
     st.tuples(st.just("decompose"), PICK),
+    st.tuples(st.just("merge"), PICK, PICK),
 )
 
 
@@ -309,6 +393,8 @@ def run_op(project: Project, op: tuple) -> Mutation | None:
             return delete_node(project, pick(n), recursive=recursive)
         case ("deliver", n):
             return attach_delivery(project, pick(n), branch="apm/x")
+        case ("merge", n, m):
+            return merge_nodes(project, pick(n), [pick(m)])
         case ("decompose", n):
             return decompose(
                 project,

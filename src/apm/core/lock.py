@@ -15,6 +15,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from types import TracebackType
 
+from apm.core.errors import ApmError
+
 CACHE_DIR = ".cache"
 LOCK_FILE = "write.lock"
 
@@ -38,7 +40,9 @@ class LockOwner:
     """Random, so an owner can tell its lock from a later one."""
 
 
-class LockTimeoutError(TimeoutError):
+class LockTimeoutError(ApmError, TimeoutError):
+    http_status = 503
+
     def __init__(self, path: Path, timeout: float, owner: LockOwner | None) -> None:
         by = f" by pid {owner.pid} on {owner.hostname} since {owner.acquired}" if owner else ""
         super().__init__(f"timed out after {timeout}s waiting for {path}, held{by}")
@@ -111,10 +115,10 @@ def _is_stale(path: Path) -> bool:
     if owner is None:
         return _age_s(path) > _UNREADABLE_GRACE_S
     # A PID on another host can't be checked, so its lock is never judged stale.
-    return owner.hostname == socket.gethostname() and not _is_alive(owner.pid)
+    return owner.hostname == socket.gethostname() and not pid_alive(owner.pid)
 
 
-def _is_alive(pid: int) -> bool:
+def pid_alive(pid: int) -> bool:
     if pid <= 0:  # os.kill(0, …) would signal our own process group
         return False
     try:

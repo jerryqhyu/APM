@@ -11,8 +11,12 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from apm.core.errors import ApmError
 
-class GitError(RuntimeError):
+
+class GitError(ApmError, RuntimeError):
+    http_status = 500
+
     def __init__(self, command: Sequence[str], exit_code: int | None, stderr: str) -> None:
         code = "" if exit_code is None else f" ({exit_code})"
         super().__init__(f"git {' '.join(command)} failed{code}: {stderr.strip()}")

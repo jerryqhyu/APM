@@ -9,6 +9,7 @@ import uuid
 from collections.abc import Iterable, Sequence
 from typing import Literal
 
+from apm.core.errors import ApmError
 from apm.core.model import NodeId
 
 UUID_V7_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}")
@@ -61,7 +62,9 @@ def handles(ids: Iterable[NodeId]) -> dict[NodeId, str]:
 type HandleErrorCode = Literal["invalid", "unknown", "ambiguous"]
 
 
-class HandleError(ValueError):
+class HandleError(ApmError, ValueError):
+    http_status = 404
+
     def __init__(
         self, code: HandleErrorCode, value: str, message: str, candidates: Sequence[NodeId] = ()
     ) -> None:

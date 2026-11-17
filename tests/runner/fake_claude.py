@@ -1,4 +1,5 @@
-"""A stand-in for the `claude` CLI: prints canned stream-json for the agent it was asked to be.
+"""A stand-in for the `claude` CLI: reads the user's message from stdin as stream-json, and prints
+canned stream-json for the agent it was asked to be.
 
 What it does is steered by FAKE_CLAUDE (a comma-separated set of words):
 
@@ -9,8 +10,12 @@ What it does is steered by FAKE_CLAUDE (a comma-separated set of words):
 - `bad-proposal`: the decomposer returns something that isn't a decomposition.
 - `revise`: the critic asks for a revision.
 - `critic-fails`: the critic exits 1.
+- `ask-permission`: ask the host whether it may run a command, and report the answer.
+- `ask-question`: ask the host a question, and report the answer.
+- `other-control`: send a control request that isn't a permission prompt.
 
-Every call's arguments are appended to FAKE_CLAUDE_LOG as one JSON line.
+Every call's arguments, working directory and prompt are appended to FAKE_CLAUDE_LOG as one JSON
+line.
 """
 
 import json
@@ -44,9 +49,31 @@ DECOMPOSITION = {
     "warnings": [],
 }
 
+QUESTION = {
+    "question": "Tabs or spaces?",
+    "header": "Indent",
+    "multiSelect": False,
+    "options": [{"label": "Tabs", "description": ""}, {"label": "Spaces", "description": ""}],
+}
+
 
 def emit(event: dict) -> None:
     print(json.dumps(event), flush=True)
+
+
+def ask_host(request_id: str, tool: str, tool_input: dict, description: str = "") -> dict:
+    """Sends a permission prompt and waits for the host's decision."""
+    request = {
+        "subtype": "can_use_tool",
+        "tool_name": tool,
+        "input": tool_input,
+        "description": description,
+    }
+    emit({"type": "control_request", "request_id": request_id, "request": request})
+    reply = json.loads(sys.stdin.readline())
+    assert reply["type"] == "control_response", reply
+    assert reply["response"]["request_id"] == request_id, reply
+    return reply["response"]["response"]
 
 
 def main() -> int:
@@ -59,9 +86,12 @@ def main() -> int:
     agent = (option("--agent") or "").removeprefix("apm:")
     session = option("--resume") or option("--session-id") or "no-session"
     resumed = "--resume" in argv
+    first = sys.stdin.readline()
+    prompt = json.loads(first)["message"]["content"] if first.strip() else ""
     if log := os.environ.get("FAKE_CLAUDE_LOG"):
+        call = {"argv": argv, "cwd": str(Path.cwd()), "agent": agent, "prompt": prompt}
         with Path(log).open("a") as f:
-            f.write(json.dumps({"argv": argv, "cwd": str(Path.cwd()), "agent": agent}) + "\n")
+            f.write(json.dumps(call) + "\n")
 
     if "fail" in modes or ("critic-fails" in modes and agent == "apm-critic"):
         print("boom: something broke", file=sys.stderr)
@@ -74,6 +104,21 @@ def main() -> int:
     emit({"type": "assistant", "message": {"content": [{"type": "text", "text": text}]}})
     if "hang" in modes:
         time.sleep(600)
+
+    if "other-control" in modes:
+        emit({"type": "control_request", "request_id": "c-0", "request": {"subtype": "hello"}})
+        assert json.loads(sys.stdin.readline())["response"]["request_id"] == "c-0"
+    if "ask-permission" in modes:
+        decision = ask_host("p-1", "Bash", {"command": "make test"}, "Run the tests")
+        if decision["behavior"] == "allow":
+            text = f"allowed: {decision['updatedInput']['command']}"
+        else:
+            text = f"denied: {decision['message']}"
+        emit({"type": "assistant", "message": {"content": [{"type": "text", "text": text}]}})
+    if "ask-question" in modes:
+        decision = ask_host("q-1", "AskUserQuestion", {"questions": [QUESTION]})
+        text = f"you chose: {decision['updatedInput']['answers'][QUESTION['question']]}"
+        emit({"type": "assistant", "message": {"content": [{"type": "text", "text": text}]}})
 
     answer = None
     if "--json-schema" in argv and "no-answer" not in modes:

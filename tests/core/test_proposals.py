@@ -2,7 +2,7 @@ from typing import Any
 
 import pytest
 
-from apm.core.body import read_body
+from apm.core.files import read_body
 from apm.core.git import log
 from apm.core.ids import handle
 from apm.core.model import Kind

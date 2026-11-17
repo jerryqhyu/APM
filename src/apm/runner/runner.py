@@ -1,8 +1,13 @@
-"""The runner (plans.md §7.1): starts `claude` on a node, records what it says, and turns a
-decomposer's answer into a proposal.
+"""The runner (plans.md §7.1): starts `claude` on a node or on the project, records what it says,
+relays its questions and permission prompts, and turns a decomposer's answer into a proposal.
 
-A run is one `claude` process. A request can chain several: decompose → critique → revise. Every
-event a run emits is stored, and passed to `on_event` so a UI can follow along live.
+A run is one turn: one `claude` process, from your message to its reply. A conversation is a
+chain of runs that share a session, each resuming the one before. A request can chain several
+runs by itself: decompose → critique → revise. Every event a run emits is stored, and passed to
+`on_event` so a UI can follow along live.
+
+While a run is going, `claude` may need an answer: may it run this command, which of these
+options do you want. Those arrive as requests. The run waits until `answer()` is called.
 """
 
 import asyncio
@@ -11,22 +16,23 @@ import json
 import os
 import signal
 from collections.abc import Callable, Coroutine
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
 from apm.core.config import ApmConfig, read_config
-from apm.core.lock import CACHE_DIR
+from apm.core.lock import CACHE_DIR, pid_alive
 from apm.core.model import NodeId
 from apm.core.project import Project, load_graph
 from apm.core.proposals import ProposalError, parse_decomposition, parse_review
-from apm.core.store import Proposal, Run, RunStatus, Store
+from apm.core.store import PROJECT, Proposal, Run, RunStatus, Store
 from apm.runner.agents import (
     AGENTS,
     AgentSpec,
     RunRefused,
     build_command,
     build_prompt,
+    check_mode,
     check_startable,
     critic_prompt,
     mcp_config,
@@ -42,10 +48,33 @@ _LINE_LIMIT = 32 * 1024 * 1024  # one stream-json line can carry a whole file
 
 
 class RunnerBusy(RunRefused):
-    """Too many runs, or one already active on this node."""
+    """Too many runs, or one already active here."""
+
+    http_status = 409
 
 
 type Listener = Callable[[dict[str, Any]], None]
+
+
+@dataclass(slots=True)
+class Request:
+    """Something a running agent is waiting on the user for."""
+
+    id: str
+    run_id: str
+    tool: str
+    """The tool it wants to use. `AskUserQuestion` is a question; anything else a permission."""
+    input: dict[str, Any]
+    description: str
+
+    @property
+    def kind(self) -> str:
+        if self.tool == "AskUserQuestion":
+            return "question"
+        return "plan" if self.tool == "ExitPlanMode" else "permission"
+
+    def as_dict(self) -> dict[str, Any]:
+        return {**asdict(self), "kind": self.kind}
 
 
 class Runner:
@@ -53,70 +82,71 @@ class Runner:
         self.project = project
         self.store = store
         self._on_event = on_event or (lambda event: None)
-        self._tasks: dict[NodeId, asyncio.Task[None]] = {}  # one pipeline per node
+        self._tasks: dict[str, asyncio.Task[None]] = {}  # by slot: see `_slot`
+        self._slots: dict[str, str] = {}  # run id → slot, for every run of an active pipeline
         self._processes: dict[str, asyncio.subprocess.Process] = {}  # by run id
+        self._requests: dict[str, Request] = {}  # by request id
         self._fail_orphans()
 
     # --- starting ---
 
-    def start(self, agent: str, node_id: NodeId, guidance: str = "", *, critic: bool = True) -> Run:
-        """Starts `agent` on a node and returns its run at once; the work continues in the
-        background. Must be called from a running event loop.
+    def start(
+        self,
+        agent: str,
+        node_id: NodeId | None,
+        message: str = "",
+        *,
+        critic: bool = True,
+        mode: str | None = None,
+    ) -> Run:
+        """Starts `agent` on a node (None = the project as a whole) and returns its run at once;
+        the work continues in the background. Must be called from a running event loop.
         """
         spec = AGENTS.get(agent)
         if spec is None or not spec.user_startable:
             raise RunRefused(f"unknown agent {agent!r}")
+        node_id = node_id or PROJECT
         graph = load_graph(self.project)
         check_startable(spec, graph, node_id)
-        config = self._claim(node_id)
-        prompt = build_prompt(spec, graph, node_id, guidance)
-        run = self._create_run(spec, node_id, prompt)
+        config = read_config(self.project.apm_dir)
+        mode = check_mode(mode, config)
+        prompt = build_prompt(spec, graph, node_id, message)
+        run = self._create_run(spec, node_id, prompt, mode=mode, config=config)
         worktree = worktree_name(graph, node_id) if spec.worktree else None
         self._schedule(run, self._pipeline(spec, config, run, critic=critic, worktree=worktree))
         return run
 
-    def continue_run(self, run_id: str, message: str) -> Run:
-        """Sends a follow-up message into a finished run's session, as a new run."""
+    def continue_run(self, run_id: str, message: str, *, mode: str | None = None) -> Run:
+        """Sends the next message of a conversation: a new run that resumes the session of
+        `run_id`.
+        """
         previous = self.store.get_run(run_id)
         spec = AGENTS[previous.agent]
-        if previous.status == "running":
-            raise RunnerBusy("that run is still going")
         if not message.strip():
             raise RunRefused("the message is empty")
-        config = self._claim(previous.node_id)
+        config = read_config(self.project.apm_dir)
+        mode = check_mode(mode or previous.mode or None, config)
         run = self._create_run(
-            spec, previous.node_id, message, session_id=previous.session_id, parent_run=run_id
+            spec,
+            previous.node_id,
+            message,
+            mode=mode,
+            config=config,
+            session_id=previous.session_id,
+            parent_run=run_id,
         )
         cwd = self._session_cwd(run_id)
         self._schedule(run, self._pipeline(spec, config, run, resume=True, critic=False, cwd=cwd))
         return run
 
-    def _claim(self, node_id: NodeId) -> ApmConfig:
-        """Checks the limits: one pipeline per node, `max_concurrent` in all."""
-        config = read_config(self.project.apm_dir)
-        elsewhere = any(
-            run.pid != os.getpid() and run.pid is not None and _is_alive(run.pid)
-            for run in self.store.list_runs(node_id=node_id, status="running")
-        )
-        if node_id in self._tasks or elsewhere:
-            raise RunnerBusy("a run is already active on this node")
-        if len(self._tasks) >= config.runner.max_concurrent:
-            limit = config.runner.max_concurrent
-            raise RunnerBusy(f"{limit} runs are already active (runner.max_concurrent)")
-        return config
-
-    def _schedule(self, run: Run, pipeline: Coroutine[Any, Any, None]) -> None:
-        task = asyncio.get_running_loop().create_task(pipeline)
-        self._tasks[run.node_id] = task
-
-        def finished(_: asyncio.Task[None]) -> None:
-            self._tasks.pop(run.node_id, None)
-            # A pipeline cancelled before its first step never got to record how it ended.
-            if self.store.get_run(run.id).status == "running":
-                cut_off = self.store.finish_run(run.id, "cancelled")
-                self._emit({"type": "run.finished", "run": asdict(cut_off)})
-
-        task.add_done_callback(finished)
+    def _slot(self, spec: AgentSpec, node_id: NodeId, session_id: str) -> str:
+        """What a run occupies while it is active. Two conversations can go on side by side, but
+        one conversation takes one turn at a time, and a node has one decomposer or implementer
+        at a time.
+        """
+        if spec.name == "apm-assistant":
+            return f"chat:{session_id}"
+        return f"{spec.name}:{node_id}"
 
     def _create_run(
         self,
@@ -124,9 +154,30 @@ class Runner:
         node_id: NodeId,
         prompt: str,
         *,
+        mode: str,
+        config: ApmConfig | None = None,
         session_id: str | None = None,
         parent_run: str | None = None,
     ) -> Run:
+        """Records a run. With `config`, it is the first run of a pipeline, so the limits are
+        checked: its slot must be free, and `max_concurrent` pipelines in all.
+        """
+        if config is not None:
+            slot = self._slot(spec, node_id, session_id or "new")
+            elsewhere = any(
+                run.agent == spec.name
+                and run.pid != os.getpid()
+                and run.pid is not None
+                and pid_alive(run.pid)
+                and (spec.name != "apm-assistant" or run.session_id == session_id)
+                for run in self.store.list_runs(node_id=node_id, status="running")
+            )
+            if slot in self._tasks or elsewhere:
+                where = "in this conversation" if spec.name == "apm-assistant" else "on this node"
+                raise RunnerBusy(f"{spec.label} is already running {where}")
+            if len(self._tasks) >= config.runner.max_concurrent:
+                limit = config.runner.max_concurrent
+                raise RunnerBusy(f"{limit} runs are already active (runner.max_concurrent)")
         run = self.store.create_run(
             node_id=node_id,
             agent=spec.name,
@@ -134,9 +185,27 @@ class Runner:
             session_id=session_id,
             parent_run=parent_run,
             pid=os.getpid(),
+            mode=mode,
         )
         self._emit({"type": "run.started", "run": asdict(run)})
         return run
+
+    def _schedule(self, run: Run, pipeline: Coroutine[Any, Any, None]) -> None:
+        slot = self._slot(AGENTS[run.agent], run.node_id, run.session_id)
+        task = asyncio.get_running_loop().create_task(pipeline)
+        self._tasks[slot] = task
+        self._slots[run.id] = slot
+
+        def finished(_: asyncio.Task[None]) -> None:
+            self._tasks.pop(slot, None)
+            for run_id in [r for r, s in self._slots.items() if s == slot]:
+                del self._slots[run_id]
+            # A pipeline cancelled before its first step never got to record how it ended.
+            if self.store.get_run(run.id).status == "running":
+                cut_off = self.store.finish_run(run.id, "cancelled")
+                self._emit({"type": "run.finished", "run": asdict(cut_off)})
+
+        task.add_done_callback(finished)
 
     # --- the pipeline ---
 
@@ -178,11 +247,12 @@ class Runner:
         self, config: ApmConfig, parent: Run, proposal: dict[str, Any]
     ) -> dict[str, Any] | None:
         """Runs the critic. A critic that fails doesn't sink the proposal: it just goes
-        unreviewed.
+        unreviewed. It runs in `dontAsk` mode, so it never stops to ask you anything.
         """
         spec = AGENTS["apm-critic"]
         prompt = critic_prompt(load_graph(self.project), parent.node_id, proposal)
-        run = self._create_run(spec, parent.node_id, prompt, parent_run=parent.id)
+        run = self._create_run(spec, parent.node_id, prompt, mode="dontAsk", parent_run=parent.id)
+        self._slots[run.id] = self._slots.get(parent.id, "")
         answer = await self._execute(spec, config, run)
         if answer is None:
             return None
@@ -199,9 +269,11 @@ class Runner:
             spec,
             first.node_id,
             revision_prompt(review),
+            mode=first.mode,
             session_id=self.store.get_run(first.id).session_id,
             parent_run=first.id,
         )
+        self._slots[run.id] = self._slots.get(first.id, "")
         answer = await self._execute(spec, config, run, resume=True)
         if answer is None:
             return None
@@ -235,16 +307,16 @@ class Runner:
             command = build_command(
                 spec,
                 config,
-                prompt=run.prompt,
                 mcp_config_path=config_path,
                 session_id=run.session_id,
+                mode=run.mode,
                 resume=resume,
                 worktree=worktree,
             )
             process = await asyncio.create_subprocess_exec(
                 *command,
                 cwd=cwd or self.project.code_dir,
-                stdin=asyncio.subprocess.DEVNULL,
+                stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 limit=_LINE_LIMIT,
@@ -252,16 +324,20 @@ class Runner:
             )
             self._processes[run.id] = process
             stderr_task = asyncio.create_task(_read_tail(process.stderr))
+            await self._send(run.id, {"type": "user", "message": _user_message(run.prompt)})
             assert process.stdout is not None
             async for line in process.stdout:
                 event = _parse_line(line)
                 if event is None:
                     continue
+                if event.get("type") == "control_request":
+                    await self._on_request(run, event)
+                    continue
                 if event.get("type") == "result":
                     result = event
+                    _close(process)  # nothing more to say: lets the process finish
                 if _keep(event):
-                    stored = self.store.add_event(run.id, event)
-                    self._emit({"type": "run.event", "run_id": run.id, "event": asdict(stored)})
+                    self._record(run.id, event)
             code = await process.wait()
             stderr = await stderr_task
             if code == 0 and result and not result.get("is_error"):
@@ -276,6 +352,8 @@ class Runner:
             raise
         finally:
             self._processes.pop(run.id, None)
+            for request in [r for r in self._requests.values() if r.run_id == run.id]:
+                del self._requests[request.id]
             if stderr_task is not None:
                 stderr_task.cancel()
             finished = self.store.finish_run(
@@ -294,6 +372,18 @@ class Runner:
             self._emit({"type": "run.finished", "run": asdict(self.store.get_run(run.id))})
             return None
         return answer if isinstance(answer, dict) else {}
+
+    def _record(self, run_id: str, event: dict[str, Any]) -> None:
+        stored = self.store.add_event(run_id, event)
+        self._emit({"type": "run.event", "run_id": run_id, "event": asdict(stored)})
+
+    async def _send(self, run_id: str, message: dict[str, Any]) -> None:
+        process = self._processes.get(run_id)
+        if process is None or process.stdin is None or process.stdin.is_closing():
+            raise RunRefused("that run is no longer listening")
+        process.stdin.write(json.dumps(message, ensure_ascii=False).encode() + b"\n")
+        with contextlib.suppress(ConnectionError):
+            await process.stdin.drain()
 
     def _write_mcp_config(self, spec: AgentSpec, run: Run) -> Path:
         directory = self.project.apm_dir / CACHE_DIR / "runs"
@@ -315,11 +405,67 @@ class Runner:
             run = self.store.get_run(run.parent_run) if run.parent_run else None
         return None
 
+    # --- questions and permission prompts ---
+
+    async def _on_request(self, run: Run, event: dict[str, Any]) -> None:
+        """`claude` asks its host something. Permission prompts and questions wait for the user;
+        anything else is acknowledged so the run isn't left hanging.
+        """
+        body = event.get("request") or {}
+        request_id = str(event.get("request_id", ""))
+        if body.get("subtype") != "can_use_tool":
+            await self._send(run.id, _control_response(request_id, {}))
+            return
+        tool_input = body.get("input")
+        request = Request(
+            id=request_id,
+            run_id=run.id,
+            tool=str(body.get("tool_name", "")),
+            input=tool_input if isinstance(tool_input, dict) else {},
+            description=str(body.get("description") or ""),
+        )
+        self._requests[request.id] = request
+        self._record(run.id, {"type": "apm_request", **request.as_dict()})
+        self._emit({"type": "run.request", "request": request.as_dict()})
+
+    async def answer(
+        self,
+        request_id: str,
+        *,
+        allow: bool,
+        message: str = "",
+        answers: dict[str, str] | None = None,
+    ) -> None:
+        """Answers a waiting request. For a question, `answers` maps each question's text to the
+        chosen option's label (or your own words).
+        """
+        request = self._requests.pop(request_id, None)
+        if request is None:
+            raise RunRefused("that request is no longer waiting for an answer")
+        if allow:
+            updated = {**request.input, "answers": answers} if answers else request.input
+            decision = {"behavior": "allow", "updatedInput": updated}
+        else:
+            decision = {"behavior": "deny", "message": message or "The user said no."}
+        await self._send(request.run_id, _control_response(request.id, decision))
+        resolved = {
+            "type": "apm_request_resolved",
+            "id": request.id,
+            "allow": allow,
+            "message": message,
+            "answers": answers or {},
+        }
+        self._record(request.run_id, resolved)
+        self._emit({"type": "run.request_resolved", "run_id": request.run_id, "id": request.id})
+
+    def pending_requests(self, run_id: str | None = None) -> list[dict[str, Any]]:
+        return [r.as_dict() for r in self._requests.values() if run_id in (None, r.run_id)]
+
     # --- stopping ---
 
     async def cancel(self, run_id: str) -> None:
         """Stops a run, and the rest of its pipeline."""
-        task = self._tasks.get(self.store.get_run(run_id).node_id)
+        task = self._tasks.get(self._slots.get(run_id, ""))
         if task is not None:
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
@@ -342,21 +488,22 @@ class Runner:
             task.cancel()
         await asyncio.gather(*self._tasks.values(), return_exceptions=True)
 
-    async def wait(self, node_id: NodeId) -> None:
-        """Waits for the pipeline on a node to finish, if there is one."""
-        task = self._tasks.get(node_id)
+    async def wait(self, run_id: str) -> None:
+        """Waits for the pipeline a run belongs to, if it is still going."""
+        task = self._tasks.get(self._slots.get(run_id, ""))
         if task is not None:
             await asyncio.gather(task, return_exceptions=True)
 
-    def active_nodes(self) -> list[NodeId]:
-        return sorted(self._tasks)
+    def active(self) -> int:
+        """How many pipelines are going."""
+        return len(self._tasks)
 
     # --- housekeeping ---
 
     def _fail_orphans(self) -> None:
         """Runs still marked running whose host process is gone were cut off: say so."""
         for run in self.store.list_runs(status="running", limit=1000):
-            if run.pid is None or run.pid == os.getpid() or not _is_alive(run.pid):
+            if run.pid is None or run.pid == os.getpid() or not pid_alive(run.pid):
                 self.store.finish_run(
                     run.id, "failed", error="interrupted: its host process exited"
                 )
@@ -368,6 +515,22 @@ class Runner:
 
 def proposal_dict(proposal: Proposal) -> dict[str, Any]:
     return asdict(proposal)
+
+
+def _user_message(text: str) -> dict[str, Any]:
+    return {"role": "user", "content": text}
+
+
+def _control_response(request_id: str, response: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "type": "control_response",
+        "response": {"subtype": "success", "request_id": request_id, "response": response},
+    }
+
+
+def _close(process: asyncio.subprocess.Process) -> None:
+    if process.stdin is not None and not process.stdin.is_closing():
+        process.stdin.close()
 
 
 def _keep(event: dict[str, Any]) -> bool:
@@ -407,13 +570,3 @@ async def _read_tail(stream: asyncio.StreamReader | None, limit: int = 8000) -> 
 def _signal_group(pid: int, sig: signal.Signals) -> None:
     with contextlib.suppress(ProcessLookupError, PermissionError):
         os.killpg(pid, sig)
-
-
-def _is_alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True

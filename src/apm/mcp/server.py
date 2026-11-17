@@ -5,35 +5,29 @@ What a session may do is set by `APM_RUN_SCOPE`:
 
 - `read`: no writes. For planning agents, which return proposals instead.
 - `node:<id>`: status, delivery and body of that one node. For the implementer.
-- `project` (the default): everything. For your own interactive sessions.
+- `project` (the default): everything. For the chat, and for your own interactive sessions.
 """
 
 import functools
 import os
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import Annotated, Literal
+from typing import Annotated, Literal, TypedDict
 
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from pydantic import BaseModel, Field
 
 from apm.core import ops
-from apm.core.body import read_body, render_body
-from apm.core.config import ConfigError
-from apm.core.git import GitError
+from apm.core.errors import ApmError
+from apm.core.files import render_body
 from apm.core.graph import Graph
-from apm.core.ids import HandleError, handles, is_node_id, resolve_handle
+from apm.core.ids import is_node_id
 from apm.core.lifting import check_all
-from apm.core.lock import LockTimeoutError
 from apm.core.model import Kind, NodeId, Status
-from apm.core.mutate import DirtyPlanError, Mutation, OpError
-from apm.core.ndjson import GraphParseError, InvalidNodeError
-from apm.core.outline import format_node_line, format_outline
-from apm.core.project import Project, ProjectError, find_project, load_graph
-from apm.core.search import search
-from apm.core.status import compute_states, ready_leaves
-from apm.core.validate import InvariantError
+from apm.core.mutate import Mutation
+from apm.core.project import Project, find_project, load_graph
+from apm.core.views import node_line, node_text, outline, search
 
 SCOPE_ENV = "APM_RUN_SCOPE"
 ACTOR_ENV = "APM_ACTOR"
@@ -49,18 +43,8 @@ nest (one parent each) and can depend on any other node. Refer to nodes by handl
 Start with apm_get_graph for the outline, or apm_ready for what can be worked on now.
 """
 
-EXPECTED_ERRORS = (
-    ProjectError,
-    HandleError,
-    OpError,
-    InvariantError,
-    GraphParseError,
-    InvalidNodeError,
-    ConfigError,
-    DirtyPlanError,
-    GitError,
-    LockTimeoutError,
-)
+NODE_ACTIONS = ("set_status", "attach_delivery", "edit_body")
+"""What a `node:<id>` session may do, to its own node only."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,6 +65,23 @@ class Scope:
     def __str__(self) -> str:
         return f"node:{self.node_id}" if self.kind == "node" else self.kind
 
+    def check(self, action: str, node_id: NodeId | None = None) -> None:
+        """Refuses a write this scope doesn't cover."""
+        if self.kind == "project":
+            return
+        if self.kind == "node" and node_id == self.node_id and action in NODE_ACTIONS:
+            return
+        if self.kind == "read":
+            reason = "this session is read-only: return a proposal instead of writing"
+        else:
+            reason = f"this session may only update status, delivery and body of {self.node_id}"
+        raise ToolError(f"not allowed ({SCOPE_ENV}={self}): {reason}")
+
+
+class Attribution(TypedDict):
+    actor: str
+    run: str | None
+
 
 class NewNodeInput(BaseModel):
     title: str
@@ -93,55 +94,35 @@ class NewNodeInput(BaseModel):
     depends_on_keys: list[str] = Field(default_factory=list, description="Keys in this batch.")
 
 
-def tool_errors[**P, R](fn: Callable[P, R]) -> Callable[P, R]:
-    """Sends the errors a caller can cause back as the tool's error text."""
-
-    @functools.wraps(fn)
-    def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
-        try:
-            return fn(*args, **kwargs)
-        except EXPECTED_ERRORS as err:
-            raise ToolError(str(err)) from None
-
-    return wrapper
-
-
 def build_server(project: Project | None = None, env: Mapping[str, str] | None = None) -> MCPServer:
     """`project` defaults to the one found from `APM_PROJECT` or the working directory, looked up
     on each call so the server can start before `apm init` has run.
     """
     env = os.environ if env is None else env
     scope = Scope.parse(env.get(SCOPE_ENV))
-    actor = env.get(ACTOR_ENV) or "agent:claude"
-    run = env.get(RUN_ENV) or None
+    # Who the commits are attributed to (plans.md §3.5).
+    by: Attribution = {"actor": env.get(ACTOR_ENV) or "agent:claude", "run": env.get(RUN_ENV)}
     focus = env.get(NODE_ENV) or None
     server = MCPServer("apm", instructions=INSTRUCTIONS)
 
-    def current() -> tuple[Project, Graph]:
+    def plan() -> tuple[Project, Graph]:
         found = project or find_project(env=env)
         return found, load_graph(found)
-
-    def allow(action: str, node_id: NodeId | None = None) -> None:
-        """Refuses a write this session's scope doesn't cover."""
-        if scope.kind == "project":
-            return
-        if (
-            scope.kind == "node"
-            and node_id == scope.node_id
-            and action in ("set_status", "attach_delivery", "edit_body")
-        ):
-            return
-        if scope.kind == "read":
-            reason = "this session is read-only: return a proposal instead of writing"
-        else:
-            reason = f"this session may only update status, delivery and body of {scope.node_id}"
-        raise ToolError(f"not allowed ({SCOPE_ENV}={scope}): {reason}")
 
     def done(result: Mutation, text: str) -> str:
         return text if result.sha else "nothing to change"
 
     def tool(fn: Callable[..., str]) -> Callable[..., str]:
-        return server.tool(structured_output=False)(tool_errors(fn))
+        """Registers a tool. Errors the caller can fix come back as the tool's error text."""
+
+        @functools.wraps(fn)
+        def wrapper(*args: object, **kwargs: object) -> str:
+            try:
+                return fn(*args, **kwargs)
+            except ApmError as err:
+                raise ToolError(str(err)) from None
+
+        return server.tool(structured_output=False)(wrapper)
 
     # --- read ---
 
@@ -153,9 +134,9 @@ def build_server(project: Project | None = None, env: Mapping[str, str] | None =
         """The plan as a compact outline, one node per line, indented by nesting:
         `<handle> [<kind>/<status>·<ready|blocked>] <title> (<done>/<leaves>) → <depends on>`.
         """
-        _, graph = current()
-        scope_id = None if root is None else resolve_handle(root, graph.nodes)
-        return format_outline(graph, scope_id, depth) or "(the plan has no nodes yet)"
+        _, graph = plan()
+        text = outline(graph, None if root is None else graph.resolve(root), depth)
+        return text or "(the plan has no nodes yet)"
 
     @tool
     def apm_get_node(
@@ -164,56 +145,36 @@ def build_server(project: Project | None = None, env: Mapping[str, str] | None =
         ] = None,
     ) -> str:
         """One node in full: state, parent, children, dependencies, delivery and body."""
-        found, graph = current()
+        found, graph = plan()
         node = node or focus
         if not node:
             raise ToolError("which node? Pass its handle, e.g. apm_get_node(node='1c0b9a44')")
-        node_id = resolve_handle(node, graph.nodes)
-        states, names = compute_states(graph), handles(graph.nodes)
-        n = graph[node_id]
-        lines = [format_node_line(graph, node_id, states, names), f"id: {node_id}"]
-        for label, ids in (
-            ("parent", [n.parent] if n.parent else []),
-            ("child", graph.children(node_id)),
-            ("depends on", graph.dependencies(node_id)),
-            ("needed by", graph.dependents(node_id)),
-            ("waiting on", states[node_id].waiting_on),
-        ):
-            lines += [f"{label}: {format_node_line(graph, o, states, names)}" for o in ids]
-        if (d := n.delivery) is not None:
-            lines.append(f"delivery: repo={d.repo} branch={d.branch} pr={d.pr} commits={d.commits}")
-        body = read_body(found.apm_dir, node_id).strip()
-        return "\n".join(lines) + ("\n\n" + body if body else "\n\n(no body)")
+        return node_text(found, graph, graph.resolve(node))
 
     @tool
     def apm_search(query: str) -> str:
         """Nodes whose title or body contains every word of the query."""
-        found, graph = current()
-        names = handles(graph.nodes)
+        found, graph = plan()
         hits = search(found, graph, query)
-        return (
-            "\n".join(
-                f"{names[h.node_id]} {h.title}" + (f" — {h.snippet}" if h.snippet else "")
-                for h in hits
-            )
-            or "(no matches)"
-        )
+        lines = [
+            f"{graph.handles[h.node_id]} {h.title}" + (f" — {h.snippet}" if h.snippet else "")
+            for h in hits
+        ]
+        return "\n".join(lines) or "(no matches)"
 
     @tool
     def apm_ready(
         root: Annotated[str | None, Field(description="Handle: only what's under it.")] = None,
     ) -> str:
         """What can be worked on now: leaves that are todo with every dependency done."""
-        _, graph = current()
-        scope_id = None if root is None else resolve_handle(root, graph.nodes)
-        states, names = compute_states(graph), handles(graph.nodes)
-        lines = [format_node_line(graph, n, states, names) for n in ready_leaves(graph, scope_id)]
-        return "\n".join(lines) or "(nothing is ready)"
+        _, graph = plan()
+        ready = graph.ready_leaves(None if root is None else graph.resolve(root))
+        return "\n".join(node_line(graph, n) for n in ready) or "(nothing is ready)"
 
     @tool
     def apm_check() -> str:
         """Validate the plan: invariant errors and warnings."""
-        _, graph = current()
+        _, graph = plan()
         report = check_all(graph)
         lines = [f"error {i.code}: {i.message}" for i in report.errors]
         lines += [f"warning {i.code}: {i.message}" for i in report.warnings]
@@ -224,23 +185,23 @@ def build_server(project: Project | None = None, env: Mapping[str, str] | None =
     @tool
     def apm_create_nodes(nodes: list[NewNodeInput]) -> str:
         """Create one or more nodes in a single commit. Returns their handles."""
-        allow("create")
-        found, graph = current()
+        scope.check("create")
+        found, graph = plan()
         new = [
             ops.NewNode(
                 title=n.title,
-                parent=None if n.parent is None else resolve_handle(n.parent, graph.nodes),
+                parent=None if n.parent is None else graph.resolve(n.parent),
                 kind=n.kind,
-                depends_on=[resolve_handle(d, graph.nodes) for d in n.depends_on],
+                depends_on=[graph.resolve(d) for d in n.depends_on],
                 key=n.key,
                 depends_on_keys=n.depends_on_keys,
                 body=render_body(intent=n.intent, acceptance=n.acceptance),
             )
             for n in nodes
         ]
-        result = ops.create_nodes(found, new, actor=actor, run=run)
-        names = handles(result.graph.nodes)
-        return "\n".join(f"{names[i]} {result.graph[i].title}" for i in result.created)
+        result = ops.create_nodes(found, new, **by)
+        after = result.graph
+        return "\n".join(f"{after.handles[i]} {after[i].title}" for i in result.created)
 
     @tool
     def apm_update_node(
@@ -250,50 +211,45 @@ def build_server(project: Project | None = None, env: Mapping[str, str] | None =
         body: Annotated[str | None, Field(description="The whole new body (markdown).")] = None,
     ) -> str:
         """Change a node's title, kind or body. Only what you pass is changed."""
-        found, graph = current()
-        node_id = resolve_handle(node, graph.nodes)
+        found, graph = plan()
+        node_id = graph.resolve(node)
         changed = []
         if title is not None or kind is not None:
-            allow("update", node_id)
-            if ops.update_node(found, node_id, title=title, kind=kind, actor=actor, run=run).sha:
+            scope.check("update", node_id)
+            if ops.update_node(found, node_id, title=title, kind=kind, **by).sha:
                 changed.append("fields")
         if body is not None:
-            allow("edit_body", node_id)
-            if ops.edit_body(found, node_id, body, actor=actor, run=run).sha:
+            scope.check("edit_body", node_id)
+            if ops.edit_body(found, node_id, body, **by).sha:
                 changed.append("body")
         return f"updated {' and '.join(changed)}" if changed else "nothing to change"
 
     @tool
     def apm_move_node(
         node: str,
-        parent: Annotated[
-            str | None, Field(description="New parent. Omit for the top level.")
-        ] = None,
+        parent: Annotated[str | None, Field(description="New parent. Omit for top level.")] = None,
     ) -> str:
         """Move a node, with everything under it, to another parent."""
-        allow("move")
-        found, graph = current()
-        target = None if not parent else resolve_handle(parent, graph.nodes)
-        moved = ops.move_node(
-            found, resolve_handle(node, graph.nodes), target, actor=actor, run=run
-        )
-        return done(moved, "moved")
+        scope.check("move")
+        found, graph = plan()
+        target = None if not parent else graph.resolve(parent)
+        return done(ops.move_node(found, graph.resolve(node), target, **by), "moved")
 
     @tool
     def apm_link(node: str, depends_on: str) -> str:
         """Record that `node` depends on `depends_on`."""
-        allow("link")
-        found, graph = current()
-        src, dst = (resolve_handle(h, graph.nodes) for h in (node, depends_on))
-        return done(ops.link(found, src, dst, actor=actor, run=run), "linked")
+        scope.check("link")
+        found, graph = plan()
+        result = ops.link(found, graph.resolve(node), graph.resolve(depends_on), **by)
+        return done(result, "linked")
 
     @tool
     def apm_unlink(node: str, depends_on: str) -> str:
         """Remove the dependency of `node` on `depends_on`."""
-        allow("unlink")
-        found, graph = current()
-        src, dst = (resolve_handle(h, graph.nodes) for h in (node, depends_on))
-        return done(ops.unlink(found, src, dst, actor=actor, run=run), "unlinked")
+        scope.check("unlink")
+        found, graph = plan()
+        result = ops.unlink(found, graph.resolve(node), graph.resolve(depends_on), **by)
+        return done(result, "unlinked")
 
     @tool
     def apm_set_status(
@@ -302,10 +258,10 @@ def build_server(project: Project | None = None, env: Mapping[str, str] | None =
         note: Annotated[str, Field(description="Why: recorded in the commit.")] = "",
     ) -> str:
         """Set a node's status: todo, in_progress, done or dropped."""
-        found, graph = current()
-        node_id = resolve_handle(node, graph.nodes)
-        allow("set_status", node_id)
-        result = ops.set_status(found, node_id, status, note=note, actor=actor, run=run)
+        found, graph = plan()
+        node_id = graph.resolve(node)
+        scope.check("set_status", node_id)
+        result = ops.set_status(found, node_id, status, note=note, **by)
         return done(result, f"{node}: {status}")
 
     @tool
@@ -316,13 +272,40 @@ def build_server(project: Project | None = None, env: Mapping[str, str] | None =
         pr: Annotated[str | None, Field(description="Pull request URL.")] = None,
     ) -> str:
         """Record where a leaf's work landed in the code repo. Leaves only."""
-        found, graph = current()
-        node_id = resolve_handle(node, graph.nodes)
-        allow("attach_delivery", node_id)
+        found, graph = plan()
+        node_id = graph.resolve(node)
+        scope.check("attach_delivery", node_id)
         result = ops.attach_delivery(
-            found, node_id, branch=branch, commits=commits or (), pr=pr, actor=actor, run=run
+            found, node_id, branch=branch, commits=commits or (), pr=pr, **by
         )
         return done(result, "delivery recorded")
+
+    @tool
+    def apm_delete_node(
+        node: str,
+        recursive: Annotated[bool, Field(description="Also delete everything under it.")] = False,
+    ) -> str:
+        """Delete a node, and the dependencies on it. A node with children needs `recursive`."""
+        scope.check("delete")
+        found, graph = plan()
+        result = ops.delete_node(found, graph.resolve(node), recursive=recursive, **by)
+        return done(result, "deleted")
+
+    @tool
+    def apm_merge_nodes(
+        target: Annotated[str, Field(description="The node that survives.")],
+        others: Annotated[list[str], Field(description="Nodes folded into it, then deleted.")],
+        title: Annotated[str | None, Field(description="New title for the merged node.")] = None,
+    ) -> str:
+        """Merge several nodes into one. The target takes on the others' children, dependencies,
+        dependents and bodies.
+        """
+        scope.check("merge")
+        found, graph = plan()
+        result = ops.merge_nodes(
+            found, graph.resolve(target), [graph.resolve(o) for o in others], title=title, **by
+        )
+        return done(result, f"merged {len(others) + 1} nodes into {target}")
 
     return server
 
