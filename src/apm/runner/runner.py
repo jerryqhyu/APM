@@ -552,7 +552,11 @@ def _parse_line(line: bytes) -> dict[str, Any] | None:
 def _failure(result: dict[str, Any], stderr: str, code: int) -> str:
     if result.get("is_error"):
         detail = result.get("result") or ", ".join(map(str, result.get("errors") or []))
-        return f"{result.get('subtype', 'error')}: {detail}".strip(": ") or "the run failed"
+        # A usage limit arrives as an error whose subtype is still "success": the text says it all.
+        kind = result.get("subtype") or "error"
+        return (detail if kind == "success" else f"{kind}: {detail}").strip(
+            ": "
+        ) or "the run failed"
     last = stderr.strip().splitlines()[-1:] or [""]
     return f"claude exited with code {code}" + (f": {last[0]}" if last[0] else "")
 

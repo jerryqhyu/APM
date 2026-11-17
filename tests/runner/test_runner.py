@@ -11,7 +11,7 @@ from apm.core.ops import NewNode, create_nodes, set_status
 from apm.core.project import Project
 from apm.core.store import Store
 from apm.runner.agents import RunRefused
-from apm.runner.runner import Runner, RunnerBusy
+from apm.runner.runner import Runner, RunnerBusy, _failure
 from tests.runner.fake import FakeClaude
 
 
@@ -441,3 +441,13 @@ async def test_runs_cut_off_by_a_dead_host_are_marked_failed(project: Project) -
     Runner(project, store)
     finished = store.get_run(orphan.id)
     assert (finished.status, finished.error) == ("failed", "interrupted: its host process exited")
+
+
+def test_failure_messages_say_what_went_wrong() -> None:
+    limit = {"is_error": True, "subtype": "success", "result": "You've hit your 5-hour limit"}
+    assert _failure(limit, "", 0) == "You've hit your 5-hour limit"
+    budget = {"is_error": True, "subtype": "error_max_budget_usd", "result": "over budget"}
+    assert _failure(budget, "", 0) == "error_max_budget_usd: over budget"
+    assert _failure({"is_error": True, "errors": ["a", "b"]}, "", 1) == "error: a, b"
+    assert _failure({}, "warning\nboom\n", 2) == "claude exited with code 2: boom"
+    assert _failure({}, "", 3) == "claude exited with code 3"

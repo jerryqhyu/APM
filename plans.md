@@ -1,6 +1,6 @@
 # APM — Design Plan
 
-**Status:** v7 · v1 is implemented except playback (M5) and the SQLite index; §11 has the state of each milestone · **Last updated:** 2026-11-16
+**Status:** v8 · v1 is implemented except playback (M5) and the SQLite index; §11 has the state of each milestone · **Last updated:** 2026-11-17
 
 APM is a local-first project manager built for working with AI agents. A project is a **nested graph of nodes**: you start with a big idea, then break it down with Claude agents, level by level, until each piece is small enough to ship as a commit or PR. The plan lives in its own git repo, so every change to it can be traced and **played back** from the project's first node onward.
 
@@ -15,14 +15,15 @@ v1 = a Python backend with a TypeScript web UI, one user on one machine, one cod
 | Language | **Python 3.14** for the backend (core, CLI, server, MCP), managed with **uv**; TypeScript only for the web UI | The standard library covers UUIDv7, SQLite with FTS5 and subprocess git; first-class MCP and Claude Agent SDKs; fast, strict tooling (uv, ruff, ty). The UI stays TypeScript because it runs in the browser. Installed with `uvx` / `uv tool install`. Replaces TypeScript-everywhere, before any core code merged |
 | Graph model | Compound graph: containment **tree** + dependency **DAG**; cross-level edges stored once and *lifted* for display | Unlimited depth, zoom into any node, no hand-copying edges between levels |
 | Graph library | **networkx**: containment and dependencies are two digraphs over the same node ids | Traversal, cycle detection and strongly connected components come from a well-tested library instead of hand-written walks |
-| Plan storage | Separate git repo at `.apm/`, ignored by the code repo and linked to it by a committed `.apm-link` | No CI runs on plan commits; works with a protected `main`; history holds only plan changes |
+| Plan storage | Separate git repo at `.apm/`, on your machine only, ignored by the code repo and found through `.apm-link` | No CI runs on plan commits; works with a protected `main`; history holds only plan changes |
 | Source of truth | `graph.ndjson` (structure + metadata) + `nodes/<id>.md` (prose only) | Each field lives in exactly one place, so the two can't drift |
 | IDs | UUIDv7; the short handle is the **last** 8 hex chars | Sorts by creation time; new nodes append at the end of the file, so diffs stay small |
 | Local DB | SQLite (the standard library's `sqlite3`) in `.apm/.cache/`, not committed | Run logs and proposals. Can be deleted at any time |
 | History | Git commits with structured trailers, indexed into SQLite | Git records the state and trailers record the intent, with no custom event log to maintain |
 | Writes | `core.mutate()` under a file lock, callable from any process | No daemon required; writes happen one at a time, so updates aren't lost |
 | Agents | Server spawns `claude` CLI; agents call back through the APM MCP | The server controls runs; the MCP is how agents read and write data |
-| Planning writes | Agents return **proposals** (`--json-schema`); nothing is committed until you accept | Rejected ideas stay out of the history; nothing is half-written if a run fails |
+| Planning writes | Two ways, both yours to choose. **Decompose** returns a **proposal** (`--json-schema`); nothing is committed until you accept. The **chat** changes the plan directly, as you ask it to | A proposal keeps rejected ideas out of the history. The chat is a conversation you are in: each change is a commit with the agent's name on it, so it is visible and reversible |
+| Asking the user | Agents run with Claude Code's two-way stream: permission prompts and questions come to the host and wait for an answer | A run can stop and ask instead of guessing or being refused; the permission mode is yours to pick per run (default `auto`) |
 | Reconciling | Plain code (`apm reconcile`), not an agent | "Did it merge?" has a definite answer: the PR's state, or whether the commits are on the default branch |
 | Packaging | Agents + skills + MCP ship as one Claude Code plugin | The same plugin serves spawned runs and your own terminal sessions |
 | Scope | Single user, single machine, one code repo (config already shaped for many repos) | Fastest route to a working slice |
@@ -83,7 +84,7 @@ Computed (never stored, so it can't go stale):
 
 ```
 <code-repo>/
-  .apm-link                 committed in the CODE repo: { "path": ".apm", "remote": null }
+  .apm-link                 in the CODE repo: { "path": ".apm", "remote": null }
   .gitignore                contains ".apm/"
   .apm/                     ← separate git repo, branch main
     apm.yaml
@@ -163,7 +164,9 @@ APM-Actor: agent:apm-decomposer        # or user
 APM-Run: <run-id>                      # optional
 ```
 
-Ops: `create, update, move, delete, link, unlink, status, deliver, decompose, edit-body`. The plan repo's first commit is `init <name>`, with `APM-Op: init`.
+Ops: `create, update, move, delete, link, unlink, status, deliver, decompose, edit-body, merge`. The plan repo's first commit is `init <name>`, with `APM-Op: init`.
+
+`merge` folds several nodes into one: the target keeps its id, status and kind, and takes on the others' children, dependencies, dependents and bodies (appended under a heading). Edges among the merged nodes disappear. At most one of them may carry a delivery.
 
 Commits are made through the `git` CLI (`subprocess` with an argument list, never a shell), so your identity, signing, and hooks apply.
 
@@ -218,7 +221,7 @@ git -C .apm show <sha>:graph.ndjson        # one blob per frame
 ```
 
 - Frames go into `frames`. The scrubber works entirely from SQLite and loads blobs lazily, holding a small LRU of parsed graphs.
-- Body edits are shown in the node panel's history (`git log -- nodes/<id>.md`); they don't create new frames.
+- Body edits are shown in the node's history (`git log -- nodes/<id>.md`); they don't create new frames.
 - **Delivery overlay:** read the code repo's log for commits with an `APM-Node` trailer, merge them into the timeline by timestamp, and show each one as a marker on its node.
 - Playback is read-only. v2 may add "restore from here", which would add a new commit rather than rewrite history.
 
@@ -242,16 +245,32 @@ git -C .apm show <sha>:graph.ndjson        # one blob per frame
 ### 6.1 Layout (one Python package, one `apm` command)
 
 ```
-src/apm/core/    graph, invariants, lifting, git, mutate, store (no web or CLI dependencies)
+src/apm/core/    the plan: model, files, graph, rules, level views, mutate, ops, store
 src/apm/cli.py   the `apm` command (Typer)
 src/apm/mcp/     stdio MCP server on the official `mcp` SDK
-src/apm/runner/  starting `claude` on a node: agent specs, the command line, run logs
+src/apm/runner/  starting `claude`: agent specs, the command line, questions, run logs
 src/apm/server/  FastAPI app (HTTP + WebSocket), served by uvicorn; `static/` is the built UI
 src/apm/plugin/  Claude Code plugin (agents, skills, .mcp.json): ships inside the wheel
 tests/           pytest + Hypothesis, mirroring src/apm/
 ui/              TypeScript: vite + react + @xyflow/react + elkjs; `pnpm build` writes into
                  src/apm/server/static/, so the wheel carries the UI
+docs/            the user guide
 ```
+
+Inside `core`, each module is one concern, and nothing is computed in two places:
+
+| Module | Concern |
+|---|---|
+| `model`, `ids` | the node model; UUIDv7 ids and handles |
+| `errors` | `ApmError`, the base of every error the user can cause. The CLI prints it as one line, the MCP returns it as the tool's error, the API maps it to a status |
+| `ndjson`, `files`, `config` | `graph.ndjson`, node bodies, `apm.yaml` |
+| `git`, `lock` | the git wrapper; the cross-process write lock |
+| `graph` | the in-memory graph on networkx, with everything derived from it: handles, blocked, ready, progress |
+| `validate`, `lifting` | invariants I1–I7; level views |
+| `project` | `init_project()`, finding a project |
+| `mutate`, `ops` | the one way to write; the operations built on it; committing hand edits |
+| `views` | the one way to read: outline text, JSON views, search, a node's history |
+| `proposals`, `reconcile`, `store` | proposals; marking merged work done; the local database |
 
 - **Backend:** Python 3.14, one distribution with an `apm` console script, managed with **uv** (committed `uv.lock`, `uv_build` backend, src layout). **ruff** lints and formats, **ty** type-checks, **pytest** + **Hypothesis** test. Names follow PEP 8: snake_case for modules, functions, variables and fields, PascalCase for classes; ruff's pep8-naming rules enforce it.
 - **Libraries:** networkx (the in-memory graph: `Graph.tree` and `Graph.deps` are `networkx.DiGraph`s), pydantic (validating `graph.ndjson` lines, `apm.yaml`, and API and MCP inputs), PyYAML, Typer, FastAPI + uvicorn, and the `mcp` SDK. The standard library covers UUIDv7 (`uuid.uuid7()`), SQLite with FTS5 (`sqlite3`) and git (`subprocess`).
@@ -287,22 +306,26 @@ The server can start agents that run tools, so a web page from any other site mu
 - Every `/api` request carries a random token (`Authorization: Bearer …`), and so does the WebSocket (`?token=`). The UI gets it from the URL `apm serve` prints. The token is kept in `.cache/server.json` between runs, so a bookmarked URL keeps working.
 
 ```
-GET    /api/project                         name, agents, counts
+GET    /api/project                         name, agents, permission modes, counts
 GET    /api/tree                            every node with its computed state; errors, warnings
 GET    /api/graph?root=<id>                 one level: nodes, lifted edges, ports, entanglement
-GET    /api/nodes/:id                       node + body + links + history + runs + proposals
+GET    /api/nodes/:id                       node + body + links + history + proposals
 GET    /api/ready?root= · /api/search?q=
 POST   /api/nodes · PATCH /api/nodes/:id · POST /api/nodes/:id/move · DELETE /api/nodes/:id
+POST   /api/merge           { target, others[], title? }
 POST   /api/edges · DELETE /api/edges
-GET    /api/runs?node_id=&status= · GET /api/runs/:id?after=<seq>
-POST   /api/runs            { agent, node_id, guidance?, critic? }
-POST   /api/runs/:id/continue   { message }
+POST   /api/reconcile · POST /api/commit    mark merged work done · commit hand edits
+GET    /api/runs?node_id=&scope=project&status= · GET /api/runs/:id?after=<seq>
+POST   /api/runs            { agent, node_id?, message?, critic?, mode? }   no node_id = the project
+POST   /api/runs/:id/continue   { message, mode? }    the next turn of a conversation
 DELETE /api/runs/:id        stop
+GET    /api/requests        what running agents are waiting on you for
+POST   /api/requests/:id    { allow, message?, answers? }
 GET    /api/proposals?status= · GET /api/proposals/:id
 POST   /api/proposals/:id/accept   { children? }   the edited or trimmed list, if you changed it
 POST   /api/proposals/:id/reject
 WS     /ws   graph.changed · run.started · run.event · run.finished
-             · proposal.created · proposal.resolved
+             · run.request · run.request_resolved · proposal.created · proposal.resolved
 ```
 
 Node ids in the API can be full ids or handles.
@@ -324,13 +347,15 @@ Calls core directly (no HTTP), so it works even when the server isn't running. E
 | `apm_link / apm_unlink(node, depends_on)` | |
 | `apm_set_status(node, status, note?)` | |
 | `apm_attach_delivery(node, branch?, commits?, pr?)` | Leaves only |
+| `apm_delete_node(node, recursive?)` | |
+| `apm_merge_nodes(target, others[], title?)` | |
 
 **Finding the project:** use `APM_PROJECT` if it's set; otherwise walk up from cwd looking for `.apm-link`. (Implementer worktrees don't contain `.apm/`, so spawned runs always set `APM_PROJECT`.)
 
 **Scoping (`APM_RUN_SCOPE`):**
-- `read`: all write tools are refused. Used by the decomposer, critic and assistant.
+- `read`: all write tools are refused. Used by the decomposer and critic.
 - `node:<id>`: only `set_status` / `attach_delivery` / `update_node(body)` on that node. Used by the implementer.
-- `project` (the default): no restriction. Used by your own interactive sessions.
+- `project` (the default): no restriction. Used by the chat, and by your own interactive sessions.
 
 **Attribution:** `APM_ACTOR` and `APM_RUN` become the `APM-Actor` and `APM-Run` trailers of every commit the session makes. `APM_NODE` names the node a run is about.
 
@@ -340,51 +365,57 @@ Calls core directly (no HTTP), so it works even when the server isn't running. E
 
 ### 7.1 Runner
 
-The runner is a library (`apm.runner`). `apm serve` hosts one for the UI, and `apm run` hosts its own, so the CLI works without the server. Each run:
+The runner is a library (`apm.runner`). `apm serve` hosts one for the UI, and `apm run` hosts its own, so the CLI works without the server.
 
-1. Inserts a `runs` row and generates a session UUID.
+A **run** is one turn: one `claude` process, from your message to its reply. A **conversation** is a chain of runs that share a session, each resuming the one before (`parent_run`). Each run:
+
+1. Inserts a `runs` row (with its permission mode) and generates a session UUID.
 2. Writes a per-run MCP config (`.cache/runs/<id>.mcp.json`) with `APM_PROJECT`, `APM_RUN_SCOPE`, `APM_ACTOR`, `APM_RUN` and `APM_NODE`.
-3. Spawns, from the code repo, with stdin closed:
+3. Spawns, from the code repo:
 
 ```bash
-claude -p "$PROMPT" \
-  --agent apm:apm-decomposer \
+claude -p \
+  --input-format stream-json --output-format stream-json --verbose \
+  --permission-prompt-tool stdio --permission-mode auto \
+  --agent apm:apm-assistant \
   --plugin-dir "$APM_PLUGIN" \
   --mcp-config "$RUN_MCP_JSON" --strict-mcp-config \
   --setting-sources project \
-  --permission-prompts none \
-  --allowedTools "Read,Grep,Glob,mcp__apm__apm_get_graph,mcp__apm__apm_get_node,…" \
+  --allowedTools "Read,Grep,Glob,mcp__apm__apm_get_graph,…" \
   --max-budget-usd 2 \
-  --output-format stream-json --verbose \
-  --session-id "$SESSION_UUID" \
-  --model opus \
-  --json-schema "$DECOMPOSITION_SCHEMA"
+  --session-id "$SESSION_UUID"          # or --resume, for the next turn
 ```
 
-4. Reads stdout line by line. The events a transcript needs (`system` init, `assistant`, `user`, `result`) go to `run_events` and out as `run.event`; the rest is dropped.
-5. When the run exits, reads the final `result` event: cost, session id, and the structured answer.
+4. Sends your message on stdin as a stream-json `user` message, and keeps stdin open.
+5. Reads stdout line by line. The events a transcript needs (`system` init, `assistant`, `user`, `result`) go to `run_events` and out as `run.event`; the rest is dropped.
+6. When the `result` event arrives, closes stdin so the process exits, and reads the cost, session id and structured answer from it.
 
-Limits: `max_concurrent` pipelines in total and one per node; a request beyond that is refused (HTTP 409), not queued. Stop = SIGTERM to the process group, then SIGKILL after 5s. A run still marked running whose host process has died is marked failed the next time a runner starts.
+**Questions and permission prompts.** With `--permission-prompt-tool stdio`, `claude` sends its host a `control_request` (`can_use_tool`) whenever something needs your say-so, and waits. The runner records it as a request, announces it (`run.request`), and waits too. `answer()` writes the `control_response`: `allow` (for `AskUserQuestion`, with your answers added to the tool's input) or `deny` with your reason. So a run can ask which option you want, or whether it may run a command, and carry on with the answer. In the terminal, `apm run` puts the same requests to you as prompts.
+
+**Permission modes** are Claude Code's own, chosen per run: `auto` (the default: Claude decides what is safe and asks about the rest), `manual` (ask before every change), `acceptEdits`, `plan`, `dontAsk`. `runner.permission_mode` in `apm.yaml` sets the default. The critic always runs in `dontAsk`, so a review never stops to ask.
+
+Limits: `max_concurrent` pipelines in total. One conversation takes one turn at a time; a node has one decomposer and one implementer at a time. A request beyond that is refused (HTTP 409), not queued. Stop = SIGTERM to the process group, then SIGKILL after 5s. A run still marked running whose host process has died is marked failed the next time a runner starts.
 
 **Why each flag is there:**
-- The MCP is passed with `--mcp-config` rather than through the plugin's `.mcp.json`, so each run can inject its own env vars. `--strict-mcp-config` keeps your personal MCP servers out of runs, and also drops the plugin's own MCP entry (checked: with it, only the per-run server is connected).
-- `--permission-prompts none` means a headless run is denied instead of hanging forever on a prompt. So an agent can use exactly the tools in `--allowedTools` and nothing else.
+- The MCP is passed with `--mcp-config` rather than through the plugin's `.mcp.json`, so each run can inject its own env vars. `--strict-mcp-config` keeps your personal MCP servers out of runs, and also drops the plugin's own MCP entry (checked).
+- `--input-format stream-json` with `--permission-prompt-tool stdio` is what makes a run two-way (checked: prompts and `AskUserQuestion` arrive as `can_use_tool` requests).
+- `--allowedTools` is what never needs asking: reading the code, and the plan's own tools. Everything else follows the permission mode.
 - `--agent` needs the plugin's namespace: `apm:apm-decomposer` (checked).
 - `--json-schema` output arrives in the `result` event as `structured_output` (checked).
 - No `--include-partial-messages`: whole messages arrive block by block, which is live enough for a transcript and far fewer events to store.
 
 **What each agent may use** (`apm.runner.agents`), on top of which `apm.yaml` can add `allowed_tools`, a `model` and a `budget_usd` per agent:
 
-| Agent | Scope | Built-in tools | Extra |
+| Agent | Plan scope | Never asks for | Extra |
 |---|---|---|---|
-| `apm-decomposer` | `read` | Read, Grep, Glob | returns a decomposition (JSON schema) |
-| `apm-critic` | `read` | Read, Grep, Glob | returns a review (JSON schema); only started by the pipeline |
-| `apm-implementer` | `node:<id>` | Read, Grep, Glob, Edit, Write, `Bash(git *)`, `Bash(gh pr *)` | `--permission-mode acceptEdits`, `--worktree` |
-| `apm-assistant` | `read` | Read, Grep, Glob | free-form answer |
+| `apm-assistant` (the chat) | `project` | Read, Grep, Glob, every plan tool | can be about one node or the whole project |
+| `apm-decomposer` | `read` | Read, Grep, Glob, the read tools | returns a decomposition (JSON schema); file-editing tools are disallowed |
+| `apm-critic` | `read` | Read, Grep, Glob, the read tools | returns a review (JSON schema); only started by the pipeline; `dontAsk` |
+| `apm-implementer` | `node:<id>` | Read, Grep, Glob, Edit, Write, `Bash(git *)`, `Bash(gh pr *)`, its node's tools | `--worktree` |
 
-The implementer can run your tests only if you allow the command, e.g. `allowed_tools: ["Bash(uv run *)"]` under `runner.agents.apm-implementer` in `apm.yaml`.
+Give the implementer the commands that run your tests, e.g. `allowed_tools: ["Bash(uv run *)"]` under `runner.agents.apm-implementer`, or it has to ask (or, in `dontAsk`, cannot run them).
 
-### 7.2 Proposals (planning never auto-commits)
+### 7.2 Proposals (Decompose never commits by itself)
 
 ```
 decomposer ──json──▶ critic ──revise?──▶ decomposer (1 revision max) ──▶ proposal
@@ -413,9 +444,11 @@ When a proposal is accepted, the children get UUIDv7s, the keys are resolved, th
 
 v1: decomposing a node that already has children is **additive only**. It can add children and edges, and it cannot modify or remove existing ones.
 
-### 7.3 Sessions
+### 7.3 Conversations
 
-`runs.session_id` records every Claude session for each node. Sending a follow-up message to a finished run resumes its session with `--resume <id>`, as a new run, from the directory the session started in (an implementer's is its worktree). `--fork-session` is reserved for v2 variants.
+`runs.session_id` records the Claude session of every run. Sending the next message of a conversation starts a new run that resumes the session with `--resume <id>`, from the directory the session started in (an implementer's is its worktree). The run keeps the conversation's permission mode unless you pick another. `--fork-session` is reserved for v2 variants.
+
+The chat (`apm-assistant`) is the open-ended one: it has `project` scope, so within a conversation it can add, edit, link, move, merge and delete nodes as you ask. It can be started on a node (the conversation is then about that node) or on the project as a whole (`runs.node_id` is empty).
 
 ### 7.4 Implementer
 
@@ -441,11 +474,11 @@ v1: decomposing a node that already has children is **additive only**. It can ad
 src/apm/plugin/
   .claude-plugin/plugin.json
   agents/
+    apm-assistant.md      the chat: discusses the plan and changes it as asked
     apm-decomposer.md     node → proposal (read-only scope, json-schema)
     apm-critic.md         proposal → review: gaps, overlap, untestable criteria,
                           near-duplicates elsewhere in the graph, bad dependencies
     apm-implementer.md    ready leaf → worktree → commits → PR → attach delivery
-    apm-assistant.md      a question about a node → an answer; changes nothing
   skills/
     apm-node-format/      node fields, body sections, handles, the rules, what follows from them
     apm-decompose/        what a good breakdown looks like: 3–7 children, no overlap,
@@ -460,21 +493,21 @@ In your own terminal, `claude --plugin-dir "$(apm plugin-path)"` gives the sessi
 
 ## 9. UI
 
-- **Outline:** the whole plan as a collapsible tree down the left, with each node's state and progress.
-- **Level view:** shows the children of the current node (the top level to start), laid out left to right with elkjs (what a node needs is on its left) and drawn with React Flow. Double-click a node to go into it; a breadcrumb takes you back up. Drag from one node to another to add a dependency.
-- **Node card:** state (including computed ready/blocked), handle, title, a child-progress bar, and markers for a running agent and a waiting proposal.
-- **Edges:** lifted edges show a count badge. Edges that leave the level show as dashed stubs naming the outside node; clicking one goes there. Entangled nodes are highlighted under a banner.
-- **Node panel:**
-  - title, status and kind, edited in place
-  - description (markdown), with an editor
-  - what it waits on, what it depends on (add and remove), what needs it
-  - delivery (branch, commits, PR)
-  - runs, each with a live transcript, a Stop button, and a box to send a follow-up message
-  - history: the plan commits that touched the node
-  - actions: *Open · Add child · Decompose · Implement · Ask · Move · Delete*
-- **Proposals:** shown as dashed ghost nodes and edges on the level they would land in. The review dialog shows the rationale, the critic's review and the agent's warnings; you can edit any child, leave children out, and accept or reject.
-- **Top bar:** search (titles and bodies), what's ready, proposals waiting, agents running, and problems in the plan. Each takes you to the node.
+The conversation is the main interface; the graph is what it is about. The [user guide](docs/user-guide.md) walks through all of it.
+
+- **Top bar:** the project name; search (titles and bodies); counters that open lists: *Needs you* (an agent is waiting for your answer), *Ready*, *Proposals*, *Working*, *Problems*; and a light / dark / auto theme switch, remembered in the browser.
+- **Contents** (left): the whole plan as a collapsible tree, with each node's state and progress.
+- **Level view** (middle): the children of the current node, laid out left to right with elkjs (what a node needs is on its left) and drawn with React Flow. Double-click a node to go into it; the path above takes you back up. Click selects; shift-click selects several. Drag from one node to another to add a dependency.
+  - **Node card:** state (including computed ready/blocked), handle, title, a child-progress bar, and markers for a running agent and a waiting proposal.
+  - **Edges:** lifted edges show a count badge. Edges that leave the level show as dashed stubs naming the outside node. Entangled nodes are outlined under a banner.
+  - **Proposals** show as dashed ghost nodes and edges on the level they would land in.
+- **Right column**, always there, top to bottom:
+  - **Actions:** every operation as a button, for what is selected. One node: status, open, add child, add sibling, rename, switch kind, move, link, delete, Decompose, Implement. Several nodes: status, **merge**, delete. Nothing selected: add node, check plan, reconcile, commit hand edits.
+  - **Conversation:** the chat with Claude, about the selected node or the whole plan, turn by turn. Past conversations are tabs. Every agent run appears here, so it is also where a decomposition or an implementation is followed. A question or permission prompt shows as a card with its options, or Allow and Deny (with a reason). The permission mode is picked under the message box.
+  - **Details:** title (edited in place), state, description (markdown, with an editor), what it waits on, depends on (add and remove), is needed by and contains, delivery, and history. With nothing selected, a summary of the plan: progress, what is in progress, what is ready, problems.
+- **Proposal review:** the rationale, the critic's review and the agent's warnings; you can edit any child, leave children out, and accept or reject.
 - **Live:** every view refreshes when the plan changes, whoever changed it.
+- **Look:** editorial. Serif headlines and prose, small-capital section labels, hairline rules, colour only for state.
 - **Playback** (not built, M5): a timeline scrubber at the bottom. Scrubbing puts the view in read-only mode; delivery markers from the code repo sit along the timeline.
 
 ---
@@ -487,10 +520,10 @@ apm serve [--port] [--no-open]   the web UI on this machine only; prints a token
 apm node add <title> [-p h] [--kind decision] [--dep h] [--intent "..."]
 apm node ls [--root h] [--depth n]     outline view
 apm node show <h> · set <h> [--title] [--kind] · status <h> <s> [--note]
-apm node mv <h> <parent|--top> · rm <h> [-r] · edit <h>
+apm node mv <h> <parent|--top> · merge <target> <others...> [--title] · rm <h> [-r] · edit <h>
 apm link-dep <from> <to> · apm unlink-dep <from> <to>
 apm ready [--root h] · apm search <query>
-apm run <decomposer|implementer|assistant> <h> [-g "..."] [--no-critic]
+apm run <assistant|decomposer|implementer> [h] [-m "..."] [--mode m] [--no-critic]
 apm proposal ls [--all] · show <id> · accept <id> [--only key] · reject <id>
 apm reconcile                    mark nodes done whose PR or commits have merged
 apm check                        validate invariants, report warnings (exit code 1 on errors)
@@ -504,6 +537,8 @@ apm plugin-path                  where the Claude Code plugin is
 
 `apm node ls`, `node show`, `ready` and `search` take `--json`. Every command accepts a handle: any unambiguous suffix of an id, at least 4 hex characters.
 
+`apm run assistant` without a node is a chat about the whole plan. When a run needs an answer (a question, or permission for something), `apm run` asks in the terminal.
+
 `apm node edit <h>` opens the body in `$EDITOR` and commits it as `edit-body` when you close the editor. If you edit files directly in `.apm/`, run `apm commit`: it validates the changes and commits the dirty files as `edit-body` (or `update` if `graph.ndjson` changed).
 
 ---
@@ -514,8 +549,8 @@ apm plugin-path                  where the Claude Code plugin is
 |---|---|---|---|
 | **M1** | `core`: model, ndjson/md I/O, invariants, lifting, `mutate()` + lock, git commits with trailers | Property tests (Hypothesis) confirm I1–I4 hold across random op sequences; lifting and entanglement tests pass | **Built** |
 | **M2** | `apm` CLI + `apm mcp` + plugin + skills | **Dogfood: plan APM itself** with the CLI and an interactive `claude` session | **Built**, except the SQLite index (§4). Dogfooding is yours to start |
-| **M3** | `apm serve`: runner, decomposer + critic, proposals, SQLite runs | `apm run decomposer <h>` → proposal → `apm proposal accept` → one commit; the three CLI checks in §7.1 are answered | **Built**; verified with a real run |
-| **M4** | UI: level view, drill-down, node panel, live run stream, proposal review | Planning a feature entirely in the UI, start to finish | **Built**; verified in a browser with a real run |
+| **M3** | `apm serve`: runner, decomposer + critic, proposals, SQLite runs; two-way runs with questions, permission prompts and modes; the chat | `apm run decomposer <h>` → proposal → `apm proposal accept` → one commit; the CLI checks in §7.1 are answered | **Built**; verified with real runs |
+| **M4** | UI: level view, drill-down, actions, conversation, details, proposal review | Planning a feature entirely in the UI, start to finish | **Built**; verified in a browser with real runs |
 | **M5** | Indexer frames + playback scrubber + delivery overlay | Replaying the APM plan from its first commit | Not built |
 | **M6** | `apm-implementer` (worktrees, trailers, `gh` PR) | A ready leaf becomes a PR that links back to its node | **Built**; verified with a real run up to the commit. Opening a PR is untested (the test repo had no remote) |
 | **M7** | Reconciling | A merged PR moves its node to `done` with no manual step | **Built** as `apm reconcile` (§7.5); the PR path is tested against a stand-in for `gh` |
