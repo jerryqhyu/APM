@@ -8,10 +8,10 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from apm.core.body import render_body
+from apm.core.errors import ApmError, format_issue
+from apm.core.files import render_body
 from apm.core.graph import Graph
-from apm.core.ids import HandleError, resolve_handle
-from apm.core.issues import format_issue
+from apm.core.ids import HandleError
 from apm.core.model import Kind, NodeId
 from apm.core.mutate import Mutation, OpError
 from apm.core.ops import NewNode, decompose
@@ -137,12 +137,14 @@ REVIEW_SCHEMA: dict[str, Any] = {
 }
 
 
-class ProposalError(ValueError):
+class ProposalError(ApmError, ValueError):
     """The proposal can't be read or applied as it is."""
 
 
-class ProposalResolvedError(ValueError):
+class ProposalResolvedError(ApmError, ValueError):
     """The proposal was already accepted or rejected."""
+
+    http_status = 409
 
 
 def parse_decomposition(data: object) -> Decomposition:
@@ -187,7 +189,7 @@ def _new_node(graph: Graph, child: ProposedChild) -> NewNode:
     deps = []
     for ref in child.depends_on_ids:
         try:
-            deps.append(resolve_handle(ref, graph.nodes))
+            deps.append(graph.resolve(ref))
         except HandleError as err:
             raise ProposalError(f'"{child.title}": {err}') from None
     return NewNode(

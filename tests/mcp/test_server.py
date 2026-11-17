@@ -4,7 +4,7 @@ import pytest
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import CallToolResult, TextContent
 
-from apm.core.body import read_body
+from apm.core.files import read_body
 from apm.core.git import log
 from apm.core.ids import handle
 from apm.core.model import Delivery, Status
@@ -21,6 +21,8 @@ WRITE_TOOLS = {
     "apm_unlink",
     "apm_set_status",
     "apm_attach_delivery",
+    "apm_delete_node",
+    "apm_merge_nodes",
 }
 
 
@@ -144,6 +146,24 @@ def test_project_scope_can_write_everything(plan: tuple[Project, str, str, str])
     assert graph[ids[first]].delivery == Delivery(repo="my-app", branch="apm/first")
 
 
+def test_project_scope_can_merge_and_delete(plan: tuple[Project, str, str, str]) -> None:
+    project, parent, first, _ = plan
+    session = Session(project)
+    extra = session.call("apm_create_nodes", nodes=[{"title": "Extra", "parent": parent}]).split()[
+        0
+    ]
+    merged = session.call("apm_merge_nodes", target=first, others=[extra], title="First and extra")
+    assert merged == f"merged 2 nodes into {first}"
+    graph = load_graph(project)
+    ids = {handle(n): n for n in graph.nodes}
+    assert extra not in ids
+    assert graph[ids[first]].title == "First and extra"
+
+    assert "has 2 children" in session.refused("apm_delete_node", node=parent)
+    assert session.call("apm_delete_node", node=parent, recursive=True) == "deleted"
+    assert len(load_graph(project)) == 0
+
+
 def test_read_scope_refuses_every_write(plan: tuple[Project, str, str, str]) -> None:
     project, parent, first, second = plan
     session = Session(project, "read")
@@ -156,6 +176,8 @@ def test_read_scope_refuses_every_write(plan: tuple[Project, str, str, str]) -> 
         "apm_unlink": {"node": second, "depends_on": first},
         "apm_set_status": {"node": first, "status": "done"},
         "apm_attach_delivery": {"node": first, "branch": "x"},
+        "apm_delete_node": {"node": second},
+        "apm_merge_nodes": {"target": first, "others": [second]},
     }
     assert calls.keys() == WRITE_TOOLS
     for tool, arguments in calls.items():
@@ -189,6 +211,8 @@ def test_node_scope_allows_only_its_own_status_delivery_and_body(
     assert message in session.refused("apm_move_node", node=first)
     assert message in session.refused("apm_link", node=first, depends_on=parent)
     assert message in session.refused("apm_unlink", node=second, depends_on=first)
+    assert message in session.refused("apm_delete_node", node=first)
+    assert message in session.refused("apm_merge_nodes", target=first, others=[second])
 
 
 def test_errors_come_back_as_tool_errors(plan: tuple[Project, str, str, str]) -> None:

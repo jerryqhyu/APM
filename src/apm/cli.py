@@ -20,18 +20,13 @@ import typer
 
 from apm import __version__
 from apm.core import ops
-from apm.core.body import read_body, render_body
-from apm.core.config import ConfigError
-from apm.core.git import GitError, git
+from apm.core.errors import ApmError
+from apm.core.files import read_body, render_body
+from apm.core.git import git
 from apm.core.graph import Graph
-from apm.core.handedit import commit_hand_edits
-from apm.core.ids import HandleError, handles, resolve_handle
 from apm.core.lifting import check_all
-from apm.core.lock import LockTimeoutError
 from apm.core.model import Kind, NodeId, Status
-from apm.core.mutate import DirtyPlanError, Mutation, OpError
-from apm.core.ndjson import GraphParseError, InvalidNodeError
-from apm.core.outline import format_node_line, format_outline
+from apm.core.mutate import Mutation, OpError, commit_hand_edits
 from apm.core.project import (
     LINK_FILE,
     Project,
@@ -40,40 +35,19 @@ from apm.core.project import (
     init_project,
     load_graph,
 )
-from apm.core.proposals import (
-    ProposalError,
-    ProposalResolvedError,
-    accept_proposal,
-    parse_decomposition,
-    reject_proposal,
-)
+from apm.core.proposals import accept_proposal, parse_decomposition, reject_proposal
 from apm.core.reconcile import describe, reconcile
-from apm.core.search import search
-from apm.core.status import compute_states, ready_leaves
 from apm.core.store import Proposal, Store
-from apm.core.validate import InvariantError
-from apm.core.views import all_nodes_view, node_view
-from apm.runner.agents import RunRefused
+from apm.core.views import all_nodes_view, node_line, node_text, node_view, outline, search
 
 HELP = {"help_option_names": ["-h", "--help"]}
 app = typer.Typer(name="apm", no_args_is_help=True, add_completion=False, context_settings=HELP)
 node_app = typer.Typer(no_args_is_help=True, help="Work with nodes.", context_settings=HELP)
-app.add_typer(node_app, name="node")
-
-EXPECTED_ERRORS = (
-    ProjectError,
-    HandleError,
-    OpError,
-    InvariantError,
-    GraphParseError,
-    InvalidNodeError,
-    ConfigError,
-    DirtyPlanError,
-    GitError,
-    LockTimeoutError,
-    ProposalError,
-    ProposalResolvedError,
+proposal_app = typer.Typer(
+    no_args_is_help=True, help="Review what agents proposed.", context_settings=HELP
 )
+app.add_typer(node_app, name="node")
+app.add_typer(proposal_app, name="proposal")
 
 Json = Annotated[bool, typer.Option("--json", help="Print JSON instead of text.")]
 
@@ -85,7 +59,7 @@ def command[**P, R](fn: Callable[P, R]) -> Callable[P, R]:
     def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
         try:
             return fn(*args, **kwargs)
-        except EXPECTED_ERRORS as err:
+        except ApmError as err:
             for line in str(err).splitlines():
                 typer.echo(f"error: {line}", err=True)
             raise typer.Exit(1) from None
@@ -93,8 +67,16 @@ def command[**P, R](fn: Callable[P, R]) -> Callable[P, R]:
     return wrapper
 
 
-def resolve(graph: Graph, value: str) -> NodeId:
-    return resolve_handle(value, graph.nodes)
+def plan() -> tuple[Project, Graph]:
+    """The project you are in, and its plan as it is now."""
+    project = find_project()
+    return project, load_graph(project)
+
+
+def locate(handle: str) -> tuple[Project, Graph, NodeId]:
+    """The project you are in, its plan, and the node a handle names."""
+    project, graph = plan()
+    return project, graph, graph.resolve(handle)
 
 
 def print_json(data: Any) -> None:
@@ -124,7 +106,7 @@ def root(
     """A local-first project manager built for working with AI agents."""
 
 
-# --- project ------------------------------------------------------------------------------------
+# --- the project --------------------------------------------------------------------------------
 
 
 @app.command()
@@ -137,21 +119,21 @@ def init(
     """Create the plan repo (.apm/) for the code in this folder."""
     project = init_project(Path.cwd(), name=name)
     typer.echo(f"created {project.apm_dir}")
-    typer.echo('next: apm node add "My first idea"')
+    typer.echo('next: apm serve, or apm node add "My first idea"')
 
 
 @app.command()
 @command
 def check() -> None:
     """Validate the plan: errors (exit code 1) and warnings."""
-    report_ = check_all(load_graph(find_project()))
-    for issue in report_.errors:
+    result = check_all(plan()[1])
+    for issue in result.errors:
         typer.echo(f"error {issue.code}: {issue.message}")
-    for issue in report_.warnings:
+    for issue in result.warnings:
         typer.echo(f"warning {issue.code}: {issue.message}")
-    if not report_.errors and not report_.warnings:
+    if not result.errors and not result.warnings:
         typer.echo("ok")
-    if report_.errors:
+    if result.errors:
         raise typer.Exit(1)
 
 
@@ -161,24 +143,6 @@ def commit() -> None:
     """Validate and commit edits you made by hand in .apm/."""
     result = commit_hand_edits(find_project())
     report(result, f"committed {len(result.nodes)} node(s)")
-
-
-@app.command()
-@command
-def ready(
-    root_: Annotated[str | None, typer.Option("--root", help="Only under this node.")] = None,
-    as_json: Json = False,
-) -> None:
-    """List what can be worked on now: ready leaves."""
-    graph = load_graph(find_project())
-    scope = None if root_ is None else resolve(graph, root_)
-    ids = ready_leaves(graph, scope)
-    states, names = compute_states(graph), handles(graph.nodes)
-    if as_json:
-        print_json([node_view(graph, states, names, n) for n in ids])
-        return
-    for node_id in ids:
-        typer.echo(format_node_line(graph, node_id, states, names))
 
 
 @app.command("reconcile")
@@ -192,47 +156,56 @@ def reconcile_() -> None:
         typer.echo("nothing to reconcile")
 
 
+@app.command()
+@command
+def ready(
+    root_: Annotated[str | None, typer.Option("--root", help="Only under this node.")] = None,
+    as_json: Json = False,
+) -> None:
+    """List what can be worked on now: ready leaves."""
+    _, graph = plan()
+    ids = graph.ready_leaves(graph.resolve(root_) if root_ else None)
+    if as_json:
+        print_json([node_view(graph, n) for n in ids])
+        return
+    for node_id in ids:
+        typer.echo(node_line(graph, node_id))
+
+
 @app.command("search")
 @command
 def search_(query: str, as_json: Json = False) -> None:
     """Search titles and bodies."""
-    project = find_project()
-    graph = load_graph(project)
+    project, graph = plan()
     hits = search(project, graph, query)
-    names = handles(graph.nodes)
     if as_json:
         print_json([{"id": h.node_id, "title": h.title, "snippet": h.snippet} for h in hits])
         return
     for hit in hits:
-        typer.echo(
-            f"{names[hit.node_id]} {hit.title}" + (f"  — {hit.snippet}" if hit.snippet else "")
-        )
+        tail = f"  — {hit.snippet}" if hit.snippet else ""
+        typer.echo(f"{graph.handles[hit.node_id]} {hit.title}{tail}")
 
 
 @app.command("link-dep")
 @command
 def link_dep(src: str, dst: str) -> None:
     """Record that SRC depends on DST."""
-    project = find_project()
-    graph = load_graph(project)
-    result = ops.link(project, resolve(graph, src), resolve(graph, dst))
-    report(result, "linked")
+    project, graph = plan()
+    report(ops.link(project, graph.resolve(src), graph.resolve(dst)), "linked")
 
 
 @app.command("unlink-dep")
 @command
 def unlink_dep(src: str, dst: str) -> None:
     """Remove the dependency of SRC on DST."""
-    project = find_project()
-    graph = load_graph(project)
-    result = ops.unlink(project, resolve(graph, src), resolve(graph, dst))
-    report(result, "unlinked")
+    project, graph = plan()
+    report(ops.unlink(project, graph.resolve(src), graph.resolve(dst)), "unlinked")
 
 
 @app.command()
 def mcp() -> None:
     """Run the MCP server on stdio. Claude Code starts this; you rarely run it yourself."""
-    from apm.mcp.server import main as serve_mcp
+    from apm.mcp.server import main as serve_mcp  # keeps `apm --help` fast
 
     serve_mcp()
 
@@ -305,17 +278,16 @@ def node_add(
     intent: Annotated[str, typer.Option(help="Why it exists: goes in the body.")] = "",
 ) -> None:
     """Add a node."""
-    project = find_project()
-    graph = load_graph(project)
+    project, graph = plan()
     new = ops.NewNode(
         title=title,
-        parent=None if parent is None else resolve(graph, parent),
+        parent=graph.resolve(parent) if parent else None,
         kind=kind,
-        depends_on=[resolve(graph, d) for d in dep or []],
+        depends_on=[graph.resolve(d) for d in dep or []],
         body=render_body(intent=intent),
     )
     result = ops.create_nodes(project, [new])
-    typer.echo(f"{handles(result.graph.nodes)[result.created[0]]} {title}")
+    typer.echo(f"{result.graph.handles[result.created[0]]} {title}")
 
 
 @node_app.command("ls")
@@ -326,45 +298,24 @@ def node_ls(
     as_json: Json = False,
 ) -> None:
     """Show the plan as an outline."""
-    graph = load_graph(find_project())
-    scope = None if root_ is None else resolve(graph, root_)
+    _, graph = plan()
+    scope = graph.resolve(root_) if root_ else None
     if as_json:
         inside = None if scope is None else set(graph.descendants(scope))
         print_json([n for n in all_nodes_view(graph) if inside is None or n["id"] in inside])
         return
-    typer.echo(format_outline(graph, scope, depth) or '(no nodes yet: apm node add "...")')
+    typer.echo(outline(graph, scope, depth) or '(no nodes yet: apm node add "...")')
 
 
 @node_app.command("show")
 @command
 def node_show(handle: str, as_json: Json = False) -> None:
     """Show one node: its state, links and body."""
-    project = find_project()
-    graph = load_graph(project)
-    node_id = resolve(graph, handle)
-    states, names = compute_states(graph), handles(graph.nodes)
-    body = read_body(project.apm_dir, node_id)
+    project, graph, node_id = locate(handle)
     if as_json:
-        print_json({**node_view(graph, states, names, node_id), "body": body})
+        print_json({**node_view(graph, node_id), "body": read_body(project.apm_dir, node_id)})
         return
-    node = graph[node_id]
-    typer.echo(format_node_line(graph, node_id, states, names))
-    typer.echo(f"id: {node_id}")
-    for label, ids in (
-        ("parent", [node.parent] if node.parent else []),
-        ("children", graph.children(node_id)),
-        ("depends on", graph.dependencies(node_id)),
-        ("needed by", graph.dependents(node_id)),
-        ("waiting on", states[node_id].waiting_on),
-    ):
-        for other in ids:
-            typer.echo(f"{label}: {names[other]} {graph[other].title}")
-    if (d := node.delivery) is not None:
-        parts = [d.repo, d.branch or "", d.pr or "", f"{len(d.commits)} commit(s)"]
-        typer.echo("delivery: " + " · ".join(p for p in parts if p))
-    if body.strip():
-        typer.echo("")
-        typer.echo(body.rstrip())
+    typer.echo(node_text(project, graph, node_id))
 
 
 @node_app.command("set")
@@ -375,8 +326,7 @@ def node_set(
     kind: Annotated[Kind | None, typer.Option(help="work or decision.")] = None,
 ) -> None:
     """Change a node's title or kind."""
-    project = find_project()
-    node_id = resolve(load_graph(project), handle)
+    project, _, node_id = locate(handle)
     report(ops.update_node(project, node_id, title=title, kind=kind), "updated")
 
 
@@ -388,8 +338,7 @@ def node_status(
     note: Annotated[str, typer.Option(help="Why: goes in the commit message.")] = "",
 ) -> None:
     """Set a node's status: todo, in_progress, done or dropped."""
-    project = find_project()
-    node_id = resolve(load_graph(project), handle)
+    project, _, node_id = locate(handle)
     report(ops.set_status(project, node_id, status, note=note), f"{handle}: {status}")
 
 
@@ -403,10 +352,22 @@ def node_mv(
     """Move a node, with everything under it, to another parent."""
     if (parent is None) != top:
         raise OpError("give a new parent, or --top")
-    project = find_project()
-    graph = load_graph(project)
-    target = None if parent is None else resolve(graph, parent)
-    report(ops.move_node(project, resolve(graph, handle), target), "moved")
+    project, graph, node_id = locate(handle)
+    target = graph.resolve(parent) if parent else None
+    report(ops.move_node(project, node_id, target), "moved")
+
+
+@node_app.command("merge")
+@command
+def node_merge(
+    target: Annotated[str, typer.Argument(help="The node that survives.")],
+    others: Annotated[list[str], typer.Argument(help="Nodes folded into it, then deleted.")],
+    title: Annotated[str | None, typer.Option(help="New title for the merged node.")] = None,
+) -> None:
+    """Merge several nodes into one: children, dependencies and bodies move to the target."""
+    project, graph, node_id = locate(target)
+    result = ops.merge_nodes(project, node_id, [graph.resolve(o) for o in others], title=title)
+    report(result, f"merged {len(others) + 1} nodes into {target}")
 
 
 @node_app.command("rm")
@@ -418,24 +379,33 @@ def node_rm(
     ] = False,
 ) -> None:
     """Delete a node and the edges that point at it."""
-    project = find_project()
-    node_id = resolve(load_graph(project), handle)
-    result = ops.delete_node(project, node_id, recursive=recursive)
-    report(result, "deleted")
+    project, _, node_id = locate(handle)
+    report(ops.delete_node(project, node_id, recursive=recursive), "deleted")
 
 
 @node_app.command("edit")
 @command
 def node_edit(handle: str) -> None:
     """Edit a node's body in $EDITOR and commit it."""
-    project = find_project()
-    node_id = resolve(load_graph(project), handle)
+    project, _, node_id = locate(handle)
     before = read_body(project.apm_dir, node_id) or render_body()
-    after = edit_text(before, suffix=f"-{handle}.md")
-    report(ops.edit_body(project, node_id, after), "saved")
+    report(ops.edit_body(project, node_id, edit_text(before, suffix=f"-{handle}.md")), "saved")
 
 
-# --- the server, runs and proposals -------------------------------------------------------------
+def edit_text(text: str, suffix: str = ".md") -> str:
+    """Opens `text` in the user's editor and returns what they saved."""
+    editor = os.environ.get("VISUAL") or os.environ.get("EDITOR") or "vi"
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / f"apm{suffix}"
+        path.write_text(text, encoding="utf-8")
+        try:
+            subprocess.run([*shlex.split(editor), str(path)], check=True)
+        except (OSError, subprocess.CalledProcessError) as err:
+            raise OpError(f"editor failed ({editor}): {err}") from None
+        return path.read_text(encoding="utf-8")
+
+
+# --- the server ---------------------------------------------------------------------------------
 
 
 @app.command()
@@ -450,7 +420,7 @@ def serve(
     ] = False,
 ) -> None:
     """Start the web UI on this machine only."""
-    import uvicorn
+    import uvicorn  # only this command needs the server stack
 
     from apm.server.app import create_app
     from apm.server.security import load_or_create_token, write_server_file
@@ -500,25 +470,37 @@ def free_port(preferred: int) -> int:
     raise OpError("no free port to listen on")
 
 
+# --- agents -------------------------------------------------------------------------------------
+
+
 @app.command()
 @command
 def run(
-    agent: Annotated[str, typer.Argument(help="decomposer, implementer or assistant.")],
-    handle: str,
-    guidance: Annotated[str, typer.Option("--guidance", "-g", help="What you want from it.")] = "",
+    agent: Annotated[str, typer.Argument(help="assistant, decomposer or implementer.")],
+    handle: Annotated[
+        str | None, typer.Argument(help="The node. Omit to chat about the whole project.")
+    ] = None,
+    message: Annotated[
+        str, typer.Option("--message", "-m", "--guidance", "-g", help="What you want from it.")
+    ] = "",
     critic: Annotated[
         bool, typer.Option("--critic/--no-critic", help="Review the breakdown.")
     ] = True,
+    mode: Annotated[
+        str | None,
+        typer.Option(help="Permission mode: auto, manual, acceptEdits, plan or dontAsk."),
+    ] = None,
 ) -> None:
-    """Run an agent on a node and follow it here."""
+    """Run an agent and follow it here. It asks you in the terminal when it needs an answer."""
     from apm.runner.runner import Runner
     from apm.runner.transcript import format_event
 
-    project = find_project()
-    node_id = resolve(load_graph(project), handle)
+    project, graph = plan()
+    node_id = graph.resolve(handle) if handle else None
     name = agent if agent.startswith("apm-") else f"apm-{agent}"
     store = Store(project.apm_dir)
-    failed = []
+    failed: list[dict[str, Any]] = []
+    waiting: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
 
     def show(event: dict[str, Any]) -> None:
         if event["type"] == "run.started":
@@ -526,35 +508,58 @@ def run(
         elif event["type"] == "run.event":
             for line in format_event(event["event"]["data"]):
                 typer.echo(line)
+        elif event["type"] == "run.request":
+            waiting.put_nowait(event["request"])
         elif event["type"] == "run.finished" and event["run"]["status"] != "succeeded":
             failed.append(event["run"])
             typer.echo(f"✗ {event['run']['status']}: {event['run']['error'] or ''}", err=True)
         elif event["type"] == "proposal.created":
             proposal = event["proposal"]
-            count = len(proposal["data"]["children"])
-            typer.echo(f"proposal {proposal['id']}: {count} children")
+            typer.echo(f"proposal {proposal['id']}: {len(proposal['data']['children'])} children")
             typer.echo(f"next: apm proposal show {proposal['id']}")
 
     async def go() -> None:
         runner = Runner(project, store, show)
+
+        async def answer_requests() -> None:
+            while True:
+                request = await waiting.get()
+                allow, answers = await asyncio.to_thread(ask_in_terminal, request)
+                await runner.answer(request["id"], allow=allow, answers=answers)
+
+        asker = asyncio.create_task(answer_requests())
         try:
-            runner.start(name, node_id, guidance, critic=critic)
-            await runner.wait(node_id)
+            started = runner.start(name, node_id, message, critic=critic, mode=mode)
+            await runner.wait(started.id)
         finally:
+            asker.cancel()
             await runner.shutdown()
 
-    try:
-        asyncio.run(go())
-    except RunRefused as err:
-        raise OpError(str(err)) from None
+    asyncio.run(go())
     if failed:
         raise typer.Exit(1)
 
 
-proposal_app = typer.Typer(
-    no_args_is_help=True, help="Review what agents proposed.", context_settings=HELP
-)
-app.add_typer(proposal_app, name="proposal")
+def ask_in_terminal(request: dict[str, Any]) -> tuple[bool, dict[str, str] | None]:
+    """Puts an agent's question or permission prompt to the person at the terminal."""
+    if request["kind"] != "question":
+        what = request["input"].get("command") or json.dumps(request["input"], ensure_ascii=False)
+        why = f"  ({request['description']})" if request["description"] else ""
+        typer.echo(f"? {request['tool']}: {what}{why}")
+        return typer.confirm("  allow?", default=False), None
+    answers = {}
+    for question in request["input"].get("questions", []):
+        options = question.get("options", [])
+        typer.echo(f"? {question['question']}")
+        for number, option in enumerate(options, start=1):
+            typer.echo(f"  {number}. {option['label']}")
+        choice = typer.prompt("  your choice (a number, or your own words)", default="1")
+        picked = int(choice) - 1 if choice.isdigit() and 0 < int(choice) <= len(options) else None
+        answers[question["question"]] = options[picked]["label"] if picked is not None else choice
+    return True, answers
+
+
+# --- proposals ----------------------------------------------------------------------------------
 
 
 @proposal_app.command("ls")
@@ -563,11 +568,10 @@ def proposal_ls(
     everything: Annotated[bool, typer.Option("--all", help="Include resolved ones.")] = False,
 ) -> None:
     """List proposals waiting for your decision."""
-    project = find_project()
-    names = handles(load_graph(project).nodes)
+    project, graph = plan()
     proposals = Store(project.apm_dir).list_proposals(status=None if everything else "pending")
     for p in proposals:
-        target = names.get(p.node_id, "(deleted)")
+        target = graph.handles.get(p.node_id, "(deleted)")
         typer.echo(f"{p.id} [{p.status}] {len(p.data.get('children', []))} children for {target}")
     if not proposals:
         typer.echo("no proposals")
@@ -577,20 +581,17 @@ def proposal_ls(
 @command
 def proposal_show(proposal_id: str) -> None:
     """Show a proposal: the children it would create, and the review."""
-    project = find_project()
+    project, graph = plan()
     proposal = _proposal(project, proposal_id)
     data = parse_decomposition(proposal.data)
-    graph = load_graph(project)
     target = graph[proposal.node_id].title if proposal.node_id in graph else "(deleted)"
     typer.echo(f"proposal {proposal.id} [{proposal.status}] for: {target}")
     if data.rationale:
         typer.echo(f"\n{data.rationale}")
     for child in data.children:
         needs = [*child.depends_on_keys, *child.depends_on_ids]
-        typer.echo(
-            f"\n[{child.key}] {child.title} ({child.kind})"
-            + (f" → {', '.join(needs)}" if needs else "")
-        )
+        arrow = f" → {', '.join(needs)}" if needs else ""
+        typer.echo(f"\n[{child.key}] {child.title} ({child.kind}){arrow}")
         if child.intent:
             typer.echo(f"    {child.intent}")
         for criterion in child.acceptance:
@@ -614,15 +615,13 @@ def proposal_accept(
 ) -> None:
     """Accept a proposal: its children become nodes, in one commit."""
     project = find_project()
-    store = Store(project.apm_dir)
     children = None
     if only:
         proposal = _proposal(project, proposal_id)
         children = [c for c in proposal.data.get("children", []) if c.get("key") in only]
-    result = accept_proposal(project, store, proposal_id, children)
-    names = handles(result.graph.nodes)
+    result = accept_proposal(project, Store(project.apm_dir), proposal_id, children)
     for node_id in result.created:
-        typer.echo(f"{names[node_id]} {result.graph[node_id].title}")
+        typer.echo(f"{result.graph.handles[node_id]} {result.graph[node_id].title}")
 
 
 @proposal_app.command("reject")
@@ -638,19 +637,6 @@ def _proposal(project: Project, proposal_id: str) -> Proposal:
         return Store(project.apm_dir).get_proposal(proposal_id)
     except KeyError:
         raise OpError(f"no proposal {proposal_id} (see `apm proposal ls --all`)") from None
-
-
-def edit_text(text: str, suffix: str = ".md") -> str:
-    """Opens `text` in the user's editor and returns what they saved."""
-    editor = os.environ.get("VISUAL") or os.environ.get("EDITOR") or "vi"
-    with tempfile.TemporaryDirectory() as tmp:
-        path = Path(tmp) / f"apm{suffix}"
-        path.write_text(text, encoding="utf-8")
-        try:
-            subprocess.run([*shlex.split(editor), str(path)], check=True)
-        except (OSError, subprocess.CalledProcessError) as err:
-            raise OpError(f"editor failed ({editor}): {err}") from None
-        return path.read_text(encoding="utf-8")
 
 
 def main() -> None:

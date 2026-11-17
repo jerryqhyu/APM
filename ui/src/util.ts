@@ -1,4 +1,4 @@
-import type { NodeView, RunStatus } from "./types";
+import type { NodeView, Run, RunStatus } from "./types";
 
 export type StateKey = "ready" | "blocked" | "todo" | "in_progress" | "done" | "dropped";
 
@@ -17,17 +17,17 @@ export function stateOf(node: Pick<NodeView, "status" | "ready" | "blocked">): {
 export const STATUS_LABEL = { todo: "To do", in_progress: "In progress", done: "Done", dropped: "Dropped" } as const;
 
 export const RUN_LABEL: Record<RunStatus, string> = {
-  running: "Running",
+  running: "Working",
   succeeded: "Finished",
   failed: "Failed",
   cancelled: "Stopped",
 };
 
 export const AGENT_LABEL: Record<string, string> = {
+  "apm-assistant": "Chat",
   "apm-decomposer": "Decompose",
   "apm-critic": "Review",
   "apm-implementer": "Implement",
-  "apm-assistant": "Ask",
 };
 
 export function cx(...names: (string | false | null | undefined)[]): string {
@@ -43,11 +43,75 @@ export function timeAgo(seconds: number): string {
   return new Date(seconds * 1000).toLocaleDateString();
 }
 
-export function duration(start: number, end: number | null): string {
-  const seconds = Math.max(0, Math.round((end ?? Date.now() / 1000) - start));
-  return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
-}
-
 export function money(usd: number | null): string {
   return usd === null ? "" : `$${usd.toFixed(2)}`;
+}
+
+export function errorText(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+/** A conversation: the runs that follow one another, oldest first. */
+export interface Thread {
+  id: string;
+  runs: Run[];
+  agent: string;
+  title: string;
+  updated: number;
+  running: boolean;
+  cost: number;
+}
+
+/**
+ * Groups runs into conversations. A run belongs to the conversation of the run it follows
+ * (`parent_run`), so a decomposer, its reviewer and its revision read as one thread.
+ */
+export function threadsOf(runs: Run[]): Thread[] {
+  const byId = new Map(runs.map((r) => [r.id, r]));
+  const rootOf = (run: Run): Run => {
+    let current = run;
+    const seen = new Set<string>();
+    while (current.parent_run && byId.has(current.parent_run) && !seen.has(current.id)) {
+      seen.add(current.id);
+      current = byId.get(current.parent_run)!;
+    }
+    return current;
+  };
+  const groups = new Map<string, Run[]>();
+  for (const run of runs) {
+    const root = rootOf(run).id;
+    groups.set(root, [...(groups.get(root) ?? []), run]);
+  }
+  const threads: Thread[] = [];
+  for (const [id, members] of groups) {
+    members.sort((a, b) => a.started - b.started);
+    const first = members[0]!;
+    threads.push({
+      id,
+      runs: members,
+      agent: first.agent,
+      title: threadTitle(first),
+      updated: Math.max(...members.map((r) => r.ended ?? r.started)),
+      running: members.some((r) => r.status === "running"),
+      cost: members.reduce((sum, r) => sum + (r.cost_usd ?? 0), 0),
+    });
+  }
+  return threads.sort((a, b) => b.updated - a.updated);
+}
+
+/**
+ * What you typed, without what APM adds around it: a chat started on a node opens with
+ * "The user is looking at …" before your words.
+ */
+export function typedText(run: Run): string {
+  if (run.agent === "apm-assistant" && run.prompt.startsWith("The user is looking at ") && run.prompt.includes("\n\n")) {
+    return run.prompt.slice(run.prompt.indexOf("\n\n") + 2);
+  }
+  return run.prompt;
+}
+
+function threadTitle(first: Run): string {
+  if (first.agent !== "apm-assistant") return AGENT_LABEL[first.agent] ?? first.agent;
+  const line = typedText(first).trim().split("\n")[0] ?? "";
+  return line.length > 44 ? `${line.slice(0, 43)}…` : line || "Chat";
 }

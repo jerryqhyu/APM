@@ -1,19 +1,57 @@
-"""The in-memory graph (plans.md §2.1), held as two networkx digraphs over the same node ids:
+"""The in-memory graph (plans.md §2), held as two networkx digraphs over the same node ids:
 
 - `tree`: containment. An edge runs parent → child.
 - `deps`: dependencies. An edge runs from a node to the node it depends on.
 
-A Graph is read-only. It doesn't check invariants (that's validate()), so it stays safe on broken
-input: a reference to a node that doesn't exist is not an edge (validate() reports it from the
+A Graph is read-only. It doesn't check invariants (that's `validate()`), so it stays safe on broken
+input: a reference to a node that doesn't exist is not an edge (`validate()` reports it from the
 node's own fields), and a containment cycle can't make a walk loop forever.
+
+Everything that is computed rather than stored lives here too, worked out once on first use:
+handles, and each node's state (blocked, ready, progress). It is never stored, so it can't go stale.
 """
 
 from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
+from functools import cached_property
 from types import MappingProxyType
 
 import networkx as nx
 
-from apm.core.model import Node, NodeId
+from apm.core.ids import handles, resolve_handle
+from apm.core.model import Node, NodeId, Status
+
+
+@dataclass(frozen=True, slots=True)
+class Progress:
+    done: int
+    """Leaves that are done."""
+    total: int
+    """Leaves that aren't dropped."""
+
+    @property
+    def fraction(self) -> float:
+        """0.0 when there is nothing to do."""
+        return self.done / self.total if self.total else 0.0
+
+
+@dataclass(frozen=True, slots=True)
+class NodeState:
+    """What follows from a node's status and its surroundings (plans.md §2.3)."""
+
+    blocked: bool
+    """`todo`, and something in `waiting_on`."""
+    ready: bool
+    """`todo`, not blocked, and not under a dropped ancestor."""
+    waiting_on: tuple[NodeId, ...]
+    """Dependencies that aren't `done`, the node's own and its ancestors', in id order. Blocking is
+    inherited: a child of a blocked parent is blocked too. A dropped dependency stays here: it never
+    unblocks anything.
+    """
+    dropped_deps: tuple[NodeId, ...]
+    """The node's own dependencies that are `dropped`. A flag for the user to resolve."""
+    progress: Progress
+    """Over the leaves of the subtree; for a leaf, itself."""
 
 
 class Graph:
@@ -50,6 +88,8 @@ class Graph:
             return self.nodes[node_id]
         except KeyError:
             raise KeyError(f"Graph: unknown node {node_id}") from None
+
+    # --- structure ---
 
     def children(self, parent: NodeId | None) -> tuple[NodeId, ...]:
         """Children of `parent` (None = top-level nodes), in id order, which is creation order."""
@@ -97,3 +137,57 @@ class Graph:
     def dependents(self, node_id: NodeId) -> tuple[NodeId, ...]:
         """The nodes that depend on `node_id`, in id order."""
         return tuple(sorted(self.deps.predecessors(self[node_id].id)))
+
+    # --- handles ---
+
+    @cached_property
+    def handles(self) -> dict[NodeId, str]:
+        """Each node's display handle: its last 8 hex chars, longer only where two collide."""
+        return handles(self.nodes)
+
+    def resolve(self, ref: str) -> NodeId:
+        """The node a handle or id names. Raises `HandleError` if none or several do."""
+        return resolve_handle(ref, self.nodes)
+
+    # --- computed state ---
+
+    @cached_property
+    def states(self) -> dict[NodeId, NodeState]:
+        nodes = self.nodes
+        own_waiting = {
+            node_id: {d for d in self.dependencies(node_id) if nodes[d].status is not Status.DONE}
+            for node_id in nodes
+        }
+        states = {}
+        for node_id, node in nodes.items():
+            ancestors = self.ancestors(node_id)
+            waiting = own_waiting[node_id].union(*(own_waiting[a] for a in ancestors))
+            todo = node.status is Status.TODO
+            under_dropped = any(nodes[a].status is Status.DROPPED for a in ancestors)
+            states[node_id] = NodeState(
+                blocked=todo and bool(waiting),
+                ready=todo and not waiting and not under_dropped,
+                waiting_on=tuple(sorted(waiting)),
+                dropped_deps=tuple(
+                    d for d in self.dependencies(node_id) if nodes[d].status is Status.DROPPED
+                ),
+                progress=self._progress(node_id),
+            )
+        return states
+
+    def ready_leaves(self, root: NodeId | None = None) -> list[NodeId]:
+        """What can be worked on now: the ready leaves under `root` (None = the whole project), in
+        id order.
+        """
+        scope = self.nodes if root is None else self.descendants(root)
+        return sorted(n for n in scope if self.is_leaf(n) and self.states[n].ready)
+
+    def _progress(self, node_id: NodeId) -> Progress:
+        done = total = 0
+        for leaf in self.leaves(node_id):
+            lineage = (leaf, *self.ancestors(leaf))
+            if any(self[n].status is Status.DROPPED for n in lineage):
+                continue
+            total += 1
+            done += self[leaf].status is Status.DONE
+        return Progress(done, total)

@@ -94,10 +94,11 @@ def test_show_prints_links_and_body(cwd: Project) -> None:
     second = add("Second", "-p", parent, "--dep", first)
     shown = apm("node", "show", second)
     assert shown.splitlines()[0] == f"{second} [work/todo·blocked] Second → {first}"
-    assert f"parent: {parent} Parent" in shown
-    assert f"depends on: {first} First" in shown
-    assert f"waiting on: {first} First" in shown
-    assert f"needed by: {second} Second" in apm("node", "show", first)
+    assert f"parent: {parent} [work/todo·ready] Parent (0/2)" in shown
+    assert f"depends on: {first} [work/todo·ready] First" in shown
+    assert f"waiting on: {first} [work/todo·ready] First" in shown
+    assert f"needed by: {second} [work/todo·blocked] Second → {first}" in apm("node", "show", first)
+    assert f"child: {first} [work/todo·ready] First" in apm("node", "show", parent)
     assert "Do the thing." in apm("node", "show", first)
 
     data = json.loads(apm("node", "show", first, "--json"))
@@ -129,7 +130,7 @@ def test_set_move_link_and_delete(cwd: Project) -> None:
 
     apm("node", "mv", child, b)
     assert load_graph(cwd).children(None) != ()
-    assert f"parent: {b} B" in apm("node", "show", child)
+    assert f"parent: {b} [work/todo·ready] B (0/1)" in apm("node", "show", child)
     apm("node", "mv", child, "--top")
     assert "parent:" not in apm("node", "show", child)
     assert "give a new parent, or --top" in apm("node", "mv", child, code=1)
@@ -139,10 +140,17 @@ def test_set_move_link_and_delete(cwd: Project) -> None:
     assert "I2: dependency cycle" in apm("link-dep", b, a, code=1)
     assert apm("unlink-dep", a, b).strip() == "unlinked"
 
+    extra = add("Extra")
+    assert apm("node", "merge", b, extra, "--title", "B and more").strip() == (
+        f"merged 2 nodes into {b}"
+    )
+    assert "B and more" in apm("node", "show", b)
+    assert "nothing to merge" in apm("node", "merge", b, b, code=1)
+
     apm("node", "mv", child, a)
     assert "has 1 child" in apm("node", "rm", a, code=1)
     assert apm("node", "rm", a, "--recursive").strip() == "deleted"
-    assert [n.title for n in load_graph(cwd).nodes.values()] == ["B"]
+    assert [n.title for n in load_graph(cwd).nodes.values()] == ["B and more"]
 
 
 def test_edit_uses_the_editor(
@@ -233,7 +241,7 @@ def test_run_a_decomposer_then_accept_part_of_its_proposal(
         line.split()[1].rstrip(":") for line in output.splitlines() if line.startswith("proposal ")
     )
     assert f"next: apm proposal show {proposal}" in output
-    assert "Keep it small." in fake_claude.calls[0]["argv"][1]
+    assert "Keep it small." in fake_claude.calls[0]["prompt"]
 
     assert apm("proposal", "ls").strip() == f"{proposal} [pending] 2 children for {node}"
     shown = apm("proposal", "show", proposal)

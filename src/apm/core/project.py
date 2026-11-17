@@ -15,6 +15,7 @@ from pathlib import Path
 import yaml
 
 from apm.core.config import parse_config
+from apm.core.errors import ApmError
 from apm.core.files import CONFIG_FILE, GRAPH_FILE, read_graph_file, write_file_atomic
 from apm.core.git import CommitMessage, GitError, add, commit, git
 from apm.core.graph import Graph
@@ -25,7 +26,7 @@ PROJECT_ENV = "APM_PROJECT"
 DEFAULT_APM_DIR = ".apm"
 
 
-class ProjectError(RuntimeError):
+class ProjectError(ApmError, RuntimeError):
     pass
 
 

@@ -18,7 +18,9 @@ from apm.core.lock import CACHE_DIR
 from apm.core.model import NodeId
 
 DB_FILE = "apm.db"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+PROJECT = ""
+"""The `node_id` of a run that is about the whole project rather than one node."""
 
 type RunStatus = Literal["running", "succeeded", "failed", "cancelled"]
 type ProposalStatus = Literal["pending", "accepted", "rejected"]
@@ -37,7 +39,8 @@ CREATE TABLE IF NOT EXISTS runs(
     error TEXT,
     prompt TEXT NOT NULL DEFAULT '',
     parent_run TEXT,
-    pid INTEGER
+    pid INTEGER,
+    mode TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS runs_node ON runs(node_id, started);
 CREATE TABLE IF NOT EXISTS run_events(
@@ -77,6 +80,8 @@ class Run:
     """The run this one follows up on: a critic's decomposer, or the run a message continues."""
     pid: int | None
     """The process hosting the run, so a run whose host died can be told from a live one."""
+    mode: str = ""
+    """The permission mode it ran in (see `apm.runner.agents.MODES`)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -106,8 +111,11 @@ class Store:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self._db() as db:
             db.executescript(_SCHEMA)
+            # Databases from before version 2 have no `mode` column.
+            if "mode" not in {row["name"] for row in db.execute("PRAGMA table_info(runs)")}:
+                db.execute("ALTER TABLE runs ADD COLUMN mode TEXT NOT NULL DEFAULT ''")
             db.execute(
-                "INSERT OR IGNORE INTO meta(key, value) VALUES('schema_version', ?)",
+                "INSERT OR REPLACE INTO meta(key, value) VALUES('schema_version', ?)",
                 (str(SCHEMA_VERSION),),
             )
 
@@ -134,6 +142,7 @@ class Store:
         session_id: str | None = None,
         parent_run: str | None = None,
         pid: int | None = None,
+        mode: str = "",
     ) -> Run:
         run = Run(
             id=uuid.uuid4().hex[:12],
@@ -148,11 +157,12 @@ class Store:
             prompt=prompt,
             parent_run=parent_run,
             pid=pid,
+            mode=mode,
         )
         with self._db() as db:
             db.execute(
                 "INSERT INTO runs(id, node_id, agent, session_id, status, started, prompt,"
-                " parent_run, pid) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " parent_run, pid, mode) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     run.id,
                     run.node_id,
@@ -163,6 +173,7 @@ class Store:
                     run.prompt,
                     run.parent_run,
                     run.pid,
+                    run.mode,
                 ),
             )
         return run

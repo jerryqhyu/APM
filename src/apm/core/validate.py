@@ -10,6 +10,7 @@ from typing import Literal
 
 import networkx as nx
 
+from apm.core.errors import ApmError
 from apm.core.graph import Graph
 from apm.core.ids import handle
 from apm.core.model import NodeId, Status
@@ -36,7 +37,7 @@ class Report:
         return not self.errors
 
 
-class InvariantError(ValueError):
+class InvariantError(ApmError, ValueError):
     """A change was refused because it would break a hard invariant."""
 
     def __init__(self, issues: Sequence[Issue]) -> None:

@@ -7,7 +7,12 @@ from apm.core.config import ConfigError, default_repo, parse_config, read_config
 
 FIXTURES = Path(__file__).parent.parent / "fixtures"
 MINIMAL = "name: x\ncode: { repos: { app: { path: '..' } } }\n"
-DEFAULT_RUNNER = {"max_concurrent": 2, "default_budget_usd": 2.0, "agents": {}}
+DEFAULT_RUNNER = {
+    "max_concurrent": 2,
+    "default_budget_usd": 2.0,
+    "permission_mode": "auto",
+    "agents": {},
+}
 
 
 def issues_for(text: str) -> list[str]:
@@ -30,6 +35,7 @@ def test_parses_the_example_from_plans_md() -> None:
         "runner": {
             "max_concurrent": 2,
             "default_budget_usd": 2.0,
+            "permission_mode": "auto",
             "agents": {
                 "apm-decomposer": {**no_agent, "model": "opus"},
                 "apm-critic": {**no_agent, "model": "sonnet"},

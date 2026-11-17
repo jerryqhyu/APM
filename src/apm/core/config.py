@@ -3,16 +3,16 @@
 import re
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 import yaml
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, ValidationError, field_validator
 
+from apm.core.errors import ApmError, format_issue
 from apm.core.files import CONFIG_FILE, config_path, read_file_if_exists
-from apm.core.issues import format_issue
 
 
-class ConfigError(ValueError):
+class ConfigError(ApmError, ValueError):
     def __init__(self, issues: Sequence[str], source: str = CONFIG_FILE) -> None:
         super().__init__("\n".join(f"{source}: {issue}" for issue in issues))
         self.issues = tuple(issues)
@@ -76,6 +76,8 @@ class CodeConfig(_Model):
 class RunnerConfig(_Model):
     max_concurrent: Annotated[int, Field(gt=0)] = 2
     default_budget_usd: Positive = 2.0
+    permission_mode: Literal["auto", "manual", "acceptEdits", "plan", "dontAsk"] = "auto"
+    """What agents start in unless you pick another mode for a run."""
     agents: dict[Key, AgentConfig] = Field(default_factory=dict)
 
 

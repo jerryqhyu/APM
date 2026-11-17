@@ -138,10 +138,18 @@ def test_build_and_read_a_plan(client: TestClient, project: Project) -> None:
     info = client.get("/api/project").json()
     assert info["name"] == "my-app"
     assert info["counts"] == {"nodes": 3, "ready": 1, "proposals": 0, "running": 0}
-    assert [a["name"] for a in info["agents"]] == [
-        "apm-decomposer",
-        "apm-implementer",
-        "apm-assistant",
+    assert [(a["name"], a["label"], a["needs_node"]) for a in info["agents"]] == [
+        ("apm-assistant", "Chat", False),
+        ("apm-decomposer", "Decompose", True),
+        ("apm-implementer", "Implement", True),
+    ]
+    assert info["default_mode"] == "auto"
+    assert [m["name"] for m in info["modes"]] == [
+        "auto",
+        "manual",
+        "acceptEdits",
+        "plan",
+        "dontAsk",
     ]
 
     tree = client.get("/api/tree").json()
@@ -225,7 +233,7 @@ def test_decompose_then_accept_an_edited_proposal(client: TestClient, project: P
     node = client.post("/api/nodes", json={"title": "File I/O"}).json()
     started = client.post(
         "/api/runs",
-        json={"agent": "apm-decomposer", "node_id": node["handle"], "guidance": "Small."},
+        json={"agent": "apm-decomposer", "node_id": node["handle"], "message": "Small."},
     )
     assert started.status_code == 201
     assert started.json()["status"] == "running"
@@ -308,13 +316,14 @@ def test_run_limits_refusals_cancel_and_continue(
 
     fake_claude.mode("hang")
     run = client.post(
-        "/api/runs", json={"agent": "apm-assistant", "node_id": child, "guidance": "Why?"}
+        "/api/runs", json={"agent": "apm-assistant", "node_id": child, "message": "Why?"}
     ).json()
-    busy = client.post("/api/runs", json={"agent": "apm-assistant", "node_id": child})
+    assert run["mode"] == "auto"
+    busy = client.post(f"/api/runs/{run['id']}/continue", json={"message": "more"})
     assert busy.status_code == 409
-    assert "already active on this node" in busy.json()["error"]
+    assert "already running in this conversation" in busy.json()["error"]
     assert (
-        client.post(f"/api/runs/{run['id']}/continue", json={"message": "more"}).status_code == 409
+        client.post("/api/runs", json={"agent": "apm-assistant", "mode": "yolo"}).status_code == 422
     )
     assert client.get("/api/runs", params={"status": "running"}).json()[0]["id"] == run["id"]
 
@@ -368,3 +377,93 @@ def test_the_websocket_streams_a_run(client: TestClient, project: Project) -> No
     assert seen[4]["run"]["status"] == "succeeded"
     assert seen[5]["proposal"]["node_id"] == node
     assert handle(node) in seen[0]["run"]["prompt"]
+
+
+# --- merge, the project chat, and questions from a running agent --------------------------------
+
+
+def test_merge_and_project_actions(client: TestClient, project: Project) -> None:
+    a = client.post("/api/nodes", json={"title": "A"}).json()["id"]
+    b = client.post("/api/nodes", json={"title": "B"}).json()["id"]
+    c = client.post("/api/nodes", json={"title": "C", "depends_on": [b]}).json()["id"]
+    before = commits(project)
+
+    merged = client.post("/api/merge", json={"target": a, "others": [b], "title": "A and B"})
+    assert merged.status_code == 200
+    assert merged.json()["title"] == "A and B"
+    assert commits(project) == before + 1
+    graph = load_graph(project)
+    assert b not in graph
+    assert graph[c].depends_on == (a,)
+    assert client.post("/api/merge", json={"target": a, "others": [a]}).status_code == 422
+
+    assert client.post("/api/reconcile").json() == {"done": []}
+    assert client.post("/api/commit").json() == {"sha": None, "nodes": []}
+    detail = client.get(f"/api/nodes/{a}").json()
+    assert detail["links"]["dependents"][0]["title"] == "C"
+    assert detail["links"]["children"] == []
+
+
+def test_the_chat_about_the_whole_project(client: TestClient, fake_claude: FakeClaude) -> None:
+    started = client.post("/api/runs", json={"agent": "apm-assistant", "message": "Plan it."})
+    assert started.status_code == 201
+    assert started.json()["node_id"] == ""
+    (run,) = wait_for_runs(client)
+    assert [r["id"] for r in client.get("/api/runs", params={"scope": "project"}).json()] == [
+        run["id"]
+    ]
+    assert fake_claude.calls[0]["prompt"] == "Plan it."
+    assert client.post("/api/runs", json={"agent": "apm-decomposer"}).status_code == 422
+
+
+def test_a_question_from_a_running_agent_is_answered_over_the_api(
+    client: TestClient, project: Project, fake_claude: FakeClaude
+) -> None:
+    node = create_nodes(project, [NewNode(title="N")]).created[0]
+    fake_claude.mode("ask-question", "ask-permission")
+    with client.websocket_connect(f"ws://127.0.0.1:4100/ws?token={TOKEN}") as socket:
+        socket.receive_json()
+        run = client.post(
+            "/api/runs", json={"agent": "apm-assistant", "node_id": node, "mode": "manual"}
+        ).json()
+
+        def wait_for(kind: str) -> dict[str, Any]:
+            while (event := socket.receive_json())["type"] != kind:
+                pass
+            return event
+
+        # First a permission prompt, which is refused.
+        request = wait_for("run.request")["request"]
+        assert (request["kind"], request["tool"], request["run_id"]) == (
+            "permission",
+            "Bash",
+            run["id"],
+        )
+        assert client.get("/api/requests").json() == [request]
+        assert client.get(f"/api/runs/{run['id']}").json()["requests"] == [request]
+        refused = client.post(
+            f"/api/requests/{request['id']}", json={"allow": False, "message": "No."}
+        )
+        assert refused.json() == {"answered": request["id"]}
+        assert wait_for("run.request_resolved")["id"] == request["id"]
+
+        # Then a question, answered with one of its options.
+        question = wait_for("run.request")["request"]
+        assert question["kind"] == "question"
+        client.post(
+            f"/api/requests/{question['id']}",
+            json={"allow": True, "answers": {"Tabs or spaces?": "Tabs"}},
+        )
+        assert wait_for("run.finished")["run"]["status"] == "succeeded"
+
+    events = client.get(f"/api/runs/{run['id']}").json()["events"]
+    said = [
+        e["data"]["message"]["content"][0]["text"]
+        for e in events
+        if e["data"]["type"] == "assistant"
+    ]
+    assert said[-2:] == ["denied: No.", "you chose: Tabs"]
+    assert client.get("/api/requests").json() == []
+    late = client.post(f"/api/requests/{question['id']}", json={"allow": True})
+    assert late.status_code == 422
+    assert "no longer waiting" in late.json()["error"]

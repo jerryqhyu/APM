@@ -16,8 +16,8 @@ from urllib.parse import urlsplit
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, ValidationError
 from pydantic_core import ErrorDetails
 
+from apm.core.errors import ApmError, format_issue
 from apm.core.ids import is_node_id
-from apm.core.issues import format_issue
 from apm.core.model import Delivery, External, Kind, Node, NodeId, Status
 
 
@@ -28,14 +28,14 @@ class ParseIssue:
     message: str
 
 
-class GraphParseError(ValueError):
+class GraphParseError(ApmError, ValueError):
     def __init__(self, issues: Sequence[ParseIssue], source: str = "graph.ndjson") -> None:
         super().__init__("\n".join(f"{source}:{i.line}: {i.message}" for i in issues))
         self.issues = tuple(issues)
         self.source = source
 
 
-class InvalidNodeError(ValueError):
+class InvalidNodeError(ApmError, ValueError):
     """Raised when asked to write a node that `parse_graph` would reject."""
 
     def __init__(self, node_id: str, issues: Sequence[str]) -> None:

@@ -16,3 +16,8 @@ htmlcov/
 # Web UI
 ui/node_modules/
 src/apm/server/static/
+
+# The plan repo: its own local git repository, never committed here
+.apm/
+.apm-link
+.claude/worktrees/

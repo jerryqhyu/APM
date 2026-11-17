@@ -6,8 +6,8 @@ Node ids here are full ids: turning a handle into an id is the caller's job (`re
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, replace
 
-from apm.core.body import render_body
 from apm.core.config import default_repo, read_config
+from apm.core.files import render_body
 from apm.core.ids import handle, new_id
 from apm.core.model import Delivery, Kind, Node, NodeId, Status
 from apm.core.mutate import Draft, Mutation, OpError, mutate
@@ -195,6 +195,68 @@ def delete_node(
         return f"{handle(node_id)}: {title}{extra}"
 
     return mutate(project, "delete", apply, actor=actor, run=run)
+
+
+def merge_nodes(
+    project: Project,
+    target: NodeId,
+    others: Sequence[NodeId],
+    *,
+    title: str | None = None,
+    actor: str = "user",
+    run: str | None = None,
+) -> Mutation:
+    """Folds `others` into `target`, in one commit. `target` keeps its id, status and kind, and
+    takes on everything the others had: their children, their dependencies, the nodes that
+    depended on them, and their bodies (appended under a heading). The others are deleted.
+    """
+
+    def apply(draft: Draft) -> str:
+        keep = draft[target]
+        doomed = [draft[o].id for o in dict.fromkeys(others) if o != target]
+        if not doomed:
+            raise OpError("nothing to merge: pick at least two nodes")
+        group = {target, *doomed}
+        merged = [draft[n] for n in doomed]
+
+        deliveries = [n.delivery for n in (keep, *merged) if n.delivery is not None]
+        if len(deliveries) > 1:
+            raise OpError("more than one of these nodes has a delivery: those can't be merged")
+
+        # If the target sits inside a node being merged away, it moves up to take its place.
+        parent = keep.parent
+        while parent in group:
+            parent = draft[parent].parent
+
+        body = draft.body(target).rstrip()
+        for node in merged:
+            text = draft.body(node.id).strip()
+            if text and text != render_body().strip():
+                body += f"\n\n---\n\n### Merged from: {node.title}\n\n{text}"
+        deps = {d for n in (keep, *merged) for d in n.depends_on} - group
+
+        for other in list(draft.graph.nodes.values()):
+            if other.id in group:
+                continue
+            repointed = {target if d in doomed else d for d in other.depends_on}
+            new_parent = target if other.parent in doomed else other.parent
+            draft.put(replace(other, depends_on=canonical_ids(repointed), parent=new_parent))
+        for node_id in doomed:
+            draft.remove(node_id)
+        draft.put(
+            replace(
+                keep,
+                title=title or keep.title,
+                parent=parent,
+                depends_on=canonical_ids(deps),
+                delivery=deliveries[0] if deliveries else None,
+            )
+        )
+        draft.set_body(target, body + "\n")
+        draft.touch(target)
+        return f"{handle(target)}: {_count(len(group), 'node', 'nodes')}"
+
+    return mutate(project, "merge", apply, actor=actor, run=run)
 
 
 def link(

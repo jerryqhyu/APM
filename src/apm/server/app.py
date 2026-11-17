@@ -14,32 +14,21 @@ from pydantic import BaseModel, Field
 
 from apm import __version__
 from apm.core import ops
-from apm.core.body import read_body, render_body
-from apm.core.config import ConfigError, read_config
+from apm.core.config import read_config
+from apm.core.errors import ApmError
+from apm.core.files import read_body, render_body
 from apm.core.git import GitError, rev_parse
 from apm.core.graph import Graph
-from apm.core.history import node_history
-from apm.core.ids import HandleError, handles, resolve_handle
 from apm.core.lifting import check_all
-from apm.core.lock import LockTimeoutError
 from apm.core.model import Kind, NodeId, Status
-from apm.core.mutate import DirtyPlanError, OpError
-from apm.core.ndjson import GraphParseError, InvalidNodeError
+from apm.core.mutate import commit_hand_edits
 from apm.core.project import Project, load_graph
-from apm.core.proposals import (
-    ProposalError,
-    ProposalResolvedError,
-    accept_proposal,
-    reject_proposal,
-)
-from apm.core.search import search
-from apm.core.status import compute_states, ready_leaves
-from apm.core.store import Store
-from apm.core.validate import InvariantError
-from apm.core.views import all_nodes_view, level_json, node_view
-from apm.runner.agents import AGENTS, RunRefused
-from apm.runner.runner import Runner, RunnerBusy
-from apm.server.hub import Hub
+from apm.core.proposals import accept_proposal, reject_proposal
+from apm.core.reconcile import describe, reconcile
+from apm.core.store import PROJECT, Store
+from apm.core.views import all_nodes_view, level_json, node_history, node_ref, node_view, search
+from apm.runner.agents import AGENTS, MODES
+from apm.runner.runner import Runner
 from apm.server.security import bearer, host_is_loopback, origin_allowed, token_matches
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -73,6 +62,12 @@ class MoveNode(BaseModel):
     parent: str | None = None
 
 
+class MergeNodes(BaseModel):
+    target: str
+    others: list[str]
+    title: str | None = None
+
+
 class Edge(BaseModel):
     src: str
     dst: str
@@ -80,13 +75,22 @@ class Edge(BaseModel):
 
 class StartRun(BaseModel):
     agent: str
-    node_id: str
-    guidance: str = ""
+    node_id: str | None = None
+    """None = the project as a whole (the chat only)."""
+    message: str = ""
     critic: bool = True
+    mode: str | None = None
 
 
 class ContinueRun(BaseModel):
     message: str
+    mode: str | None = None
+
+
+class AnswerRequest(BaseModel):
+    allow: bool
+    message: str = ""
+    answers: dict[str, str] | None = None
 
 
 class AcceptProposal(BaseModel):
@@ -94,23 +98,35 @@ class AcceptProposal(BaseModel):
     """The children to create, if you edited or trimmed the proposal. Default: all of them."""
 
 
-# Errors a client can cause → the HTTP status that says so.
-ERROR_STATUS: list[tuple[type[Exception], int]] = [
-    (ProposalResolvedError, 409),
-    (RunnerBusy, 409),
-    (RunRefused, 422),
-    (HandleError, 404),
-    (KeyError, 404),
-    (ProposalError, 422),
-    (InvariantError, 422),
-    (OpError, 422),
-    (DirtyPlanError, 409),
-    (InvalidNodeError, 422),
-    (GraphParseError, 422),
-    (ConfigError, 422),
-    (LockTimeoutError, 503),
-    (GitError, 500),
-]
+class Hub:
+    """Fan-out of live events to every connected WebSocket."""
+
+    def __init__(self) -> None:
+        self._queues: set[asyncio.Queue[dict[str, Any]]] = set()
+        self._loop: asyncio.AbstractEventLoop | None = None
+
+    def bind(self, loop: asyncio.AbstractEventLoop) -> None:
+        self._loop = loop
+
+    def subscribe(self) -> asyncio.Queue[dict[str, Any]]:
+        queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=10_000)
+        self._queues.add(queue)
+        return queue
+
+    def unsubscribe(self, queue: asyncio.Queue[dict[str, Any]]) -> None:
+        self._queues.discard(queue)
+
+    def publish(self, event: dict[str, Any]) -> None:
+        """Safe to call from any thread."""
+        if self._loop is not None:
+            self._loop.call_soon_threadsafe(self._deliver, event)
+
+    def _deliver(self, event: dict[str, Any]) -> None:
+        for queue in self._queues:
+            # A client too slow to keep up misses events rather than stalling the others; it
+            # refetches on the next one it does get.
+            with contextlib.suppress(asyncio.QueueFull):
+                queue.put_nowait(event)
 
 
 def create_app(
@@ -156,43 +172,42 @@ def create_app(
                 return _error(401, "missing or wrong token: open the URL `apm serve` printed")
         return await call_next(request)
 
-    for error_type, status in ERROR_STATUS:
-        app.add_exception_handler(error_type, _handler(status))
+    @app.exception_handler(ApmError)
+    async def user_error(_: Request, err: ApmError) -> Response:
+        return _error(err.http_status, str(err))
 
-    def graph_and(node: str) -> tuple[Graph, NodeId]:
+    @app.exception_handler(KeyError)
+    async def not_found(_: Request, err: KeyError) -> Response:
+        """An unknown run or proposal id."""
+        return _error(404, str(err.args[0]) if err.args else "not found")
+
+    def locate(node: str) -> tuple[Graph, NodeId]:
         graph = load_graph(project)
-        return graph, resolve_handle(node, graph.nodes)
+        return graph, graph.resolve(node)
 
     def node_detail(graph: Graph, node_id: NodeId) -> dict[str, Any]:
-        states, names = compute_states(graph), handles(graph.nodes)
+        state = graph.states[node_id]
         return {
-            **node_view(graph, states, names, node_id),
+            **node_view(graph, node_id),
             "body": read_body(project.apm_dir, node_id),
-            "ancestors": [
-                {"id": a, "handle": names[a], "title": graph[a].title}
-                for a in reversed(graph.ancestors(node_id))
-            ],
+            "ancestors": [node_ref(graph, a) for a in reversed(graph.ancestors(node_id))],
             "links": {
-                key: [
-                    {
-                        "id": n,
-                        "handle": names[n],
-                        "title": graph[n].title,
-                        "status": str(graph[n].status),
-                    }
-                    for n in ids
-                ]
-                for key, ids in (
-                    ("depends_on", graph.dependencies(node_id)),
-                    ("dependents", graph.dependents(node_id)),
-                    ("waiting_on", states[node_id].waiting_on),
-                )
+                "depends_on": [node_ref(graph, n) for n in graph.dependencies(node_id)],
+                "dependents": [node_ref(graph, n) for n in graph.dependents(node_id)],
+                "waiting_on": [node_ref(graph, n) for n in state.waiting_on],
+                "children": [node_ref(graph, n) for n in graph.children(node_id)],
             },
             "history": [asdict(h) for h in node_history(project, node_id)],
-            "runs": [asdict(r) for r in store.list_runs(node_id=node_id)],
             "proposals": [
                 asdict(p) for p in store.list_proposals(node_id=node_id, status="pending")
             ],
+        }
+
+    def run_view(run_id: str, after: int = 0) -> dict[str, Any]:
+        return {
+            **asdict(store.get_run(run_id)),
+            "events": [asdict(e) for e in store.list_events(run_id, after)],
+            "requests": runner.pending_requests(run_id),
         }
 
     # --- reading ---
@@ -207,13 +222,20 @@ def create_app(
             "code_dir": str(project.code_dir),
             "head": rev_parse(project.apm_dir, "HEAD"),
             "agents": [
-                {"name": spec.name, "summary": spec.summary}
+                {
+                    "name": spec.name,
+                    "label": spec.label,
+                    "summary": spec.summary,
+                    "needs_node": spec.needs_node,
+                }
                 for spec in AGENTS.values()
                 if spec.user_startable
             ],
+            "modes": [{"name": name, "label": label} for name, label in MODES.items()],
+            "default_mode": config.runner.permission_mode,
             "counts": {
                 "nodes": len(graph),
-                "ready": len(ready_leaves(graph)),
+                "ready": len(graph.ready_leaves()),
                 "proposals": len(store.list_proposals(status="pending")),
                 "running": len(store.list_runs(status="running")),
             },
@@ -233,39 +255,36 @@ def create_app(
     @app.get("/api/graph")
     def get_graph(root: str | None = None) -> dict[str, Any]:
         graph = load_graph(project)
-        root_id = None if not root else resolve_handle(root, graph.nodes)
-        return level_json(graph, root_id)
+        return level_json(graph, graph.resolve(root) if root else None)
 
     @app.get("/api/nodes/{node}")
     def get_node(node: str) -> dict[str, Any]:
-        return node_detail(*graph_and(node))
+        return node_detail(*locate(node))
 
     @app.get("/api/ready")
     def get_ready(root: str | None = None) -> list[dict[str, Any]]:
         graph = load_graph(project)
-        root_id = None if not root else resolve_handle(root, graph.nodes)
-        states, names = compute_states(graph), handles(graph.nodes)
-        return [node_view(graph, states, names, n) for n in ready_leaves(graph, root_id)]
+        ready = graph.ready_leaves(graph.resolve(root) if root else None)
+        return [node_view(graph, n) for n in ready]
 
     @app.get("/api/search")
     def get_search(q: str = "") -> list[dict[str, Any]]:
         graph = load_graph(project)
-        names = handles(graph.nodes)
         return [
-            {"id": h.node_id, "handle": names[h.node_id], "title": h.title, "snippet": h.snippet}
-            for h in search(project, graph, q)
+            {**node_ref(graph, hit.node_id), "snippet": hit.snippet}
+            for hit in search(project, graph, q)
         ]
 
-    # --- writing ---
+    # --- changing the plan ---
 
     @app.post("/api/nodes", status_code=201)
     def create_node(body: CreateNode) -> dict[str, Any]:
         graph = load_graph(project)
         new = ops.NewNode(
             title=body.title,
-            parent=None if not body.parent else resolve_handle(body.parent, graph.nodes),
+            parent=graph.resolve(body.parent) if body.parent else None,
             kind=body.kind,
-            depends_on=[resolve_handle(d, graph.nodes) for d in body.depends_on],
+            depends_on=[graph.resolve(d) for d in body.depends_on],
             body=render_body(intent=body.intent),
         )
         result = ops.create_nodes(project, [new])
@@ -274,7 +293,7 @@ def create_app(
     @app.patch("/api/nodes/{node}")
     def patch_node(node: str, body: PatchNode) -> dict[str, Any]:
         """Each kind of change is its own commit: fields, status, body."""
-        _, node_id = graph_and(node)
+        _, node_id = locate(node)
         if body.title is not None or body.kind is not None:
             ops.update_node(project, node_id, title=body.title, kind=body.kind)
         if body.status is not None:
@@ -285,55 +304,88 @@ def create_app(
 
     @app.post("/api/nodes/{node}/move")
     def move_node(node: str, body: MoveNode) -> dict[str, Any]:
-        graph, node_id = graph_and(node)
-        parent = None if not body.parent else resolve_handle(body.parent, graph.nodes)
-        ops.move_node(project, node_id, parent)
+        graph, node_id = locate(node)
+        ops.move_node(project, node_id, graph.resolve(body.parent) if body.parent else None)
         return node_detail(load_graph(project), node_id)
 
     @app.delete("/api/nodes/{node}")
     def delete_node(node: str, recursive: bool = False) -> dict[str, Any]:
-        _, node_id = graph_and(node)
+        _, node_id = locate(node)
         result = ops.delete_node(project, node_id, recursive=recursive)
         return {"deleted": [n for n in result.nodes if n not in result.graph]}
+
+    @app.post("/api/merge")
+    def merge(body: MergeNodes) -> dict[str, Any]:
+        graph, target = locate(body.target)
+        result = ops.merge_nodes(
+            project, target, [graph.resolve(o) for o in body.others], title=body.title
+        )
+        return node_detail(result.graph, target)
 
     @app.post("/api/edges")
     def add_edge(body: Edge) -> dict[str, Any]:
         graph = load_graph(project)
-        src, dst = (resolve_handle(h, graph.nodes) for h in (body.src, body.dst))
-        return {"changed": ops.link(project, src, dst).sha is not None}
+        result = ops.link(project, graph.resolve(body.src), graph.resolve(body.dst))
+        return {"changed": result.sha is not None}
 
     @app.delete("/api/edges")
     def remove_edge(src: str, dst: str) -> dict[str, Any]:
         graph = load_graph(project)
-        a, b = (resolve_handle(h, graph.nodes) for h in (src, dst))
-        return {"changed": ops.unlink(project, a, b).sha is not None}
+        result = ops.unlink(project, graph.resolve(src), graph.resolve(dst))
+        return {"changed": result.sha is not None}
 
-    # --- runs ---
+    @app.post("/api/reconcile")
+    def run_reconcile() -> dict[str, Any]:
+        return {"done": describe(reconcile(project))}
+
+    @app.post("/api/commit")
+    def commit_edits() -> dict[str, Any]:
+        """Commits edits made by hand in the plan repo."""
+        result = commit_hand_edits(project)
+        return {"sha": result.sha, "nodes": list(result.nodes)}
+
+    # --- runs: one turn of an agent ---
 
     @app.get("/api/runs")
-    def list_runs(node_id: str | None = None, status: str | None = None) -> list[dict[str, Any]]:
+    def list_runs(
+        node_id: str | None = None, scope: str | None = None, status: str | None = None
+    ) -> list[dict[str, Any]]:
+        """`scope=project` lists the runs that are about the project as a whole."""
         if status not in (None, "running", "succeeded", "failed", "cancelled"):
             return []
-        return [asdict(r) for r in store.list_runs(node_id=node_id, status=status)]
+        where = PROJECT if scope == "project" else node_id
+        return [asdict(r) for r in store.list_runs(node_id=where, status=status, limit=500)]
 
     @app.get("/api/runs/{run_id}")
     def get_run(run_id: str, after: int = 0) -> dict[str, Any]:
-        run = store.get_run(run_id)
-        return {**asdict(run), "events": [asdict(e) for e in store.list_events(run_id, after)]}
+        return run_view(run_id, after)
 
     @app.post("/api/runs", status_code=201)
     async def start_run(body: StartRun) -> dict[str, Any]:
-        _, node_id = graph_and(body.node_id)
-        return asdict(runner.start(body.agent, node_id, body.guidance, critic=body.critic))
+        node_id = locate(body.node_id)[1] if body.node_id else None
+        run = runner.start(body.agent, node_id, body.message, critic=body.critic, mode=body.mode)
+        return asdict(run)
 
     @app.post("/api/runs/{run_id}/continue", status_code=201)
     async def continue_run(run_id: str, body: ContinueRun) -> dict[str, Any]:
-        return asdict(runner.continue_run(run_id, body.message))
+        return asdict(runner.continue_run(run_id, body.message, mode=body.mode))
 
     @app.delete("/api/runs/{run_id}")
     async def cancel_run(run_id: str) -> dict[str, Any]:
         await runner.cancel(run_id)
         return asdict(store.get_run(run_id))
+
+    @app.get("/api/requests")
+    def list_requests() -> list[dict[str, Any]]:
+        """Everything a running agent is waiting on you for."""
+        return runner.pending_requests()
+
+    @app.post("/api/requests/{request_id}")
+    async def answer_request(request_id: str, body: AnswerRequest) -> dict[str, Any]:
+        await runner.answer(
+            request_id, allow=body.allow, message=body.message, answers=body.answers
+        )
+        return {"answered": request_id}
 
     # --- proposals ---
 
@@ -414,11 +466,3 @@ async def _watch_head(project: Project, hub: Hub) -> None:
 
 def _error(status: int, message: str) -> JSONResponse:
     return JSONResponse({"error": message}, status_code=status)
-
-
-def _handler(status: int) -> Callable[[Request, Exception], Awaitable[Response]]:
-    async def handle(_: Request, err: Exception) -> Response:
-        message = err.args[0] if isinstance(err, KeyError) and err.args else str(err)
-        return _error(status, str(message))
-
-    return handle

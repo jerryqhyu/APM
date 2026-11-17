@@ -11,7 +11,7 @@ from apm.core.ops import NewNode, create_nodes, set_status
 from apm.core.project import Project
 from apm.core.store import Store
 from apm.runner.agents import RunRefused
-from apm.runner.runner import Runner, RunnerBusy
+from apm.runner.runner import Runner, RunnerBusy, _failure
 from tests.runner.fake import FakeClaude
 
 
@@ -24,6 +24,22 @@ class Harness:
 
     def types(self) -> list[str]:
         return [e["type"] for e in self.events]
+
+    async def next_request(self) -> dict[str, Any]:
+        """Waits until a run asks the user something."""
+        for _ in range(500):
+            if requests := self.runner.pending_requests():
+                return requests[0]
+            await asyncio.sleep(0.01)
+        raise AssertionError("no request arrived")
+
+    def said(self, run_id: str) -> list[str]:
+        """The text the agent said during a run."""
+        out = []
+        for event in self.store.list_events(run_id):
+            if event.data["type"] == "assistant":
+                out += [block["text"] for block in event.data["message"]["content"]]
+        return out
 
 
 @pytest.fixture
@@ -41,12 +57,16 @@ def option(call: dict, name: str) -> str:
     return argv[argv.index(name) + 1]
 
 
+def mcp_env(call: dict) -> dict[str, str]:
+    return json.loads(Path(option(call, "--mcp-config")).read_text())["mcpServers"]["apm"]["env"]
+
+
 async def test_a_decomposer_run_becomes_a_reviewed_proposal(
     harness: Harness, node: str, fake_claude: FakeClaude
 ) -> None:
     run = harness.runner.start("apm-decomposer", node, "Keep it small.")
-    assert run.status == "running"
-    await harness.runner.wait(node)
+    assert (run.status, run.mode) == ("running", "auto")
+    await harness.runner.wait(run.id)
 
     decomposer, critic = sorted(harness.store.list_runs(), key=lambda r: r.started)
     assert (decomposer.id, decomposer.agent, decomposer.status) == (
@@ -55,6 +75,7 @@ async def test_a_decomposer_run_becomes_a_reviewed_proposal(
         "succeeded",
     )
     assert (critic.agent, critic.status, critic.parent_run) == ("apm-critic", "succeeded", run.id)
+    assert critic.mode == "dontAsk"  # the reviewer never stops to ask
     assert decomposer.cost_usd == 0.25
 
     (proposal,) = harness.store.list_proposals()
@@ -75,7 +96,7 @@ async def test_a_decomposer_run_becomes_a_reviewed_proposal(
         "run.finished",
         "proposal.created",
     ]
-    assert harness.runner.active_nodes() == []
+    assert harness.runner.active() == 0
 
     # Only the events a transcript needs are stored: noise and non-JSON lines are dropped.
     stored = [e.data["type"] for e in harness.store.list_events(run.id)]
@@ -83,12 +104,15 @@ async def test_a_decomposer_run_becomes_a_reviewed_proposal(
 
     first, second = fake_claude.calls
     assert first["cwd"] == str(harness.project.code_dir)
+    assert first["prompt"].startswith(f'Decompose node {handle(node)} ("File I/O")')
+    assert "Keep it small." in first["prompt"]
     assert option(first, "--agent") == "apm:apm-decomposer"
-    assert option(first, "-p").startswith(f'Decompose node {handle(node)} ("File I/O")')
-    assert "Keep it small." in option(first, "-p")
     assert option(first, "--session-id") == decomposer.session_id
-    assert option(first, "--permission-prompts") == "none"
+    assert option(first, "--input-format") == "stream-json"
+    assert option(first, "--permission-prompt-tool") == "stdio"
+    assert option(first, "--permission-mode") == "auto"
     assert option(first, "--max-budget-usd") == "2"
+    assert option(first, "--disallowedTools") == "Write,Edit,NotebookEdit"
     assert "--strict-mcp-config" in first["argv"]
     assert json.loads(option(first, "--json-schema"))["required"] == [
         "rationale",
@@ -100,11 +124,9 @@ async def test_a_decomposer_run_becomes_a_reviewed_proposal(
     assert "Read" in allowed
     assert not any("set_status" in tool or tool in ("Edit", "Write") for tool in allowed)
     assert option(second, "--agent") == "apm:apm-critic"
-    assert '"title": "Parse"' in option(second, "-p")
-
-    mcp = json.loads(Path(option(first, "--mcp-config")).read_text())["mcpServers"]["apm"]
-    assert mcp["args"] == ["-m", "apm", "mcp"]
-    assert mcp["env"] == {
+    assert option(second, "--permission-mode") == "dontAsk"
+    assert '"title": "Parse"' in second["prompt"]
+    assert mcp_env(first) == {
         "APM_PROJECT": str(harness.project.code_dir),
         "APM_RUN_SCOPE": "read",
         "APM_ACTOR": "agent:apm-decomposer",
@@ -118,7 +140,7 @@ async def test_a_revise_verdict_gets_one_revision(
 ) -> None:
     fake_claude.mode("revise")
     run = harness.runner.start("apm-decomposer", node)
-    await harness.runner.wait(node)
+    await harness.runner.wait(run.id)
 
     runs = sorted(harness.store.list_runs(), key=lambda r: r.started)
     assert [r.agent for r in runs] == ["apm-decomposer", "apm-critic", "apm-decomposer"]
@@ -134,20 +156,20 @@ async def test_a_revise_verdict_gets_one_revision(
     third = fake_claude.calls[2]
     assert option(third, "--resume") == runs[0].session_id
     assert "--session-id" not in third["argv"]
-    assert "Too big." in option(third, "-p")
+    assert "Too big." in third["prompt"]
 
 
 async def test_the_critic_can_be_skipped_or_fail_without_losing_the_proposal(
     harness: Harness, node: str, fake_claude: FakeClaude
 ) -> None:
-    harness.runner.start("apm-decomposer", node, critic=False)
-    await harness.runner.wait(node)
+    run = harness.runner.start("apm-decomposer", node, critic=False)
+    await harness.runner.wait(run.id)
     assert [r.agent for r in harness.store.list_runs()] == ["apm-decomposer"]
     assert harness.store.list_proposals()[0].review is None
 
     fake_claude.mode("critic-fails")
-    harness.runner.start("apm-decomposer", node)
-    await harness.runner.wait(node)
+    run = harness.runner.start("apm-decomposer", node)
+    await harness.runner.wait(run.id)
     critic = next(r for r in harness.store.list_runs() if r.agent == "apm-critic")
     assert critic.status == "failed"
     assert len(harness.store.list_proposals()) == 2
@@ -168,7 +190,7 @@ async def test_a_failed_run_records_why_and_makes_no_proposal(
 ) -> None:
     fake_claude.mode(mode)
     run = harness.runner.start("apm-decomposer", node)
-    await harness.runner.wait(node)
+    await harness.runner.wait(run.id)
     finished = harness.store.get_run(run.id)
     assert (finished.status, finished.error) == ("failed", error)
     assert harness.store.list_proposals() == []
@@ -182,7 +204,7 @@ async def test_a_missing_claude_is_reported(
 ) -> None:
     monkeypatch.setenv("APM_CLAUDE", "/nonexistent/claude")
     run = harness.runner.start("apm-assistant", node, "What is this?")
-    await harness.runner.wait(node)
+    await harness.runner.wait(run.id)
     finished = harness.store.get_run(run.id)
     assert finished.status == "failed"
     assert finished.error is not None
@@ -199,55 +221,162 @@ async def test_cancel_stops_the_process(
     await asyncio.wait_for(harness.runner.cancel(run.id), 10)
 
     assert harness.store.get_run(run.id).status == "cancelled"
-    assert harness.runner.active_nodes() == []
+    assert harness.runner.active() == 0
     assert harness.store.list_proposals() == []
     assert harness.events[-1]["run"]["status"] == "cancelled"
     await harness.runner.cancel(run.id)  # cancelling a finished run does nothing
 
 
-async def test_limits_one_run_per_node_and_max_concurrent(
+async def test_limits_one_at_a_time_per_node_and_max_concurrent(
     harness: Harness, project: Project, fake_claude: FakeClaude
 ) -> None:
     a, b, c = create_nodes(
         project, [NewNode(title="A"), NewNode(title="B"), NewNode(title="C")]
     ).created
     fake_claude.mode("hang")
-    harness.runner.start("apm-assistant", a)
-    with pytest.raises(RunnerBusy, match="already active on this node"):
+    harness.runner.start("apm-decomposer", a)
+    with pytest.raises(RunnerBusy, match="Decompose is already running on this node"):
         harness.runner.start("apm-decomposer", a)
-    harness.runner.start("apm-assistant", b)
+    # A conversation is its own slot: chatting about a node being decomposed is fine.
+    chat = harness.runner.start("apm-assistant", a, "Why?")
+    with pytest.raises(RunnerBusy, match="Chat is already running in this conversation"):
+        harness.runner.continue_run(chat.id, "And?")
     with pytest.raises(RunnerBusy, match=r"2 runs are already active \(runner.max_concurrent\)"):
         harness.runner.start("apm-assistant", c)
-    assert harness.runner.active_nodes() == sorted([a, b])
+    assert harness.runner.active() == 2
     await harness.runner.shutdown()
-    assert harness.runner.active_nodes() == []
+    assert harness.runner.active() == 0
     assert {r.status for r in harness.store.list_runs()} == {"cancelled"}
+    assert b not in {r.node_id for r in harness.store.list_runs()}
 
 
-async def test_continue_resumes_the_session(
+async def test_a_conversation_continues_in_the_same_session(
     harness: Harness, node: str, fake_claude: FakeClaude
 ) -> None:
-    first = harness.runner.start("apm-assistant", node, "What is this?")
-    await harness.runner.wait(node)
+    first = harness.runner.start("apm-assistant", node, "What is this?", mode="manual")
+    await harness.runner.wait(first.id)
     first = harness.store.get_run(first.id)
 
     follow_up = harness.runner.continue_run(first.id, "And what next?")
-    await harness.runner.wait(node)
+    await harness.runner.wait(follow_up.id)
     follow_up = harness.store.get_run(follow_up.id)
     assert (follow_up.status, follow_up.parent_run, follow_up.session_id) == (
         "succeeded",
         first.id,
         first.session_id,
     )
+    assert follow_up.mode == "manual"  # a conversation keeps its mode unless you change it
     call = fake_claude.calls[-1]
     assert option(call, "--resume") == first.session_id
-    assert option(call, "-p") == "And what next?"
+    assert option(call, "--permission-mode") == "manual"
+    assert call["prompt"] == "And what next?"
     assert call["cwd"] == str(harness.project.code_dir)
-    text = harness.store.list_events(follow_up.id)[1].data["message"]["content"][0]["text"]
-    assert text == "I am apm-assistant (resumed)"
+    assert harness.said(follow_up.id) == ["I am apm-assistant (resumed)"]
+
+    switched = harness.runner.continue_run(follow_up.id, "Go on.", mode="plan")
+    await harness.runner.wait(switched.id)
+    assert option(fake_claude.calls[-1], "--permission-mode") == "plan"
 
     with pytest.raises(RunRefused, match="the message is empty"):
         harness.runner.continue_run(first.id, "  ")
+
+
+async def test_the_chat_can_be_about_the_whole_project_and_may_change_the_plan(
+    harness: Harness, fake_claude: FakeClaude
+) -> None:
+    run = harness.runner.start("apm-assistant", None, "Plan a todo app with me.")
+    await harness.runner.wait(run.id)
+    finished = harness.store.get_run(run.id)
+    assert (finished.status, finished.node_id) == ("succeeded", "")
+
+    (call,) = fake_claude.calls
+    assert call["prompt"] == "Plan a todo app with me."
+    env = mcp_env(call)
+    assert (env["APM_RUN_SCOPE"], env["APM_NODE"]) == ("project", "")
+    allowed = option(call, "--allowedTools").split(",")
+    assert {"mcp__apm__apm_create_nodes", "mcp__apm__apm_merge_nodes"} <= set(allowed)
+    assert "mcp__apm__apm_delete_node" in allowed
+    assert "--disallowedTools" not in call["argv"]
+    assert "--json-schema" not in call["argv"]
+
+    with pytest.raises(RunRefused, match="Decompose works on a node"):
+        harness.runner.start("apm-decomposer", None)
+
+
+async def test_a_permission_prompt_waits_for_the_users_answer(
+    harness: Harness, node: str, fake_claude: FakeClaude
+) -> None:
+    fake_claude.mode("ask-permission", "other-control")
+    run = harness.runner.start("apm-assistant", node, "Run the tests.")
+    request = await harness.next_request()
+    assert request == {
+        "id": "p-1",
+        "run_id": run.id,
+        "tool": "Bash",
+        "input": {"command": "make test"},
+        "description": "Run the tests",
+        "kind": "permission",
+    }
+    assert harness.store.get_run(run.id).status == "running"
+    assert harness.runner.pending_requests(run.id) == [request]
+    assert harness.runner.pending_requests("another-run") == []
+
+    await harness.runner.answer("p-1", allow=True)
+    await harness.runner.wait(run.id)
+    assert harness.store.get_run(run.id).status == "succeeded"
+    assert harness.said(run.id)[-1] == "allowed: make test"
+    assert harness.runner.pending_requests() == []
+    kinds = [e.data["type"] for e in harness.store.list_events(run.id)]
+    assert kinds == [
+        "system",
+        "assistant",
+        "apm_request",
+        "apm_request_resolved",
+        "assistant",
+        "result",
+    ]
+    assert "run.request" in harness.types()
+    assert "run.request_resolved" in harness.types()
+    with pytest.raises(RunRefused, match="no longer waiting"):
+        await harness.runner.answer("p-1", allow=True)
+
+
+async def test_a_denied_permission_is_passed_on_with_the_reason(
+    harness: Harness, node: str, fake_claude: FakeClaude
+) -> None:
+    fake_claude.mode("ask-permission")
+    run = harness.runner.start("apm-assistant", node, "Run the tests.")
+    await harness.next_request()
+    await harness.runner.answer("p-1", allow=False, message="Not on a Friday.")
+    await harness.runner.wait(run.id)
+    assert harness.said(run.id)[-1] == "denied: Not on a Friday."
+    resolved = harness.store.list_events(run.id)[3].data
+    assert (resolved["allow"], resolved["message"]) == (False, "Not on a Friday.")
+
+
+async def test_a_question_is_answered_with_the_chosen_option(
+    harness: Harness, node: str, fake_claude: FakeClaude
+) -> None:
+    fake_claude.mode("ask-question")
+    run = harness.runner.start("apm-assistant", node, "Set up formatting.")
+    request = await harness.next_request()
+    assert (request["kind"], request["tool"]) == ("question", "AskUserQuestion")
+    assert request["input"]["questions"][0]["options"][1]["label"] == "Spaces"
+
+    await harness.runner.answer("q-1", allow=True, answers={"Tabs or spaces?": "Spaces"})
+    await harness.runner.wait(run.id)
+    assert harness.said(run.id)[-1] == "you chose: Spaces"
+
+
+async def test_stopping_a_run_drops_what_it_was_waiting_for(
+    harness: Harness, node: str, fake_claude: FakeClaude
+) -> None:
+    fake_claude.mode("ask-permission")
+    run = harness.runner.start("apm-assistant", node, "Run the tests.")
+    await harness.next_request()
+    await harness.runner.cancel(run.id)
+    assert harness.store.get_run(run.id).status == "cancelled"
+    assert harness.runner.pending_requests() == []
 
 
 async def test_the_implementer_gets_a_worktree_node_scope_and_extra_tools(
@@ -256,12 +385,13 @@ async def test_the_implementer_gets_a_worktree_node_scope_and_extra_tools(
     config = harness.project.apm_dir / "apm.yaml"
     config.write_text(
         config.read_text()
-        + "runner:\n  agents:\n    apm-implementer:\n      model: opus\n      budget_usd: 5\n"
-        '      allowed_tools: ["Bash(uv run *)"]\n'
+        + "runner:\n  permission_mode: acceptEdits\n  agents:\n    apm-implementer:\n"
+        '      model: opus\n      budget_usd: 5\n      allowed_tools: ["Bash(uv run *)"]\n'
     )
     run = harness.runner.start("apm-implementer", node)
-    await harness.runner.wait(node)
+    await harness.runner.wait(run.id)
     assert harness.store.get_run(run.id).status == "succeeded"
+    assert harness.store.get_run(run.id).mode == "acceptEdits"  # the project's default
     assert harness.store.list_proposals() == []
 
     (call,) = fake_claude.calls
@@ -270,18 +400,16 @@ async def test_the_implementer_gets_a_worktree_node_scope_and_extra_tools(
     assert option(call, "--model") == "opus"
     assert option(call, "--max-budget-usd") == "5"
     assert "--json-schema" not in call["argv"]
-    assert f"Its full id is {node}" in option(call, "-p")
+    assert "--disallowedTools" not in call["argv"]
+    assert f"Its full id is {node}" in call["prompt"]
     allowed = option(call, "--allowedTools").split(",")
     assert {"Edit", "Write", "Bash(git *)", "Bash(uv run *)"} <= set(allowed)
     assert "mcp__apm__apm_set_status" in allowed
     assert "mcp__apm__apm_create_nodes" not in allowed
-    mcp = json.loads(Path(option(call, "--mcp-config")).read_text())["mcpServers"]["apm"]
-    assert mcp["env"]["APM_RUN_SCOPE"] == f"node:{node}"
+    assert mcp_env(call)["APM_RUN_SCOPE"] == f"node:{node}"
 
 
-async def test_the_implementer_is_only_offered_for_work_that_can_start(
-    harness: Harness, project: Project
-) -> None:
+async def test_runs_are_refused_when_they_cannot_start(harness: Harness, project: Project) -> None:
     parent = create_nodes(project, [NewNode(title="Parent")]).created[0]
     first, second = create_nodes(
         project,
@@ -301,6 +429,8 @@ async def test_the_implementer_is_only_offered_for_work_that_can_start(
         harness.runner.start("apm-critic", first)
     with pytest.raises(RunRefused, match="unknown agent"):
         harness.runner.start("nope", first)
+    with pytest.raises(RunRefused, match="unknown permission mode 'yolo'"):
+        harness.runner.start("apm-assistant", first, mode="yolo")
     assert harness.store.list_runs() == []
 
 
@@ -311,3 +441,13 @@ async def test_runs_cut_off_by_a_dead_host_are_marked_failed(project: Project) -
     Runner(project, store)
     finished = store.get_run(orphan.id)
     assert (finished.status, finished.error) == ("failed", "interrupted: its host process exited")
+
+
+def test_failure_messages_say_what_went_wrong() -> None:
+    limit = {"is_error": True, "subtype": "success", "result": "You've hit your 5-hour limit"}
+    assert _failure(limit, "", 0) == "You've hit your 5-hour limit"
+    budget = {"is_error": True, "subtype": "error_max_budget_usd", "result": "over budget"}
+    assert _failure(budget, "", 0) == "error_max_budget_usd: over budget"
+    assert _failure({"is_error": True, "errors": ["a", "b"]}, "", 1) == "error: a, b"
+    assert _failure({}, "warning\nboom\n", 2) == "claude exited with code 2: boom"
+    assert _failure({}, "", 3) == "claude exited with code 3"
