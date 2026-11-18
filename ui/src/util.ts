@@ -111,7 +111,10 @@ export function typedText(run: Run): string {
 }
 
 function threadTitle(first: Run): string {
-  if (first.agent !== "apm-assistant") return AGENT_LABEL[first.agent] ?? first.agent;
+  if (first.agent !== "apm-assistant") {
+    const when = new Date(first.started * 1000).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+    return `${AGENT_LABEL[first.agent] ?? first.agent} · ${when}`;
+  }
   const line = typedText(first).trim().split("\n")[0] ?? "";
   return line.length > 44 ? `${line.slice(0, 43)}…` : line || "Chat";
 }

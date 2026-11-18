@@ -4,6 +4,7 @@ Planning never commits on its own. The decomposer returns JSON in the shape belo
 turns the children into real nodes in one `decompose` commit.
 """
 
+import contextlib
 from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -212,6 +213,9 @@ def accept_proposal(
     accept an edited or trimmed list instead of the original. If it can't be applied, the
     proposal stays pending.
     """
+    if store.get_proposal(proposal_id).node_id not in load_graph(project):
+        close_orphaned(store, load_graph(project))
+        raise ProposalResolvedError("the node this proposal was for no longer exists")
     proposal = _claim(store, proposal_id, "accepted")
     try:
         data = dict(proposal.data)
@@ -240,3 +244,16 @@ def _claim(store: Store, proposal_id: str, status: Literal["accepted", "rejected
         return store.resolve_proposal(proposal_id, status)
     except ValueError as err:
         raise ProposalResolvedError(str(err)) from None
+
+
+def close_orphaned(store: Store, graph: Graph) -> list[str]:
+    """Rejects pending proposals whose node no longer exists: they can never be accepted. Returns
+    their ids.
+    """
+    closed = []
+    for proposal in store.list_proposals(status="pending"):
+        if proposal.node_id not in graph:
+            with contextlib.suppress(ValueError):  # resolved by someone else meanwhile
+                store.resolve_proposal(proposal.id, "rejected")
+                closed.append(proposal.id)
+    return closed

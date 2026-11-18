@@ -244,3 +244,23 @@ def test_scope_parsing() -> None:
     for bad in ("write", "node:", "node:1234", "READ"):
         with pytest.raises(ValueError, match="APM_RUN_SCOPE must be"):
             Scope.parse(bad)
+
+
+def test_a_subtree_is_one_create_call(project: Project) -> None:
+    session = Session(project)
+    created = session.call(
+        "apm_create_nodes",
+        nodes=[
+            {"title": "Feature", "key": "f"},
+            {"title": "Model", "key": "m", "parent_key": "f"},
+            {"title": "View", "parent_key": "f", "depends_on_keys": ["m"]},
+        ],
+    )
+    feature, model, view = (line.split()[0] for line in created.splitlines())
+    assert session.call("apm_get_graph").splitlines() == [
+        f"{feature} [work/todo·ready] Feature (0/2)",
+        f"  {model} [work/todo·ready] Model",
+        f"  {view} [work/todo·blocked] View → {model}",
+    ]
+    assert len(log(project.apm_dir)) == 2  # init + one commit
+    assert "a title can't be blank" in session.refused("apm_update_node", node=feature, title=" ")

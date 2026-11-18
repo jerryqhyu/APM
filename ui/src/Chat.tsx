@@ -70,20 +70,35 @@ function RequestCard({ request, onError }: { request: AgentRequest; onError: (te
 
   if (request.kind === "question") {
     const complete = questions.every((q) => answers[q.question]?.trim());
+    // A multi-select question takes several options, sent as one comma-separated answer.
+    const picked = (q: Question) => (answers[q.question] ?? "").split(", ").filter(Boolean);
+    const isPicked = (q: Question, label: string) => (q.multiSelect ? picked(q).includes(label) : answers[q.question] === label);
+    const pick = (q: Question, label: string) => {
+      if (!q.multiSelect) return setAnswers({ ...answers, [q.question]: label });
+      const now = picked(q).filter((l) => q.options.some((o) => o.label === l));
+      const next = now.includes(label) ? now.filter((l) => l !== label) : [...now, label];
+      setAnswers({ ...answers, [q.question]: q.options.map((o) => o.label).filter((l) => next.includes(l)).join(", ") });
+    };
+    const ownWords = (q: Question) =>
+      q.multiSelect ? picked(q).every((l) => q.options.some((o) => o.label === l)) : q.options.some((o) => o.label === answers[q.question]);
     return (
       <div className="request question">
         <div className="request-head">Claude is asking</div>
         {questions.map((q) => (
           <div key={q.question} className="question-block">
-            <p className="question-text">{q.question}</p>
+            <p className="question-text">
+              {q.question}
+              {q.multiSelect && <span className="tool-tag">pick any</span>}
+            </p>
             <div className="options">
               {q.options.map((option) => (
                 <button
                   key={option.label}
-                  className={cx("option", answers[q.question] === option.label && "chosen")}
+                  className={cx("option", isPicked(q, option.label) && "chosen")}
+                  aria-pressed={isPicked(q, option.label)}
                   title={option.description}
                   disabled={busy}
-                  onClick={() => setAnswers({ ...answers, [q.question]: option.label })}
+                  onClick={() => pick(q, option.label)}
                 >
                   {option.label}
                 </button>
@@ -93,7 +108,7 @@ function RequestCard({ request, onError }: { request: AgentRequest; onError: (te
               className="own-answer"
               placeholder="Or answer in your own words"
               disabled={busy}
-              value={q.options.some((o) => o.label === answers[q.question]) ? "" : (answers[q.question] ?? "")}
+              value={ownWords(q) ? "" : (answers[q.question] ?? "")}
               onChange={(e) => setAnswers({ ...answers, [q.question]: e.target.value })}
             />
           </div>

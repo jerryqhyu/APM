@@ -23,7 +23,7 @@ from apm.core.lifting import check_all
 from apm.core.model import Kind, NodeId, Status
 from apm.core.mutate import commit_hand_edits
 from apm.core.project import Project, load_graph
-from apm.core.proposals import accept_proposal, reject_proposal
+from apm.core.proposals import accept_proposal, close_orphaned, reject_proposal
 from apm.core.reconcile import describe, reconcile
 from apm.core.store import PROJECT, Store
 from apm.core.views import all_nodes_view, level_json, node_history, node_ref, node_view, search
@@ -216,6 +216,7 @@ def create_app(
     def get_project() -> dict[str, Any]:
         config = read_config(project.apm_dir)
         graph = load_graph(project)
+        close_orphaned(store, graph)
         return {
             "name": config.name,
             "version": __version__,
@@ -395,6 +396,7 @@ def create_app(
     ) -> list[dict[str, Any]]:
         if status not in (None, "pending", "accepted", "rejected"):
             return []
+        close_orphaned(store, load_graph(project))
         return [asdict(p) for p in store.list_proposals(node_id=node_id, status=status)]
 
     @app.get("/api/proposals/{proposal_id}")
