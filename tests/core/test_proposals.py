@@ -6,15 +6,19 @@ from apm.core.files import read_body
 from apm.core.git import log
 from apm.core.ids import handle
 from apm.core.model import Kind
-from apm.core.ops import NewNode, create_nodes
+from apm.core.ops import NewNode, create_nodes, delete_node
 from apm.core.project import Project, load_graph
 from apm.core.proposals import (
     DECOMPOSITION_SCHEMA,
     ProposalError,
+    ProposalResolvedError,
     accept_decomposition,
+    accept_proposal,
+    close_orphaned,
     parse_decomposition,
     parse_review,
 )
+from apm.core.store import Store
 from apm.core.validate import InvariantError
 
 PROPOSAL: dict[str, Any] = {
@@ -123,3 +127,19 @@ def test_the_schema_matches_the_model() -> None:
     child = DECOMPOSITION_SCHEMA["properties"]["children"]["items"]
     assert set(child["required"]) == set(child["properties"])
     assert parse_decomposition(PROPOSAL).children[0].key == "parse"
+
+
+def test_a_proposal_for_a_deleted_node_closes_itself(project: Project) -> None:
+    store = Store(project.apm_dir)
+    (parent,) = create_nodes(project, [NewNode(title="Parent")]).created
+    proposal = store.create_proposal(node_id=parent, data=PROPOSAL)
+    delete_node(project, parent)
+    with pytest.raises(ProposalResolvedError, match="no longer exists"):
+        accept_proposal(project, store, proposal.id)
+    assert store.get_proposal(proposal.id).status == "rejected"
+
+    (other,) = create_nodes(project, [NewNode(title="Other")]).created
+    kept = store.create_proposal(node_id=other, data=PROPOSAL)
+    gone = store.create_proposal(node_id="01930000-0000-7000-8000-000000000001", data=PROPOSAL)
+    assert close_orphaned(store, load_graph(project)) == [gone.id]
+    assert [p.id for p in store.list_proposals(status="pending")] == [kept.id]

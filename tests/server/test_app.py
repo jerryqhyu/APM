@@ -318,6 +318,8 @@ def test_run_limits_refusals_cancel_and_continue(
     run = client.post(
         "/api/runs", json={"agent": "apm-assistant", "node_id": child, "message": "Why?"}
     ).json()
+    while not client.get(f"/api/runs/{run['id']}").json()["events"]:  # Claude has started
+        time.sleep(0.02)
     assert run["mode"] == "auto"
     busy = client.post(f"/api/runs/{run['id']}/continue", json={"message": "more"})
     assert busy.status_code == 409
@@ -467,3 +469,25 @@ def test_a_question_from_a_running_agent_is_answered_over_the_api(
     late = client.post(f"/api/requests/{question['id']}", json={"allow": True})
     assert late.status_code == 422
     assert "no longer waiting" in late.json()["error"]
+
+
+def test_proposals_for_deleted_nodes_close_themselves(client: TestClient, project: Project) -> None:
+    node = client.post("/api/nodes", json={"title": "Doomed"}).json()["id"]
+    client.post("/api/runs", json={"agent": "apm-decomposer", "node_id": node, "critic": False})
+    wait_for_runs(client)
+    (proposal,) = client.get("/api/proposals").json()
+    client.delete(f"/api/nodes/{node}")
+    assert client.get("/api/proposals").json() == []
+    assert client.get("/api/project").json()["counts"]["proposals"] == 0
+    gone = client.post(f"/api/proposals/{proposal['id']}/accept")
+    assert gone.status_code == 409
+    assert "no longer exists" in gone.json()["error"]
+
+
+def test_a_blank_title_is_refused_not_ignored(client: TestClient) -> None:
+    node = client.post("/api/nodes", json={"title": "  Kept  "}).json()
+    assert node["title"] == "Kept"
+    refused = client.patch(f"/api/nodes/{node['id']}", json={"title": "", "status": "done"})
+    assert refused.status_code == 422
+    assert refused.json()["error"] == "a title can't be blank"
+    assert client.get(f"/api/nodes/{node['id']}").json()["status"] == "todo"

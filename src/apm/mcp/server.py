@@ -86,6 +86,9 @@ class Attribution(TypedDict):
 class NewNodeInput(BaseModel):
     title: str
     parent: str | None = Field(None, description="Handle of the parent. Omit for the top level.")
+    parent_key: str | None = Field(
+        None, description="The parent, when it is another node in this batch: its `key`."
+    )
     kind: Kind = Kind.WORK
     intent: str = Field("", description="Why this exists and what outcome it's for.")
     acceptance: list[str] = Field(default_factory=list, description="Testable criteria.")
@@ -184,7 +187,10 @@ def build_server(project: Project | None = None, env: Mapping[str, str] | None =
 
     @tool
     def apm_create_nodes(nodes: list[NewNodeInput]) -> str:
-        """Create one or more nodes in a single commit. Returns their handles."""
+        """Create one or more nodes in a single commit. Returns their handles. Give a node a
+        `key` and the others in the batch can nest under it (`parent_key`) or depend on it
+        (`depends_on_keys`), so a whole subtree is one call.
+        """
         scope.check("create")
         found, graph = plan()
         new = [
@@ -195,6 +201,7 @@ def build_server(project: Project | None = None, env: Mapping[str, str] | None =
                 depends_on=[graph.resolve(d) for d in n.depends_on],
                 key=n.key,
                 depends_on_keys=n.depends_on_keys,
+                parent_key=n.parent_key,
                 body=render_body(intent=n.intent, acceptance=n.acceptance),
             )
             for n in nodes

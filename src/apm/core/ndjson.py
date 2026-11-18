@@ -30,7 +30,8 @@ class ParseIssue:
 
 class GraphParseError(ApmError, ValueError):
     def __init__(self, issues: Sequence[ParseIssue], source: str = "graph.ndjson") -> None:
-        super().__init__("\n".join(f"{source}:{i.line}: {i.message}" for i in issues))
+        where = lambda i: f"{source}:{i.line}" if i.line else source  # noqa: E731
+        super().__init__("\n".join(f"{where(i)}: {i.message}" for i in issues))
         self.issues = tuple(issues)
         self.source = source
 

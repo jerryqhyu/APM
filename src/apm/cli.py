@@ -1,6 +1,7 @@
 """The `apm` command (plans.md §10)."""
 
 import asyncio
+import contextlib
 import functools
 import json
 import os
@@ -9,6 +10,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import textwrap
 import threading
 import time
 import webbrowser
@@ -35,7 +37,12 @@ from apm.core.project import (
     init_project,
     load_graph,
 )
-from apm.core.proposals import accept_proposal, parse_decomposition, reject_proposal
+from apm.core.proposals import (
+    accept_proposal,
+    close_orphaned,
+    parse_decomposition,
+    reject_proposal,
+)
 from apm.core.reconcile import describe, reconcile
 from apm.core.store import Proposal, Store
 from apm.core.views import all_nodes_view, node_line, node_text, node_view, outline, search
@@ -223,6 +230,8 @@ def plugin_path() -> None:
 @command
 def link(remote: Annotated[str, typer.Option(help="URL of the plan repo's remote.")]) -> None:
     """Set the plan repo's remote and record it in .apm-link."""
+    if not remote.strip():
+        raise OpError("the remote can't be empty")
     project = find_project()
     remotes = git(project.apm_dir, ["remote"]).split()
     action = ["set-url"] if "origin" in remotes else ["add"]
@@ -334,7 +343,7 @@ def node_set(
 @command
 def node_status(
     handle: str,
-    status: Status,
+    status: Annotated[Status, typer.Argument(case_sensitive=False)],
     note: Annotated[str, typer.Option(help="Why: goes in the commit message.")] = "",
 ) -> None:
     """Set a node's status: todo, in_progress, done or dropped."""
@@ -492,6 +501,7 @@ def run(
     ] = None,
 ) -> None:
     """Run an agent and follow it here. It asks you in the terminal when it needs an answer."""
+    from apm.runner.agents import RunRefused
     from apm.runner.runner import Runner
     from apm.runner.transcript import format_event
 
@@ -524,8 +534,18 @@ def run(
         async def answer_requests() -> None:
             while True:
                 request = await waiting.get()
-                allow, answers = await asyncio.to_thread(ask_in_terminal, request)
-                await runner.answer(request["id"], allow=allow, answers=answers)
+                try:
+                    allow, answers = await asyncio.to_thread(ask_in_terminal, request)
+                    message = ""
+                except Exception, KeyboardInterrupt:
+                    # Nobody is at the terminal, or input ran out (typer.Abort, EOFError): say no.
+                    # The run would otherwise wait for an answer that never comes.
+                    allow, answers, message = False, None, "Nobody answered at the terminal."
+                    typer.echo("  (no answer: refused)")
+                with contextlib.suppress(RunRefused):  # the run ended meanwhile
+                    await runner.answer(
+                        request["id"], allow=allow, answers=answers, message=message
+                    )
 
         asker = asyncio.create_task(answer_requests())
         try:
@@ -542,8 +562,18 @@ def run(
 
 def ask_in_terminal(request: dict[str, Any]) -> tuple[bool, dict[str, str] | None]:
     """Puts an agent's question or permission prompt to the person at the terminal."""
+    tool_input = request["input"]
+    if request["kind"] == "plan":
+        typer.echo("? Claude has a plan and waits for your go-ahead:\n")
+        typer.echo(textwrap.indent(str(tool_input.get("plan", "")).strip(), "    "))
+        return typer.confirm("\n  go ahead?", default=False), None
     if request["kind"] != "question":
-        what = request["input"].get("command") or json.dumps(request["input"], ensure_ascii=False)
+        what = (
+            tool_input.get("command")
+            or tool_input.get("file_path")
+            or tool_input.get("url")
+            or json.dumps(tool_input, ensure_ascii=False)[:300]
+        )
         why = f"  ({request['description']})" if request["description"] else ""
         typer.echo(f"? {request['tool']}: {what}{why}")
         return typer.confirm("  allow?", default=False), None
@@ -553,9 +583,15 @@ def ask_in_terminal(request: dict[str, Any]) -> tuple[bool, dict[str, str] | Non
         typer.echo(f"? {question['question']}")
         for number, option in enumerate(options, start=1):
             typer.echo(f"  {number}. {option['label']}")
-        choice = typer.prompt("  your choice (a number, or your own words)", default="1")
-        picked = int(choice) - 1 if choice.isdigit() and 0 < int(choice) <= len(options) else None
-        answers[question["question"]] = options[picked]["label"] if picked is not None else choice
+        many = bool(question.get("multiSelect"))
+        hint = "numbers separated by commas" if many else "a number"
+        choice = typer.prompt(f"  your choice ({hint}, or your own words)", default="1")
+        numbers = [part.strip() for part in choice.split(",")] if many else [choice.strip()]
+        picked = [int(n) - 1 for n in numbers if n.isdigit() and 0 < int(n) <= len(options)]
+        if picked and len(picked) == len(numbers):
+            answers[question["question"]] = ", ".join(options[i]["label"] for i in picked)
+        else:
+            answers[question["question"]] = choice
     return True, answers
 
 
@@ -569,7 +605,9 @@ def proposal_ls(
 ) -> None:
     """List proposals waiting for your decision."""
     project, graph = plan()
-    proposals = Store(project.apm_dir).list_proposals(status=None if everything else "pending")
+    store = Store(project.apm_dir)
+    close_orphaned(store, graph)
+    proposals = store.list_proposals(status=None if everything else "pending")
     for p in proposals:
         target = graph.handles.get(p.node_id, "(deleted)")
         typer.echo(f"{p.id} [{p.status}] {len(p.data.get('children', []))} children for {target}")

@@ -335,3 +335,33 @@ def test_the_browser_opens_only_once_the_server_listens(monkeypatch: pytest.Monk
         server.listen()
         open_when_listening(port, "http://x", timeout=2)
     assert opened == ["http://x"]
+
+
+def test_small_cli_corner_cases(cwd: Project) -> None:
+    node = add("Node")
+    assert apm("node", "status", node, "DONE").strip() == f"{node}: done"
+    assert "the remote can't be empty" in apm("link", "--remote", "  ", code=1)
+    assert "a title can't be blank" in apm("node", "add", "   ", code=1)
+    (cwd.apm_dir / "graph.ndjson").unlink()
+    assert "graph.ndjson: the file is missing" in apm("node", "ls", code=1)
+    assert "graph.ndjson: the file is missing" in apm("commit", code=1)
+
+
+def test_run_refuses_when_nobody_answers_at_the_terminal(
+    cwd: Project, fake_claude: FakeClaude
+) -> None:
+    node = add("Node")
+    fake_claude.mode("ask-permission")
+    # CliRunner gives no input: the prompt hits end-of-input, which must refuse, not hang.
+    output = apm("run", "assistant", node, "-m", "Run the tests.")
+    assert "? Bash: make test  (Run the tests)" in output
+    assert "(no answer: refused)" in output
+    assert "denied: Nobody answered at the terminal." in output
+
+
+def test_run_answers_a_multi_select_question(cwd: Project, fake_claude: FakeClaude) -> None:
+    node = add("Node")
+    fake_claude.mode("ask-question")
+    result = runner.invoke(app, ["run", "assistant", node, "-m", "Set up formatting."], input="2\n")
+    assert result.exit_code == 0, result.output
+    assert "you chose: Spaces" in result.output
