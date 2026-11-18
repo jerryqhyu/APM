@@ -137,13 +137,39 @@ export function App() {
     }
   }, []);
 
-  const refresh = useCallback(async () => {
+  // Reloading is coalesced: a change usually asks twice (after the request, and again when the
+  // live "plan changed" event arrives). While one reload runs, any number of further requests
+  // become a single reload after it.
+  const reload = useCallback(async () => {
     await Promise.all([loadPlan(), loadLevel(route.root), loadDetail(primary)]);
   }, [loadPlan, loadLevel, loadDetail, route.root, primary]);
+  const reloadRef = useRef(reload);
+  reloadRef.current = reload;
+  const inFlight = useRef<Promise<void> | null>(null);
+  const queued = useRef<Promise<void> | null>(null);
+  const refresh = useCallback((): Promise<void> => {
+    if (!inFlight.current) {
+      inFlight.current = reloadRef.current().finally(() => {
+        inFlight.current = null;
+      });
+      return inFlight.current;
+    }
+    if (!queued.current) {
+      queued.current = inFlight.current
+        .catch(() => {})
+        .then(() => {
+          queued.current = null;
+          return refresh();
+        });
+    }
+    return queued.current;
+    // reloadRef always holds the latest reload, so this function never needs to change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
-    refresh().catch(fail);
-  }, [refresh, fail]);
+    reload().catch(fail);
+  }, [reload, fail]);
 
   useLiveEvents((event) => {
     if (event.type === "run.event") return; // the conversation handles these itself
