@@ -163,7 +163,6 @@ export function PlanSummary({
   const refs = (list: NodeView[]): NodeRef[] => list.map((n) => ({ id: n.id, handle: n.handle, title: n.title, status: n.status }));
   return (
     <article className="details">
-      <div className="kicker">The plan</div>
       <h2 className="headline">{project.name}</h2>
       <div className="dateline">
         <span>
@@ -172,8 +171,8 @@ export function PlanSummary({
         <span>{nodes.length} nodes</span>
       </div>
       {nodes.length === 0 && (
-        <p className="lede">
-          Nothing here yet. Add a node for the big idea, or tell Claude what you want to build in the conversation above.
+        <p className="hint">
+          Nothing here yet. Add a node for the big idea, or tell Claude what you want to build in the Chat tab.
         </p>
       )}
       {proposals.map((proposal) => (

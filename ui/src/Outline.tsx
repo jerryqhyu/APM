@@ -82,7 +82,7 @@ export function Outline({
 
   return (
     <nav className="outline" aria-label="Plan outline">
-      <div className="outline-head">Contents</div>
+      <div className="outline-head">Plan</div>
       {rows.length ? rows : <p className="empty">No nodes yet.</p>}
     </nav>
   );

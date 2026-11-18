@@ -501,13 +501,13 @@ The conversation is the main interface; the graph is what it is about. The [user
   - **Node card:** state (including computed ready/blocked), handle, title, a child-progress bar, and markers for a running agent and a waiting proposal.
   - **Edges:** lifted edges show a count badge. Edges that leave the level show as dashed stubs naming the outside node. Entangled nodes are outlined under a banner.
   - **Proposals** show as dashed ghost nodes and edges on the level they would land in.
-- **Right column**, always there, top to bottom:
+- **Right panel**, always there: an action bar on top, then two tabs, Chat and Details:
   - **Actions:** every operation as a button, for what is selected. One node: status, open, add child, add sibling, rename, switch kind, move, link, delete, Decompose, Implement. Several nodes: status, **merge**, delete. Nothing selected: add node, check plan, reconcile, commit hand edits.
-  - **Conversation:** the chat with Claude, about the selected node or the whole plan, turn by turn. Past conversations are tabs. Every agent run appears here, so it is also where a decomposition or an implementation is followed. A question or permission prompt shows as a card with its options, or Allow and Deny (with a reason). The permission mode is picked under the message box.
+  - **Chat:** the conversation with Claude, about the selected node or the whole plan, turn by turn. Past conversations are tabs. Every agent run appears here, so it is also where a decomposition or an implementation is followed. A question or permission prompt shows as a card with its options, or Allow and Deny (with a reason). The permission mode is picked under the message box.
   - **Details:** title (edited in place), state, description (markdown, with an editor), what it waits on, depends on (add and remove), is needed by and contains, delivery, and history. With nothing selected, a summary of the plan: progress, what is in progress, what is ready, problems.
 - **Proposal review:** the rationale, the critic's review and the agent's warnings; you can edit any child, leave children out, and accept or reject.
 - **Live:** every view refreshes when the plan changes, whoever changed it.
-- **Look:** editorial. Serif headlines and prose, small-capital section labels, hairline rules, colour only for state.
+- **Look:** GitHub / VS Code. System font, neutral greys, one blue accent, 6px corners, hairline borders; colour only for state. Light, dark, or following the system.
 - **Playback** (not built, M5): a timeline scrubber at the bottom. Scrubbing puts the view in read-only mode; delivery markers from the code repo sit along the timeline.
 
 ---
