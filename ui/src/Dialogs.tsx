@@ -1,4 +1,4 @@
-// The small dialogs: add a node, start an agent, move, link, merge and delete.
+// The small dialogs: add a node, start an agent, move, link, merge, delete and export.
 
 import { useState } from "react";
 import { NodePicker } from "./Details";
@@ -279,6 +279,50 @@ export function DeleteDialog({
         {inside ? `This also deletes the ${inside} ${inside === 1 ? "node" : "nodes"} inside. ` : ""}
         Dependencies on what you delete are removed. The plan’s history keeps it: nothing is lost for good.
       </p>
+    </Modal>
+  );
+}
+
+/** Saves the plan as an `.apm.zip`; with runs, it says first what that file may hold. */
+export function ExportDialog({
+  projectName,
+  onExport,
+  onClose,
+}: {
+  projectName: string;
+  onExport: (withRuns: boolean) => Promise<void>;
+  onClose: () => void;
+}) {
+  const [withRuns, setWithRuns] = useState(false);
+  const { busy, error, submit } = useSubmit(() => onExport(withRuns));
+  return (
+    <Modal
+      title={`Export “${projectName}”`}
+      onClose={onClose}
+      footer={
+        <>
+          {error && <span className="form-error">{error}</span>}
+          <button onClick={onClose}>Cancel</button>
+          <button className="primary" disabled={busy} onClick={() => void submit()}>
+            {busy ? "Preparing…" : withRuns ? "Download, with runs" : "Download"}
+          </button>
+        </>
+      }
+    >
+      <p>
+        Saves the plan and its full history as one <code>.apm.zip</code> file. Someone else can open it with{" "}
+        <code>apm import</code>.
+      </p>
+      <label className="check">
+        <input type="checkbox" checked={withRuns} onChange={(e) => setWithRuns(e.target.checked)} />
+        Include runs: agent transcripts and proposals
+      </label>
+      {withRuns && (
+        <p className="callout warn" role="alert">
+          Run transcripts can include tool output and secrets: file contents, tokens, keys. Check the file before you
+          share it.
+        </p>
+      )}
     </Modal>
   );
 }
