@@ -287,6 +287,8 @@ You can edit the files by hand. Afterwards run `apm commit` (or press **Commit h
 
 If you ever want a backup or a second machine, `apm link --remote <url>` gives the plan a remote, and `apm push`, `apm pull` and `apm clone` use it. This is optional.
 
+To hand a whole project to someone, `apm export plan.apm.zip` saves the plan and its full history as one file. They run `apm import plan.apm.zip` in a folder that has no plan yet, and get the same plan there. Add `--with-runs` to include agent runs and proposals too; their transcripts can hold tool output and secrets, so check the file before you share it.
+
 ## When something goes wrong
 
 | What you see | What to do |

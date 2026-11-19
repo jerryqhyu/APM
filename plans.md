@@ -531,6 +531,8 @@ apm commit                       validate and commit edits made by hand in .apm/
 apm link --remote <url>          set the plan repo remote and record it in .apm-link
 apm clone                        clone the plan repo named in .apm-link (for a fresh checkout)
 apm push · apm pull              git push/pull for .apm
+apm export <file> [--with-runs]  the whole project (plan + history, runs if asked) as one .apm.zip
+apm import <file>                restore an .apm.zip into this folder, which must have no plan
 apm mcp                          stdio MCP server (Claude Code starts it)
 apm plugin-path                  where the Claude Code plugin is
 ```
