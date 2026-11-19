@@ -1,6 +1,6 @@
 # APM — Design Plan
 
-**Status:** v8 · v1 is implemented except playback (M5) and the SQLite index; §11 has the state of each milestone · **Last updated:** 2026-11-17
+**Status:** v9 · v1 is implemented except playback (M5) and the SQLite index; §11 has the state of each milestone · **Last updated:** 2026-11-19
 
 APM is a local-first project manager built for working with AI agents. A project is a **nested graph of nodes**: you start with a big idea, then break it down with Claude agents, level by level, until each piece is small enough to ship as a commit or PR. The plan lives in its own git repo, so every change to it can be traced and **played back** from the project's first node onward.
 
@@ -26,6 +26,7 @@ v1 = a Python backend with a TypeScript web UI, one user on one machine, one cod
 | Asking the user | Agents run with Claude Code's two-way stream: permission prompts and questions come to the host and wait for an answer | A run can stop and ask instead of guessing or being refused; the permission mode is yours to pick per run (default `auto`) |
 | Reconciling | Plain code (`apm reconcile`), not an agent | "Did it merge?" has a definite answer: the PR's state, or whether the commits are on the default branch |
 | Packaging | Agents + skills + MCP ship as one Claude Code plugin | The same plugin serves spawned runs and your own terminal sessions |
+| Sharing a project | One `.apm.zip` archive (`apm export` / `apm import`, §3.8): the plan files plus a git bundle of the plan repo; runs only if asked | A whole project, history included, moves as one file with no remote to set up. Machine-specific state stays behind, and runs stay out by default because transcripts can hold secrets |
 | Scope | Single user, single machine, one code repo (config already shaped for many repos) | Fastest route to a working slice |
 
 ---
@@ -181,6 +182,36 @@ Every delivery commit in the code repo carries `APM-Node: <full-uuid>`. This is 
 - Those 8 chars are 32 random bits, so two nodes can share them (about a 1% chance somewhere in a 10,000-node project). Where that happens, both are displayed with as many extra chars as it takes to tell them apart.
 - ⚠ Do **not** use the leading characters. In UUIDv7 those are the timestamp, so nodes created within about a minute of each other share their first 8 characters.
 
+### 3.8 Archives (`.apm.zip`)
+
+`apm export` (and `GET /api/export`) write the whole project as one zip file. Format version 1:
+
+```
+manifest.json        what wrote it and what is in it (below)
+apm.yaml             the plan files, exactly as committed at HEAD
+graph.ndjson
+nodes/<uuid>.md
+plan.bundle          git bundle of every ref in the plan repo: the full history
+runs.ndjson          with --with-runs only: one run per line, with all its events
+proposals.ndjson     with --with-runs only: one proposal per line
+```
+
+```json
+{"format": "apm-archive", "format_version": 1, "apm_version": "…", "exported_at": "…",
+ "project": "my-app", "store_schema_version": 2,
+ "counts": {"nodes": 42, "commits": 310, "runs": 12, "events": 4096, "proposals": 3}}
+```
+
+`store_schema_version` and the run counts are present only when runs are included; their presence is what says so.
+
+Rules:
+
+- **Committed state only.** Plan files come from HEAD, not the working tree, so they agree with the bundle; uncommitted hand edits are left out. Export holds the write lock throughout and writes to a temporary file renamed into place, so a failed export leaves nothing behind.
+- **What stays behind:** the code repo's `.apm-link` (and so any remote), and everything under `.apm/.cache/`: the server token, the write lock, the database file itself.
+- **Runs are opt-in** (`--with-runs`), and both the CLI and the UI warn that transcripts can hold tool output and secrets.
+- **Import is all or nothing.** It refuses a folder that already has `.apm/` or `.apm-link`; a `format_version` or `store_schema_version` newer than this APM knows; and a damaged file (not a zip, truncated, missing entries, counts that don't match, plan files that differ from the bundle's HEAD). It builds the plan repo and database in a temporary folder that becomes `.apm/` only when complete, then links it as `apm init` does. It reads only the file and never contacts a remote.
+- **Imported runs are history.** They keep their ids, times and sequence numbers; runs from an older store schema are filled in with defaults. A run that was `running` at export is stored as `cancelled` (shown as *Stopped*), and nothing is started or resumed.
+
 ---
 
 ## 4. Local database (SQLite)
@@ -195,7 +226,7 @@ run_events(run_id, seq, ts, json)             -- the stream-json events a transc
 proposals(id PK, node_id, run_id, json, review, status, created, resolved)
 ```
 
-Deleting `.cache/` loses run logs and pending proposals, never anything about the project itself.
+Deleting `.cache/` loses run logs and pending proposals, never anything about the project itself. They leave the machine only in an archive made with `--with-runs` (§3.8).
 
 **No index of the plan yet.** Reads parse `graph.ndjson` into the in-memory graph each time, and search scans titles and bodies directly. At the size of a real plan (hundreds of nodes) that is instant, and there is nothing to keep in sync. The tables below are the design for when it stops being enough, and for playback (§5):
 
@@ -311,6 +342,7 @@ GET    /api/tree                            every node with its computed state; 
 GET    /api/graph?root=<id>                 one level: nodes, lifted edges, ports, entanglement
 GET    /api/nodes/:id                       node + body + links + history + proposals
 GET    /api/ready?root= · /api/search?q=
+GET    /api/export?with_runs=           the project as an .apm.zip download (§3.8)
 POST   /api/nodes · PATCH /api/nodes/:id · POST /api/nodes/:id/move · DELETE /api/nodes/:id
 POST   /api/merge           { target, others[], title? }
 POST   /api/edges · DELETE /api/edges
@@ -502,7 +534,7 @@ The conversation is the main interface; the graph is what it is about. The [user
   - **Edges:** lifted edges show a count badge. Edges that leave the level show as dashed stubs naming the outside node. Entangled nodes are outlined under a banner.
   - **Proposals** show as dashed ghost nodes and edges on the level they would land in.
 - **Right panel**, always there: an action bar on top, then two tabs, Chat and Details:
-  - **Actions:** every operation as a button, for what is selected. One node: status, open, add child, add sibling, rename, switch kind, move, link, delete, Decompose, Implement. Several nodes: status, **merge**, delete. Nothing selected: add node, check plan, reconcile, commit hand edits.
+  - **Actions:** every operation as a button, for what is selected. One node: status, open, add child, add sibling, rename, switch kind, move, link, delete, Decompose, Implement. Several nodes: status, **merge**, delete. Nothing selected: add node, check plan, reconcile, commit hand edits, **export archive** (a download; including runs shows the secrets warning first).
   - **Chat:** the conversation with Claude, about the selected node or the whole plan, turn by turn. Past conversations are tabs. Every agent run appears here, so it is also where a decomposition or an implementation is followed. A question or permission prompt shows as a card with its options, or Allow and Deny (with a reason). The permission mode is picked under the message box.
   - **Details:** title (edited in place), state, description (markdown, with an editor), what it waits on, depends on (add and remove), is needed by and contains, delivery, and history. With nothing selected, a summary of the plan: progress, what is in progress, what is ready, problems.
 - **Proposal review:** the rationale, the critic's review and the agent's warnings; you can edit any child, leave children out, and accept or reject.
@@ -556,6 +588,7 @@ apm plugin-path                  where the Claude Code plugin is
 | **M5** | Indexer frames + playback scrubber + delivery overlay | Replaying the APM plan from its first commit | Not built |
 | **M6** | `apm-implementer` (worktrees, trailers, `gh` PR) | A ready leaf becomes a PR that links back to its node | **Built**; verified with a real run up to the commit. Opening a PR is untested (the test repo had no remote) |
 | **M7** | Reconciling | A merged PR moves its node to `done` with no manual step | **Built** as `apm reconcile` (§7.5); the PR path is tested against a stand-in for `gh` |
+| **M8** | Archives: `apm export` / `apm import`, Export archive… in the UI (§3.8) | A project, with its history and optionally its runs, round-trips through one `.apm.zip` | **Built**; round trip, refusals and the download are tested |
 
 ---
 
