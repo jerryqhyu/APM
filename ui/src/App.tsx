@@ -29,7 +29,7 @@ type Dialog =
   | { kind: "delete"; nodes: string[] }
   | { kind: "review"; proposal: Proposal };
 
-type Panes = "split" | "chat" | "details";
+type Tab = "chat" | "details";
 
 function readRoute(): Route {
   const params = new URLSearchParams(window.location.hash.replace(/^#/, ""));
@@ -54,7 +54,7 @@ export function App() {
   const [requests, setRequests] = useState<AgentRequest[]>([]);
   const [route, setRouteState] = useState<Route>(readRoute);
   const [dialog, setDialog] = useState<Dialog | null>(null);
-  const [panes, setPanes] = useState<Panes>("split");
+  const [tab, setTab] = useState<Tab>("chat");
   const [focusRun, setFocusRun] = useState<string | null>(null);
   const [toasts, setToasts] = useState<{ id: number; text: string }[]>([]);
   const [fatal, setFatal] = useState<string | null>(null);
@@ -174,7 +174,7 @@ export function App() {
     if (run.node_id) goTo(run.node_id);
     else setRoute({ ...route, selected: [] });
     setFocusRun(run.id);
-    if (panes === "details") setPanes("split");
+    setTab("chat");
   };
 
   // --- acting ---
@@ -214,7 +214,7 @@ export function App() {
     open,
     add: (parent) => setDialog({ kind: "add", parent }),
     rename: () => {
-      if (panes === "chat") setPanes("split");
+      setTab("details");
       window.setTimeout(() => {
         const title = document.getElementById("node-title") as HTMLTextAreaElement | null;
         title?.focus();
@@ -281,20 +281,18 @@ export function App() {
   const issues = [...tree.errors, ...tree.warnings];
   const runOf = (request: AgentRequest) => runningRuns.find((r) => r.id === request.run_id);
   const chatNode = primary ? (byId.get(primary) ?? null) : null;
-  const today = new Date().toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric", year: "numeric" });
 
   return (
     <div className="app">
-      <header className="masthead">
-        <div className="masthead-side">
-          <span className="wordmark">APM</span>
-          <span className="dateline-text">{today}</span>
+      <header className="topbar">
+        <div className="brand" title={project.code_dir}>
+          <span className="logo" aria-hidden>
+            ◈
+          </span>
+          <span className="project-name">{project.name}</span>
         </div>
-        <h1 className="nameplate" title={project.code_dir}>
-          {project.name}
-        </h1>
-        <div className="masthead-side right">
-          <Search onPick={goTo} />
+        <Search onPick={goTo} />
+        <div className="topbar-right">
           {requests.length > 0 && (
             <Menu label={`Needs you ${requests.length}`} title="Claude is waiting for your answer" tone="accent">
               {requests.map((request) => {
@@ -383,15 +381,23 @@ export function App() {
         />
       </main>
 
-      <aside className={cx("side", `panes-${panes}`)}>
+      <aside className="side">
         <Actions selected={selectedNodes} running={running} handlers={handlers} />
-        <div className="pane chat-pane">
-          <PaneHead
-            title="Conversation"
-            sub={chatNode ? `about “${chatNode.title}”` : "about the whole plan"}
-            big={panes === "chat"}
-            onToggle={() => setPanes(panes === "chat" ? "split" : "chat")}
-          />
+        <div className="tabs" role="tablist">
+          <button role="tab" aria-selected={tab === "chat"} className={cx("tab", tab === "chat" && "active")} onClick={() => setTab("chat")}>
+            Chat
+            <span className="tab-sub">{chatNode ? chatNode.title : "whole plan"}</span>
+          </button>
+          <button
+            role="tab"
+            aria-selected={tab === "details"}
+            className={cx("tab", tab === "details" && "active")}
+            onClick={() => setTab("details")}
+          >
+            Details
+          </button>
+        </div>
+        <div className={cx("tab-panel", tab !== "chat" && "hidden")}>
           <Chat
             context={{ nodeId: chatNode?.id ?? null, title: chatNode?.title ?? project.name }}
             modes={project.modes}
@@ -401,43 +407,34 @@ export function App() {
             onChanged={() => void refresh().catch(fail)}
           />
         </div>
-        <div className="pane details-pane">
-          <PaneHead
-            title="Details"
-            sub={selectedNodes.length > 1 ? `${selectedNodes.length} nodes` : ""}
-            big={panes === "details"}
-            onToggle={() => setPanes(panes === "details" ? "split" : "details")}
-          />
-          <div className="pane-scroll">
-            {detail && detailActions && primary ? (
-              <NodeDetails detail={detail} nodes={nodes} actions={detailActions} />
-            ) : selectedNodes.length > 1 ? (
-              <article className="details">
-                <div className="kicker">Selection</div>
-                <h2 className="headline">{selectedNodes.length} nodes</h2>
-                <ul className="refs">
-                  {selectedNodes.map((n) => (
-                    <li key={n.id}>
-                      <span className={cx("dot", `state-${n.status}`)} />
-                      <button className="link" onClick={() => goTo(n.id)}>
-                        {n.title}
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-                <p className="lede">Use the actions above to merge them, set their status, or delete them.</p>
-              </article>
-            ) : (
-              <PlanSummary
-                project={project}
-                nodes={nodes}
-                issues={issues}
-                proposals={proposals}
-                onGoTo={goTo}
-                onReview={(proposal) => setDialog({ kind: "review", proposal })}
-              />
-            )}
-          </div>
+        <div className={cx("tab-panel", "scroll", tab !== "details" && "hidden")}>
+          {detail && detailActions && primary ? (
+            <NodeDetails detail={detail} nodes={nodes} actions={detailActions} />
+          ) : selectedNodes.length > 1 ? (
+            <article className="details">
+              <h2 className="headline">{selectedNodes.length} nodes selected</h2>
+              <ul className="refs">
+                {selectedNodes.map((n) => (
+                  <li key={n.id}>
+                    <span className={cx("dot", `state-${n.status}`)} />
+                    <button className="link" onClick={() => goTo(n.id)}>
+                      {n.title}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+              <p className="hint">Use the actions above to merge them, set their status, or delete them.</p>
+            </article>
+          ) : (
+            <PlanSummary
+              project={project}
+              nodes={nodes}
+              issues={issues}
+              proposals={proposals}
+              onGoTo={goTo}
+              onReview={(proposal) => setDialog({ kind: "review", proposal })}
+            />
+          )}
         </div>
       </aside>
 
@@ -467,7 +464,7 @@ export function App() {
             setDialog(null);
             setRoute({ ...route, selected: [dialog.node] });
             setFocusRun(run.id);
-            if (panes === "details") setPanes("split");
+            setTab("chat");
             await refresh();
           }}
         />
@@ -558,18 +555,6 @@ export function App() {
           </div>
         ))}
       </div>
-    </div>
-  );
-}
-
-function PaneHead({ title, sub, big, onToggle }: { title: string; sub: string; big: boolean; onToggle: () => void }) {
-  return (
-    <div className="pane-head">
-      <span className="label">{title}</span>
-      <span className="pane-sub">{sub}</span>
-      <button className="icon" onClick={onToggle} title={big ? "Show both panes" : `Give ${title.toLowerCase()} the whole column`}>
-        {big ? "Restore" : "Expand"}
-      </button>
     </div>
   );
 }

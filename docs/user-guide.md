@@ -50,7 +50,7 @@ This puts an `apm` command on your PATH. To update later, run `git pull`, build 
 
    Your browser opens. The address ends in a secret token; bookmark the whole address, because the page only works when opened through it.
 
-3. In the **Conversation** on the right, tell Claude what you want to build, for example: *"I want to add search and tags to this app. Plan it with me."* Claude reads your code, adds nodes to the plan, and tells you what it did. The graph in the middle updates as it goes.
+3. In the **Chat** tab on the right, tell Claude what you want to build, for example: *"I want to add search and tags to this app. Plan it with me."* Claude reads your code, adds nodes to the plan, and tells you what it did. The graph in the middle updates as it goes.
 
 4. Double-click a node to go inside it. Click a node to select it; the right column then shows its actions, a conversation about it, and its details.
 
@@ -100,13 +100,10 @@ On the far right you can switch between a **Light**, **Dark** or **Auto** theme.
 - A dashed stub labelled *from* or *to* is a dependency on a node outside this level. Click it to go there.
 - Dashed cards are a **proposal** from Claude, not yet part of the plan.
 
-**Right column.** Three parts, top to bottom:
+**Right panel.** An **Actions** bar on top, with buttons for everything you can do to what is selected. Below it, two tabs:
 
-- **Actions**: buttons for everything you can do to what is selected.
-- **Conversation**: your chat with Claude, about the selected node or, with nothing selected, the whole plan.
+- **Chat**: your conversation with Claude, about the selected node or, with nothing selected, the whole plan. The tab shows which.
 - **Details**: the selected node's description, links, delivery and history. With nothing selected, a summary of the plan.
-
-Press **Expand** on Conversation or Details to give it the whole column, and **Restore** to bring both back.
 
 ## Talking to Claude
 
