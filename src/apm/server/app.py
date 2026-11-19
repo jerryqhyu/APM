@@ -2,18 +2,23 @@
 
 import asyncio
 import contextlib
+import re
+import shutil
+import tempfile
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
+from starlette.background import BackgroundTask
 
 from apm import __version__
 from apm.core import ops
+from apm.core.archive import SUFFIX, export_archive
 from apm.core.config import read_config
 from apm.core.errors import ApmError
 from apm.core.files import read_body, render_body
@@ -276,6 +281,25 @@ def create_app(
             for hit in search(project, graph, q)
         ]
 
+    @app.get("/api/export")
+    def get_export(with_runs: bool = False) -> FileResponse:
+        """The project as an `.apm.zip` download, like `apm export`.
+
+        With `with_runs`, run transcripts go in too, and they can hold secrets: the UI warns first.
+        """
+        scratch = Path(tempfile.mkdtemp(prefix="apm-download-"))
+        try:
+            manifest = export_archive(project, scratch / f"plan{SUFFIX}", with_runs=with_runs)
+        except BaseException:
+            shutil.rmtree(scratch, ignore_errors=True)
+            raise
+        return FileResponse(
+            scratch / f"plan{SUFFIX}",
+            media_type="application/zip",
+            filename=archive_name(manifest["project"]),
+            background=BackgroundTask(shutil.rmtree, scratch, ignore_errors=True),
+        )
+
     # --- changing the plan ---
 
     @app.post("/api/nodes", status_code=201)
@@ -464,6 +488,12 @@ async def _watch_head(project: Project, hub: Hub) -> None:
             if head != last:
                 last = head
                 hub.publish({"type": "graph.changed", "head": head})
+
+
+def archive_name(project_name: str) -> str:
+    """`<project>.apm.zip`, with anything unsafe in a file name replaced by a dash."""
+    stem = re.sub(r"[^\w.-]+", "-", project_name).strip(".-") or "plan"
+    return f"{stem}{SUFFIX}"
 
 
 def _error(status: int, message: str) -> JSONResponse:

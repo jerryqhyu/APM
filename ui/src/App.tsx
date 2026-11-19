@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { type ActionHandlers, Actions } from "./Actions";
-import { ApiError, api, query } from "./api";
+import { ApiError, api, download, query } from "./api";
 import { Canvas } from "./Canvas";
 import { Chat } from "./Chat";
 import { type DetailActions, NodeDetails, PlanSummary } from "./Details";
-import { AddNodeDialog, DeleteDialog, MergeDialog, PickNodeDialog, RunAgentDialog } from "./Dialogs";
+import { AddNodeDialog, DeleteDialog, ExportDialog, MergeDialog, PickNodeDialog, RunAgentDialog } from "./Dialogs";
 import { useLiveConnection, useLiveEvents } from "./live";
 import { Outline } from "./Outline";
 import { ProposalReview } from "./ProposalReview";
@@ -27,7 +27,8 @@ type Dialog =
   | { kind: "link"; node: string }
   | { kind: "merge"; nodes: string[] }
   | { kind: "delete"; nodes: string[] }
-  | { kind: "review"; proposal: Proposal };
+  | { kind: "review"; proposal: Proposal }
+  | { kind: "export" };
 
 type Tab = "chat" | "details";
 
@@ -273,6 +274,7 @@ export function App() {
         const result = await api<{ sha: string | null; nodes: string[] }>("/api/commit", { method: "POST" });
         toast(result.sha ? `Committed your edits to ${result.nodes.length} node(s).` : "No hand edits to commit.");
       }),
+    exportArchive: () => setDialog({ kind: "export" }),
     clear: () => select(null, false),
   };
 
@@ -570,6 +572,17 @@ export function App() {
             await api(`/api/proposals/${dialog.proposal.id}/reject`, { method: "POST" });
             setDialog(null);
             await refresh();
+          }}
+        />
+      )}
+      {dialog?.kind === "export" && (
+        <ExportDialog
+          projectName={project.name}
+          onClose={() => setDialog(null)}
+          onExport={async (withRuns) => {
+            const name = await download(`/api/export${query({ with_runs: withRuns })}`, `${project.name}.apm.zip`);
+            setDialog(null);
+            toast(`Saved ${name}.`);
           }}
         />
       )}
