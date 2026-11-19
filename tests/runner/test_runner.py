@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -451,3 +452,41 @@ def test_failure_messages_say_what_went_wrong() -> None:
     assert _failure({"is_error": True, "errors": ["a", "b"]}, "", 1) == "error: a, b"
     assert _failure({}, "warning\nboom\n", 2) == "claude exited with code 2: boom"
     assert _failure({}, "", 3) == "claude exited with code 3"
+
+
+async def test_a_conversation_whose_first_turn_never_started_can_continue(
+    harness: Harness, node: str, fake_claude: FakeClaude, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real = os.environ["APM_CLAUDE"]
+    monkeypatch.setenv("APM_CLAUDE", "/nonexistent/claude")
+    first = harness.runner.start("apm-assistant", node, "Hello?")
+    await harness.runner.wait(first.id)
+    assert harness.store.get_run(first.id).status == "failed"
+
+    monkeypatch.setenv("APM_CLAUDE", real)
+    second = harness.runner.continue_run(first.id, "Are you there?")
+    await harness.runner.wait(second.id)
+    assert harness.store.get_run(second.id).status == "succeeded"
+    (call,) = fake_claude.calls
+    # No session existed, so this turn starts a new one instead of resuming it...
+    assert option(call, "--session-id") != harness.store.get_run(first.id).session_id
+    assert "--resume" not in call["argv"]
+    assert harness.store.get_run(second.id).parent_run == first.id  # still one conversation
+    # ...and it carries the context a first message would have.
+    assert call["prompt"].startswith(f"The user is looking at node {handle(node)}")
+    assert call["prompt"].endswith("Are you there?")
+
+    # Once it has started, the next turn resumes as usual.
+    third = harness.runner.continue_run(second.id, "Thanks.")
+    await harness.runner.wait(third.id)
+    assert "--resume" in fake_claude.calls[-1]["argv"]
+
+
+async def test_the_reviewer_cannot_be_replied_to(
+    harness: Harness, node: str, fake_claude: FakeClaude
+) -> None:
+    run = harness.runner.start("apm-decomposer", node)
+    await harness.runner.wait(run.id)
+    critic = next(r for r in harness.store.list_runs() if r.agent == "apm-critic")
+    with pytest.raises(RunRefused, match="Review runs on its own"):
+        harness.runner.continue_run(critic.id, "Why?")

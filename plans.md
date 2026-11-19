@@ -341,7 +341,7 @@ Calls core directly (no HTTP), so it works even when the server isn't running. E
 | `apm_search(query)` | Titles and bodies |
 | `apm_ready(root?)` | Ready leaves: "what can be worked on now" |
 | `apm_check()` | Invariant errors and warnings |
-| `apm_create_nodes(nodes[])` | Batch; one commit. Nodes in the batch can depend on each other by `key` |
+| `apm_create_nodes(nodes[])` | Batch; one commit. Nodes in the batch can depend on each other by `key`, and nest under each other with `parent_key`, so a whole subtree is one call |
 | `apm_update_node(node, title?, kind?, body?)` | |
 | `apm_move_node(node, parent?)` | |
 | `apm_link / apm_unlink(node, depends_on)` | |
