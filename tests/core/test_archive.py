@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from apm import __version__
+from apm.core import archive
 from apm.core.archive import (
     BUNDLE_FILE,
     FORMAT_VERSION,
@@ -16,6 +17,7 @@ from apm.core.archive import (
     export_archive,
 )
 from apm.core.git import git
+from apm.core.lock import LockTimeoutError, acquire_write_lock
 from apm.core.ops import NewNode, create_nodes
 from apm.core.project import LINK_FILE, Project
 from apm.core.store import SCHEMA_VERSION, Store
@@ -189,3 +191,22 @@ def test_an_uncommitted_plan_is_refused(tmp_path: Path) -> None:
     git(apm_dir, ["init", "--quiet", "-b", "main"])
     with pytest.raises(ArchiveError, match="no commits"):
         export_archive(Project(tmp_path, apm_dir), tmp_path / "plan.apm.zip")
+
+
+def test_export_holds_the_write_lock_so_a_change_cannot_land_halfway(
+    plan: Project, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real = archive._plan_files
+    blocked: list[bool] = []
+
+    def plan_files_then_try_to_write(apm_dir: Path) -> dict[str, bytes]:
+        try:
+            acquire_write_lock(apm_dir, timeout=0.05)
+        except LockTimeoutError:
+            blocked.append(True)
+        return real(apm_dir)
+
+    monkeypatch.setattr(archive, "_plan_files", plan_files_then_try_to_write)
+    export_archive(plan, tmp_path / "out.apm.zip")
+    assert blocked == [True]
+    acquire_write_lock(plan.apm_dir, timeout=0.05).release()  # free again afterwards

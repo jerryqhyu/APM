@@ -32,7 +32,7 @@ from apm.core.config import parse_config
 from apm.core.errors import ApmError
 from apm.core.files import CONFIG_FILE, GRAPH_FILE, NODES_DIR
 from apm.core.git import GitError, git, rev_parse
-from apm.core.lock import CACHE_DIR
+from apm.core.lock import CACHE_DIR, acquire_write_lock
 from apm.core.ndjson import parse_graph
 from apm.core.project import DEFAULT_APM_DIR, LINK_FILE, Project, link_plan
 from apm.core.store import DB_FILE, SCHEMA_VERSION, Proposal, Run, RunEvent, Store
@@ -58,7 +58,13 @@ def export_archive(project: Project, dest: Path, *, with_runs: bool = False) -> 
     export leaves no partial archive. With `with_runs`, run transcripts go in too, and they can hold
     tool output and secrets: saying so is the caller's job.
     """
-    apm_dir = project.apm_dir
+    # Held throughout, so a change landing meanwhile (an agent, the UI) can't make the plan files,
+    # the bundle and the runs disagree.
+    with acquire_write_lock(project.apm_dir):
+        return _export(project.apm_dir, dest, with_runs=with_runs)
+
+
+def _export(apm_dir: Path, dest: Path, *, with_runs: bool) -> dict[str, Any]:
     if rev_parse(apm_dir, "HEAD") is None:
         raise ArchiveError(f"{apm_dir} has no commits to export")
 
