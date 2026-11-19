@@ -96,12 +96,19 @@ def init_project(code_dir: Path, *, name: str | None = None) -> Project:
         shutil.rmtree(apm_dir, ignore_errors=True)
         raise
 
+    return link_plan(code_dir)
+
+
+def link_plan(code_dir: Path) -> Project:
+    """Points `code_dir` at the plan repo in `<code_dir>/.apm`: writes `.apm-link` and keeps `.apm/`
+    out of the code repo through its `.gitignore`.
+    """
     link = {"path": DEFAULT_APM_DIR, "remote": None}
     write_file_atomic(code_dir / LINK_FILE, json.dumps(link) + "\n")
     _ignore(code_dir / ".gitignore", f"{DEFAULT_APM_DIR}/")
     # Where Claude Code puts the worktrees the implementer builds in.
     _ignore(code_dir / ".gitignore", ".claude/worktrees/")
-    return Project(code_dir, apm_dir)
+    return Project(code_dir, code_dir / DEFAULT_APM_DIR)
 
 
 def load_graph(project: Project) -> Graph:
