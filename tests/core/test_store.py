@@ -79,12 +79,7 @@ def test_restored_records_keep_their_ids_times_numbers_and_statuses(tmp_path: Pa
     resolved = source.resolve_proposal(resolved.id, "rejected")
 
     store = Store(tmp_path / "copy")
-    for restored in (run, open_run):
-        store.restore_run(restored)
-        for event in source.list_events(restored.id):
-            store.restore_event(restored.id, event)
-    for proposal in (pending, resolved):
-        store.restore_proposal(proposal)
+    store.restore([(r, source.list_events(r.id)) for r in (run, open_run)], [pending, resolved])
 
     assert store.get_run(run.id) == run
     assert store.get_run(open_run.id) == open_run
@@ -96,9 +91,10 @@ def test_restored_records_keep_their_ids_times_numbers_and_statuses(tmp_path: Pa
     # New events carry on numbering after the restored ones.
     assert store.add_event(run.id, {"type": "more"}).seq == 3
 
+    # Taken ids are refused, and a refused restore writes nothing.
+    fresh = source.create_run(node_id=A, agent="c")
     with pytest.raises(sqlite3.IntegrityError):
-        store.restore_run(run)
+        store.restore([(fresh, []), (run, [])], [])
+    assert fresh.id not in {r.id for r in store.list_runs()}
     with pytest.raises(sqlite3.IntegrityError):
-        store.restore_event(run.id, source.list_events(run.id)[0])
-    with pytest.raises(sqlite3.IntegrityError):
-        store.restore_proposal(pending)
+        store.restore([], [pending])

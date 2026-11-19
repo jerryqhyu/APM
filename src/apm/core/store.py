@@ -8,7 +8,7 @@ import json
 import sqlite3
 import time
 import uuid
-from collections.abc import Generator
+from collections.abc import Generator, Iterable
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -311,61 +311,54 @@ class Store:
 
     # --- restoring (from an archive, see `apm.core.archive`) ---
 
-    def restore_run(self, run: Run) -> None:
-        """Inserts a run exactly as given: its id, timestamps, status and all. Raises
-        `sqlite3.IntegrityError` if a run with that id already exists.
+    def restore(
+        self, runs: Iterable[tuple[Run, Iterable[RunEvent]]], proposals: Iterable[Proposal]
+    ) -> None:
+        """Inserts runs with their events, and proposals, exactly as given: ids, times, sequence
+        numbers and statuses. One transaction, so it's quick for long histories and all or
+        nothing. Raises `sqlite3.IntegrityError` if any id (or a run's event number) is taken.
         """
         with self._db() as db:
-            db.execute(
-                "INSERT INTO runs(id, node_id, agent, session_id, status, started, ended,"
-                " cost_usd, error, prompt, parent_run, pid, mode)"
-                " VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (
-                    run.id,
-                    run.node_id,
-                    run.agent,
-                    run.session_id,
-                    run.status,
-                    run.started,
-                    run.ended,
-                    run.cost_usd,
-                    run.error,
-                    run.prompt,
-                    run.parent_run,
-                    run.pid,
-                    run.mode,
-                ),
-            )
-
-    def restore_event(self, run_id: str, event: RunEvent) -> None:
-        """Inserts an event with its own sequence number and time. Raises
-        `sqlite3.IntegrityError` if the run already has an event with that number.
-        """
-        with self._db() as db:
-            db.execute(
-                "INSERT INTO run_events(run_id, seq, ts, json) VALUES(?, ?, ?, ?)",
-                (run_id, event.seq, event.ts, json.dumps(event.data, ensure_ascii=False)),
-            )
-
-    def restore_proposal(self, proposal: Proposal) -> None:
-        """Inserts a proposal exactly as given, resolved or not. Raises `sqlite3.IntegrityError`
-        if a proposal with that id already exists.
-        """
-        with self._db() as db:
-            db.execute(
+            for run, events in runs:
+                db.execute(
+                    "INSERT INTO runs(id, node_id, agent, session_id, status, started, ended,"
+                    " cost_usd, error, prompt, parent_run, pid, mode)"
+                    " VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        run.id,
+                        run.node_id,
+                        run.agent,
+                        run.session_id,
+                        run.status,
+                        run.started,
+                        run.ended,
+                        run.cost_usd,
+                        run.error,
+                        run.prompt,
+                        run.parent_run,
+                        run.pid,
+                        run.mode,
+                    ),
+                )
+                db.executemany(
+                    "INSERT INTO run_events(run_id, seq, ts, json) VALUES(?, ?, ?, ?)",
+                    ((run.id, e.seq, e.ts, json.dumps(e.data, ensure_ascii=False)) for e in events),
+                )
+            db.executemany(
                 "INSERT INTO proposals(id, node_id, run_id, json, review, status, created,"
                 " resolved) VALUES(?, ?, ?, ?, ?, ?, ?, ?)",
                 (
-                    proposal.id,
-                    proposal.node_id,
-                    proposal.run_id,
-                    json.dumps(proposal.data, ensure_ascii=False),
-                    None
-                    if proposal.review is None
-                    else json.dumps(proposal.review, ensure_ascii=False),
-                    proposal.status,
-                    proposal.created,
-                    proposal.resolved,
+                    (
+                        p.id,
+                        p.node_id,
+                        p.run_id,
+                        json.dumps(p.data, ensure_ascii=False),
+                        None if p.review is None else json.dumps(p.review, ensure_ascii=False),
+                        p.status,
+                        p.created,
+                        p.resolved,
+                    )
+                    for p in proposals
                 ),
             )
 
