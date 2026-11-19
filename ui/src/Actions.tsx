@@ -18,6 +18,7 @@ export interface ActionHandlers {
   check: () => void;
   reconcile: () => void;
   commitEdits: () => void;
+  exportArchive: () => void;
   clear: () => void;
 }
 
@@ -74,6 +75,9 @@ export function Actions({
           </button>
           <button onClick={handlers.commitEdits} title="Commit edits you made by hand in the .apm folder">
             Commit hand edits
+          </button>
+          <button onClick={handlers.exportArchive} title="Download the plan and its history as one .apm.zip file">
+            Export archive…
           </button>
         </div>
       )}
