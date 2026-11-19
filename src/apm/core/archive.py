@@ -420,13 +420,7 @@ def _restore_store(
     sequence numbers. The database is created at the current schema, so runs from an older one
     land the way the store's own migration would leave them.
     """
-    store = Store(apm_dir)
     try:
-        for run, events in runs:
-            store.restore_run(run)
-            for event in events:
-                store.restore_event(run.id, event)
-        for proposal in proposals:
-            store.restore_proposal(proposal)
+        Store(apm_dir).restore(runs, proposals)
     except (sqlite3.Error, TypeError, ValueError) as err:
         raise ArchiveError(f"{src}: cannot restore its runs: {err}") from None
