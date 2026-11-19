@@ -342,7 +342,7 @@ GET    /api/tree                            every node with its computed state; 
 GET    /api/graph?root=<id>                 one level: nodes, lifted edges, ports, entanglement
 GET    /api/nodes/:id                       node + body + links + history + proposals
 GET    /api/ready?root= · /api/search?q=
-GET    /api/export?with_runs=           the project as an .apm.zip download (§3.8)
+GET    /api/export?with_runs=               the project as an .apm.zip download (§3.8)
 POST   /api/nodes · PATCH /api/nodes/:id · POST /api/nodes/:id/move · DELETE /api/nodes/:id
 POST   /api/merge           { target, others[], title? }
 POST   /api/edges · DELETE /api/edges
