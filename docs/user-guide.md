@@ -198,8 +198,12 @@ Decompose versus conversation: use Decompose when you want a reviewed proposal t
 1. works in its own copy of your repository (a git worktree under `.claude/worktrees/`), so your own checkout is not touched;
 2. builds what the node describes, on a branch named `apm/<handle>-<title>`;
 3. commits, with a line in each commit message naming the node;
-4. pushes and opens a pull request, if the GitHub CLI (`gh`) is set up;
+4. pushes and opens a pull request with the GitHub CLI (`gh`);
 5. records the branch, commits and pull request on the node, and ticks the acceptance criteria it verified.
+
+**Stacking.** If the node builds on another node's work that isn't merged yet, the branch starts from that node's branch and the pull request targets it, so each pull request shows only its own changes. APM works this out when the run starts (it fetches first) and tells Claude. Otherwise the base is your default branch. If the node waits on several unmerged branches, it builds on the default branch and its pull request says what has to merge first.
+
+**If Claude can't open the pull request** (no `gh`, or `gh` refuses), it still pushes and records the branch, and APM opens the pull request itself once the run ends. You see a line from APM in the conversation either way. If nobody could open it, that line says why, the node's Notes say so, and Details shows **Pull request: None yet**. Nothing is marked done.
 
 You follow it in the node's conversation and can reply to it there. The node stays **In progress** until you mark it done, or until its pull request merges and you press **Reconcile** (APM also checks when `apm serve` starts).
 
@@ -341,6 +345,8 @@ Imported runs are history only: you can read them, but nothing starts again. A r
 | "… is already running" | One conversation takes one turn at a time, and a node has one Decompose or Implement at a time. Wait, or press **Stop**. |
 | "2 runs are already active" | Raise `runner.max_concurrent`, or wait for one to finish. |
 | Implement is greyed out | Hover over it: the node has children, is blocked, or is already done. |
+| "No pull request yet: `gh` is not installed" | Install the GitHub CLI and run `gh auth login`, then send any reply in the node's conversation: after that turn, APM tries again. |
+| "couldn't tell which GitHub repository … is" | Set the repo's `remote: https://github.com/<owner>/<repo>` in `.apm/apm.yaml`. |
 | A change is refused with a code like `I2` | It would break a rule of the plan. The message says which nodes are involved. |
 | Import says "… already exists" | The folder already has a plan. Import into a folder without `.apm/` or `.apm-link`. |
 | Import says "upgrade APM to import it" | The archive came from a newer APM. Update APM (see [Install](#install)) and try again. |
