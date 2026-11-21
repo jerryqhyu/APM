@@ -14,6 +14,7 @@ APM is a project planner you run on your own machine. You keep a plan as a graph
 - [In your own Claude Code session](#in-your-own-claude-code-session)
 - [Settings](#settings)
 - [Where the plan lives](#where-the-plan-lives)
+- [Sharing or moving a project](#sharing-or-moving-a-project)
 - [When something goes wrong](#when-something-goes-wrong)
 
 ## Install
@@ -164,6 +165,7 @@ With nothing selected, the panel acts on the whole plan:
 | **Check plan** | Looks for broken rules and warnings. |
 | **Reconcile** | Marks nodes done whose pull request or commits have merged. |
 | **Commit hand edits** | Records changes you made by editing the plan's files directly. |
+| **Export archive…** | Downloads the plan and its history as one `.apm.zip` file (see [Sharing or moving a project](#sharing-or-moving-a-project)). |
 
 To edit a description, press **Edit** in Details. It is markdown; ⌘/Ctrl+Enter saves.
 
@@ -224,6 +226,8 @@ apm link-dep 1c0b9a44 7d2e0f11               # the first needs the second
 apm ready                                    # what can be started now
 apm search "csv"                             # search titles and descriptions
 apm check                                    # look for problems
+apm export plan.apm.zip                      # the whole project as one file
+apm import plan.apm.zip                      # restore it into a folder with no plan
 ```
 
 Agents:
@@ -287,6 +291,45 @@ You can edit the files by hand. Afterwards run `apm commit` (or press **Commit h
 
 If you ever want a backup or a second machine, `apm link --remote <url>` gives the plan a remote, and `apm push`, `apm pull` and `apm clone` use it. This is optional.
 
+To hand the whole project to someone, or move it without a remote, export it as one file: see the next section.
+
+## Sharing or moving a project
+
+An archive is the whole project in one `.apm.zip` file: the plan and its full history. Use it to hand a plan to someone, keep a backup, or move to another machine.
+
+**Export.** In the terminal:
+
+```bash
+apm export plan.apm.zip
+```
+
+Or, in the UI, select nothing and press **Export archive…** in the Actions panel, then **Download**. The file is named after the project.
+
+**Include runs if you want them.** Add `--with-runs` (in the UI, tick **Include runs**) to bring agent conversations, their transcripts and proposals along too. **Transcripts can hold tool output and secrets**: file contents, tokens, keys. Check the file before you share it.
+
+**What is not in an archive:**
+
+- the code repository's `.apm-link`, and any remote you set with `apm link`; import writes a fresh link;
+- the server's access token, so `apm serve` on the other side prints a new address;
+- edits to the plan's files you haven't committed. The archive holds the plan as last committed, so run `apm commit` first if you want them;
+- runs and proposals, unless you asked for them.
+
+**Import.** Go to the folder that should hold the plan, usually the code repository, and run:
+
+```bash
+apm import plan.apm.zip
+```
+
+You get the same plan, with the same history, as `.apm/`, linked the way `apm init` links it. Then run `apm check` or `apm serve`.
+
+Imported runs are history only: you can read them, but nothing starts again. A run that was still going when the archive was made comes back as **Stopped** ("Stopped before it finished").
+
+**Import refuses**, and changes nothing, when:
+
+- the folder already has a plan (`.apm/` or `.apm-link`). Import only into a folder that has none;
+- the archive was made by a newer APM, with a newer archive format or, for runs, a newer store schema. Upgrade APM, then import;
+- the file is damaged: truncated, not an APM archive, or its contents don't match its manifest or history.
+
 ## When something goes wrong
 
 | What you see | What to do |
@@ -299,5 +342,7 @@ If you ever want a backup or a second machine, `apm link --remote <url>` gives t
 | "2 runs are already active" | Raise `runner.max_concurrent`, or wait for one to finish. |
 | Implement is greyed out | Hover over it: the node has children, is blocked, or is already done. |
 | A change is refused with a code like `I2` | It would break a rule of the plan. The message says which nodes are involved. |
+| Import says "… already exists" | The folder already has a plan. Import into a folder without `.apm/` or `.apm-link`. |
+| Import says "upgrade APM to import it" | The archive came from a newer APM. Update APM (see [Install](#install)) and try again. |
 | "uncommitted changes in the plan repo" | You edited the plan's files by hand. Run `apm commit` first. |
 | A run was "interrupted" | `apm serve` was stopped while it ran. Send another message to continue the conversation. |

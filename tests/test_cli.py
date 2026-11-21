@@ -6,6 +6,8 @@ import sys
 import time
 import urllib.error
 import urllib.request
+import zipfile
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -13,8 +15,10 @@ from typer.testing import CliRunner
 
 from apm import __version__
 from apm.cli import app, open_when_listening
+from apm.core.archive import FORMAT_VERSION
 from apm.core.git import git, log
 from apm.core.project import Project, load_graph
+from apm.core.store import SCHEMA_VERSION, Store
 from apm.server.security import load_or_create_token
 from tests.runner.fake import FakeClaude
 
@@ -365,3 +369,100 @@ def test_run_answers_a_multi_select_question(cwd: Project, fake_claude: FakeClau
     result = runner.invoke(app, ["run", "assistant", node, "-m", "Set up formatting."], input="2\n")
     assert result.exit_code == 0, result.output
     assert "you chose: Spaces" in result.output
+
+
+def _edit_manifest(path: Path, **changes: object) -> None:
+    with zipfile.ZipFile(path) as archive:
+        files = {name: archive.read(name) for name in archive.namelist()}
+    files["manifest.json"] = json.dumps({**json.loads(files["manifest.json"]), **changes}).encode()
+    with zipfile.ZipFile(path, "w") as archive:
+        for name, data in files.items():
+            archive.writestr(name, data)
+
+
+def test_export_then_import_into_an_empty_folder(
+    cwd: Project, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    node = add("Ship it")
+    archive = tmp_path / "plan.apm.zip"
+
+    result = runner.invoke(app, ["export", str(archive)])
+    assert result.exit_code == 0, result.output
+    assert result.stdout.startswith(f"exported my-app to {archive}: 1 nodes")
+    assert "secrets" not in result.output
+    with zipfile.ZipFile(archive) as zipped:
+        assert "runs.ndjson" not in zipped.namelist()
+
+    empty = tmp_path / "elsewhere"
+    empty.mkdir()
+    monkeypatch.chdir(empty)
+    assert f"imported my-app into {empty / '.apm'}" in apm("import", str(archive))
+    assert apm("check").strip() == "ok"
+    assert node in apm("node", "ls")
+
+
+def test_export_with_runs_warns_about_secrets(cwd: Project, tmp_path: Path) -> None:
+    Store(cwd.apm_dir).create_run(node_id="", agent="apm-assistant")
+    archive = tmp_path / "plan.apm.zip"
+
+    result = runner.invoke(app, ["export", str(archive), "--with-runs"])
+    assert result.exit_code == 0, result.output
+    assert "1 runs" in result.stdout
+    assert "tool output and secrets" in result.stderr
+    assert "tool output and secrets" not in result.stdout
+    with zipfile.ZipFile(archive) as zipped:
+        assert {"runs.ndjson", "proposals.ndjson"} <= set(zipped.namelist())
+
+
+@pytest.mark.parametrize(
+    ("damage", "message"),
+    [
+        (lambda path: _edit_manifest(path, format_version=FORMAT_VERSION + 1), "upgrade APM"),
+        (
+            lambda path: _edit_manifest(path, store_schema_version=SCHEMA_VERSION + 1),
+            "store schema version",
+        ),
+        (lambda path: path.write_bytes(path.read_bytes()[:100]), "truncated or corrupted"),
+    ],
+    ids=["newer-format", "newer-schema", "corrupt"],
+)
+def test_import_refuses_a_bad_archive(
+    cwd: Project,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    damage: Callable[[Path], None],
+    message: str,
+) -> None:
+    Store(cwd.apm_dir).create_run(node_id="", agent="apm-assistant")
+    archive = tmp_path / "plan.apm.zip"
+    apm("export", str(archive), "--with-runs")
+    damage(archive)
+    empty = tmp_path / "elsewhere"
+    empty.mkdir()
+    monkeypatch.chdir(empty)
+
+    result = runner.invoke(app, ["import", str(archive)])
+    assert result.exit_code == 1
+    assert result.stderr.startswith("error: ")
+    assert message in result.stderr
+    assert list(empty.iterdir()) == []
+
+
+def test_import_refuses_a_folder_with_a_plan(cwd: Project, tmp_path: Path) -> None:
+    archive = tmp_path / "plan.apm.zip"
+    apm("export", str(archive))
+    before = sorted(p.name for p in cwd.code_dir.iterdir())
+
+    result = runner.invoke(app, ["import", str(archive)])
+    assert result.exit_code == 1
+    assert "already exists: import only into a folder that has no plan" in result.stderr
+    assert sorted(p.name for p in cwd.code_dir.iterdir()) == before
+
+
+def test_help_lists_export_and_import() -> None:
+    lines = apm("--help").splitlines()
+    for name, description in (
+        ("export", "Save the project and its history as one .apm.zip file."),
+        ("import", "Restore a project from an .apm.zip file into this folder."),
+    ):
+        assert any(name in line and description in line for line in lines), name

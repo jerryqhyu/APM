@@ -274,6 +274,53 @@ def pull() -> None:
     typer.echo(git(find_project().apm_dir, ["pull", "--quiet", "--ff-only"]) or "up to date")
 
 
+# --- archives -----------------------------------------------------------------------------------
+
+RUNS_WARNING = (
+    "warning: {file} holds run transcripts, which can include tool output and secrets"
+    " (file contents, tokens, keys). Check it before you share it."
+)
+
+
+@app.command("export")
+@command
+def export(
+    file: Annotated[Path, typer.Argument(help="Where to write the archive, e.g. plan.apm.zip.")],
+    with_runs: Annotated[
+        bool,
+        typer.Option("--with-runs", help="Also include runs, their transcripts, and proposals."),
+    ] = False,
+) -> None:
+    """Save the project and its history as one .apm.zip file."""
+    from apm.core.archive import export_archive
+
+    manifest = export_archive(find_project(), file, with_runs=with_runs)
+    typer.echo(f"exported {manifest['project']} to {file}: {_counts(manifest['counts'])}")
+    if with_runs:
+        typer.echo(RUNS_WARNING.format(file=file), err=True)
+
+
+@app.command("import")
+@command
+def import_(
+    file: Annotated[Path, typer.Argument(help="The .apm.zip archive to restore.")],
+) -> None:
+    """Restore a project from an .apm.zip file into this folder."""
+    from apm.core.archive import import_archive
+
+    imported = import_archive(file, Path.cwd())
+    manifest = imported.manifest
+    typer.echo(
+        f"imported {manifest['project']} into {imported.project.apm_dir}:"
+        f" {_counts(manifest['counts'])}"
+    )
+    typer.echo("next: apm check, or apm serve")
+
+
+def _counts(counts: dict[str, Any]) -> str:
+    return ", ".join(f"{value} {key}" for key, value in counts.items())
+
+
 # --- nodes --------------------------------------------------------------------------------------
 
 

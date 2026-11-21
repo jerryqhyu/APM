@@ -1,3 +1,4 @@
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -64,3 +65,36 @@ def test_the_database_survives_being_reopened(tmp_path: Path) -> None:
     run = Store(tmp_path).create_run(node_id=A, agent="a")
     assert Store(tmp_path).get_run(run.id) == run
     assert (tmp_path / ".cache" / "apm.db").exists()
+
+
+def test_restored_records_keep_their_ids_times_numbers_and_statuses(tmp_path: Path) -> None:
+    source = Store(tmp_path / "source")
+    run = source.create_run(node_id=A, agent="a", prompt="go", pid=7, mode="plan")
+    source.add_event(run.id, {"type": "assistant", "text": "é"})
+    source.add_event(run.id, {"type": "result"})
+    run = source.finish_run(run.id, "failed", cost_usd=0.1, error="boom", session_id="s")
+    open_run = source.create_run(node_id=B, agent="b", parent_run=run.id)
+    pending = source.create_proposal(node_id=A, data={"children": []}, run_id=run.id)
+    resolved = source.create_proposal(node_id=B, data={"x": 1}, review={"verdict": "ok"})
+    resolved = source.resolve_proposal(resolved.id, "rejected")
+
+    store = Store(tmp_path / "copy")
+    store.restore([(r, source.list_events(r.id)) for r in (run, open_run)], [pending, resolved])
+
+    assert store.get_run(run.id) == run
+    assert store.get_run(open_run.id) == open_run
+    assert store.list_runs() == source.list_runs()
+    assert store.list_events(run.id) == source.list_events(run.id)
+    assert store.get_proposal(pending.id) == pending
+    assert store.get_proposal(resolved.id) == resolved
+    assert store.list_proposals() == source.list_proposals()
+    # New events carry on numbering after the restored ones.
+    assert store.add_event(run.id, {"type": "more"}).seq == 3
+
+    # Taken ids are refused, and a refused restore writes nothing.
+    fresh = source.create_run(node_id=A, agent="c")
+    with pytest.raises(sqlite3.IntegrityError):
+        store.restore([(fresh, []), (run, [])], [])
+    assert fresh.id not in {r.id for r in store.list_runs()}
+    with pytest.raises(sqlite3.IntegrityError):
+        store.restore([], [pending])

@@ -8,7 +8,7 @@ import json
 import sqlite3
 import time
 import uuid
-from collections.abc import Generator
+from collections.abc import Generator, Iterable
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -307,6 +307,59 @@ class Store:
             db.execute(
                 "UPDATE proposals SET status = 'pending', resolved = NULL WHERE id = ?",
                 (proposal_id,),
+            )
+
+    # --- restoring (from an archive, see `apm.core.archive`) ---
+
+    def restore(
+        self, runs: Iterable[tuple[Run, Iterable[RunEvent]]], proposals: Iterable[Proposal]
+    ) -> None:
+        """Inserts runs with their events, and proposals, exactly as given: ids, times, sequence
+        numbers and statuses. One transaction, so it's quick for long histories and all or
+        nothing. Raises `sqlite3.IntegrityError` if any id (or a run's event number) is taken.
+        """
+        with self._db() as db:
+            for run, events in runs:
+                db.execute(
+                    "INSERT INTO runs(id, node_id, agent, session_id, status, started, ended,"
+                    " cost_usd, error, prompt, parent_run, pid, mode)"
+                    " VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        run.id,
+                        run.node_id,
+                        run.agent,
+                        run.session_id,
+                        run.status,
+                        run.started,
+                        run.ended,
+                        run.cost_usd,
+                        run.error,
+                        run.prompt,
+                        run.parent_run,
+                        run.pid,
+                        run.mode,
+                    ),
+                )
+                db.executemany(
+                    "INSERT INTO run_events(run_id, seq, ts, json) VALUES(?, ?, ?, ?)",
+                    ((run.id, e.seq, e.ts, json.dumps(e.data, ensure_ascii=False)) for e in events),
+                )
+            db.executemany(
+                "INSERT INTO proposals(id, node_id, run_id, json, review, status, created,"
+                " resolved) VALUES(?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    (
+                        p.id,
+                        p.node_id,
+                        p.run_id,
+                        json.dumps(p.data, ensure_ascii=False),
+                        None if p.review is None else json.dumps(p.review, ensure_ascii=False),
+                        p.status,
+                        p.created,
+                        p.resolved,
+                    )
+                    for p in proposals
+                ),
             )
 
 
