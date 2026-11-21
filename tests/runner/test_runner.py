@@ -8,7 +8,7 @@ import pytest
 
 from apm.core.ids import handle
 from apm.core.model import Status
-from apm.core.ops import NewNode, create_nodes, set_status
+from apm.core.ops import NewNode, attach_delivery, create_nodes, set_status
 from apm.core.project import Project
 from apm.core.store import Store
 from apm.runner.agents import RunRefused
@@ -410,6 +410,20 @@ async def test_the_implementer_gets_a_worktree_node_scope_and_extra_tools(
     assert mcp_env(call)["APM_RUN_SCOPE"] == f"node:{node}"
 
 
+async def test_work_stacked_on_a_delivered_dependency_can_be_implemented(
+    harness: Harness, project: Project
+) -> None:
+    first, second = create_nodes(
+        project,
+        [NewNode(title="First", key="a"), NewNode(title="Second", depends_on_keys=["a"])],
+    ).created
+    set_status(project, first, Status.IN_PROGRESS)
+    attach_delivery(project, first, branch="apm/first", pr="https://github.com/o/r/pull/20")
+    run = harness.runner.start("apm-implementer", second)
+    await harness.runner.wait(run.id)
+    assert harness.store.get_run(run.id).status == "succeeded"
+
+
 async def test_runs_are_refused_when_they_cannot_start(harness: Harness, project: Project) -> None:
     parent = create_nodes(project, [NewNode(title="Parent")]).created[0]
     first, second = create_nodes(
@@ -423,6 +437,9 @@ async def test_runs_are_refused_when_they_cannot_start(harness: Harness, project
         harness.runner.start("apm-implementer", parent)
     with pytest.raises(RunRefused, match=f"not ready: waiting on {handle(first)}"):
         harness.runner.start("apm-implementer", second)
+    set_status(project, first, Status.IN_PROGRESS)
+    with pytest.raises(RunRefused, match=f"not ready: waiting on {handle(first)}"):
+        harness.runner.start("apm-implementer", second)  # in progress, nothing pushed yet
     set_status(project, first, Status.DONE)
     with pytest.raises(RunRefused, match="this node is done"):
         harness.runner.start("apm-implementer", first)

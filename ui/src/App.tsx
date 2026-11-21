@@ -11,7 +11,7 @@ import { ProposalReview } from "./ProposalReview";
 import { type Theme, useTheme } from "./theme";
 import type { AgentRequest, Level, NodeDetail, NodeView, Project, Proposal, Run, Status, Tree } from "./types";
 import { Spinner } from "./ui";
-import { cx, errorText } from "./util";
+import { cx, errorText, stackedNames } from "./util";
 
 interface Route {
   /** The node whose inside the graph shows; null = the top level. */
@@ -338,8 +338,9 @@ export function App() {
             {readyNodes.length ? (
               readyNodes.map((n) => (
                 <button key={n.id} className="menu-item" onClick={() => goTo(n.id)}>
-                  <span className="dot state-ready" />
+                  <span className={cx("dot", n.stacked_on.length ? "state-stacked" : "state-ready")} />
                   {n.title}
+                  {n.stacked_on.length > 0 && <span className="menu-note">stacked on {stackedNames(n.stacked_on)}</span>}
                 </button>
               ))
             ) : (

@@ -57,6 +57,19 @@ export function NodeDetails({ detail, nodes, actions }: { detail: NodeDetail; no
           <RefList refs={detail.links.waiting_on} onPick={actions.goTo} />
         </section>
       )}
+      {state.key === "stacked" && (
+        <section>
+          <h3>Stacked on</h3>
+          <p className="hint">
+            This can start now, on top of work that is delivered but not merged. Implement builds it on that branch, and its pull
+            request targets that branch, so it shows only its own changes. It is plainly ready once that work merges.
+          </p>
+          <RefList
+            refs={detail.links.waiting_on.filter((ref) => detail.stacked_on.some((s) => s.id === ref.id))}
+            onPick={actions.goTo}
+          />
+        </section>
+      )}
       {detail.dropped_deps.length > 0 && (
         <div className="callout warn">
           This depends on a dropped node, which will never be done. Remove the dependency or point it somewhere else.
@@ -208,7 +221,13 @@ export function PlanSummary({
       {nodes.length > 0 && (
         <section>
           <h3>Ready to start</h3>
-          <RefList refs={refs(ready)} onPick={onGoTo} />
+          <RefList refs={refs(ready.filter((n) => !n.stacked_on.length))} onPick={onGoTo} />
+          {ready.some((n) => n.stacked_on.length) && (
+            <>
+              <h3>Ready, stacked on open work</h3>
+              <RefList refs={refs(ready.filter((n) => n.stacked_on.length))} onPick={onGoTo} />
+            </>
+          )}
         </section>
       )}
     </article>

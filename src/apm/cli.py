@@ -169,7 +169,7 @@ def ready(
     root_: Annotated[str | None, typer.Option("--root", help="Only under this node.")] = None,
     as_json: Json = False,
 ) -> None:
-    """List what can be worked on now: ready leaves."""
+    """List what can be worked on now: ready leaves, stacked ones marked."""
     _, graph = plan()
     ids = graph.ready_leaves(graph.resolve(root_) if root_ else None)
     if as_json:

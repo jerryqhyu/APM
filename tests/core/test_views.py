@@ -1,8 +1,8 @@
 from apm.core.graph import Graph
-from apm.core.model import Status
+from apm.core.model import Delivery, Status
 from apm.core.ops import NewNode, create_nodes, edit_body
 from apm.core.project import Project, load_graph
-from apm.core.views import outline, search
+from apm.core.views import node_view, outline, pr_label, search
 from tests.core.build import A, B, C, D, E, node
 
 
@@ -23,6 +23,36 @@ def test_outline_shows_state_progress_and_dependencies() -> None:
         "  0000000d [work/todo·blocked] node 0d → 0000000c, 0000000e ⚠ depends on dropped 0000000e",
         "0000000e [work/dropped] node 0e",
     ]
+
+
+def test_stacked_work_is_marked_with_what_it_stacks_on() -> None:
+    with_pr = Delivery(repo="app", branch="apm/a", pr="https://github.com/o/r/pull/20")
+    graph = Graph(
+        [
+            node(A, status=Status.IN_PROGRESS, delivery=with_pr),
+            node(B, status=Status.IN_PROGRESS, delivery=Delivery(repo="app", branch="apm/b")),
+            node(C, deps=[A, B]),
+        ]
+    )
+    assert outline(graph).splitlines()[2] == (
+        "0000000c [work/todo·ready·stacked] node 0c → 0000000a, 0000000b"
+        " · stacked on 0000000a (#20), 0000000b"
+    )
+    view = node_view(graph, C)
+    assert (view["ready"], view["blocked"]) == (True, False)
+    assert view["stacked_on"] == [
+        {"id": A, "handle": "0000000a", "pr": "#20"},
+        {"id": B, "handle": "0000000b", "pr": None},
+    ]
+    assert node_view(graph, A)["stacked_on"] == []
+
+
+def test_pr_label_is_the_number_when_there_is_one() -> None:
+    assert pr_label("https://github.com/o/r/pull/21") == "#21"
+    assert (
+        pr_label("https://example.com/merge-requests/x") == "https://example.com/merge-requests/x"
+    )
+    assert pr_label(None) is None
 
 
 def test_outline_can_start_at_a_node_and_limit_depth() -> None:

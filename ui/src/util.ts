@@ -1,11 +1,21 @@
-import type { NodeView, Run, RunStatus } from "./types";
+import type { NodeView, Run, RunStatus, StackedOn } from "./types";
 
-export type StateKey = "ready" | "blocked" | "todo" | "in_progress" | "done" | "dropped";
+export type StateKey = "ready" | "stacked" | "blocked" | "todo" | "in_progress" | "done" | "dropped";
+
+/** `#20, 7d2e0f11`: what a stacked node builds on, by pull request where it has one. */
+export function stackedNames(stacked: StackedOn[]): string {
+  return stacked.map((s) => s.pr ?? s.handle).join(", ");
+}
 
 /** One word for where a node stands: the stored status, refined by what's computed. */
-export function stateOf(node: Pick<NodeView, "status" | "ready" | "blocked">): { key: StateKey; label: string } {
+export function stateOf(
+  node: Pick<NodeView, "status" | "ready" | "blocked"> & { stacked_on?: StackedOn[] },
+): { key: StateKey; label: string } {
   if (node.status === "todo") {
     if (node.blocked) return { key: "blocked", label: "Blocked" };
+    if (node.ready && node.stacked_on?.length) {
+      return { key: "stacked", label: `Ready · stacked on ${stackedNames(node.stacked_on)}` };
+    }
     if (node.ready) return { key: "ready", label: "Ready" };
     return { key: "todo", label: "To do" };
   }

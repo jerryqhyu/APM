@@ -8,7 +8,8 @@ input: a reference to a node that doesn't exist is not an edge (`validate()` rep
 node's own fields), and a containment cycle can't make a walk loop forever.
 
 Everything that is computed rather than stored lives here too, worked out once on first use:
-handles, and each node's state (blocked, ready, progress). It is never stored, so it can't go stale.
+handles, and each node's state (blocked, ready, stacked, progress). It is never stored, so it can't
+go stale.
 """
 
 from collections.abc import Iterable, Mapping
@@ -40,13 +41,19 @@ class NodeState:
     """What follows from a node's status and its surroundings (plans.md §2.3)."""
 
     blocked: bool
-    """`todo`, and something in `waiting_on`."""
+    """`todo`, and something in `waiting_on` that isn't in `stacked_on`."""
     ready: bool
-    """`todo`, not blocked, and not under a dropped ancestor."""
+    """`todo`, not blocked, and not under a dropped ancestor. Includes stacked work: check
+    `stacked_on` to tell "everything it needs is done" from "it can stack on open work"."""
     waiting_on: tuple[NodeId, ...]
     """Dependencies that aren't `done`, the node's own and its ancestors', in id order. Blocking is
     inherited: a child of a blocked parent is blocked too. A dropped dependency stays here: it never
     unblocks anything.
+    """
+    stacked_on: tuple[NodeId, ...]
+    """The part of `waiting_on` that is delivered but not merged: `in_progress` leaves whose
+    delivery has a branch or a pull request. Work can start on top of them (a stacked branch), so
+    they don't block; they stop being listed here once they're `done`.
     """
     dropped_deps: tuple[NodeId, ...]
     """The node's own dependencies that are `dropped`. A flag for the user to resolve."""
@@ -158,16 +165,20 @@ class Graph:
             node_id: {d for d in self.dependencies(node_id) if nodes[d].status is not Status.DONE}
             for node_id in nodes
         }
+        stackable = {node_id for node_id in nodes if self._stackable(node_id)}
         states = {}
         for node_id, node in nodes.items():
             ancestors = self.ancestors(node_id)
             waiting = own_waiting[node_id].union(*(own_waiting[a] for a in ancestors))
+            stacked = waiting & stackable
+            blocking = waiting - stacked
             todo = node.status is Status.TODO
             under_dropped = any(nodes[a].status is Status.DROPPED for a in ancestors)
             states[node_id] = NodeState(
-                blocked=todo and bool(waiting),
-                ready=todo and not waiting and not under_dropped,
+                blocked=todo and bool(blocking),
+                ready=todo and not blocking and not under_dropped,
                 waiting_on=tuple(sorted(waiting)),
+                stacked_on=tuple(sorted(stacked)),
                 dropped_deps=tuple(
                     d for d in self.dependencies(node_id) if nodes[d].status is Status.DROPPED
                 ),
@@ -175,9 +186,22 @@ class Graph:
             )
         return states
 
+    def _stackable(self, node_id: NodeId) -> bool:
+        """An `in_progress` leaf whose work is pushed (a delivery branch or a pull request), so
+        what depends on it can start on top of its branch.
+        """
+        node = self.nodes[node_id]
+        delivery = node.delivery
+        return (
+            node.status is Status.IN_PROGRESS
+            and self.tree.out_degree(node_id) == 0
+            and delivery is not None
+            and bool(delivery.branch or delivery.pr)
+        )
+
     def ready_leaves(self, root: NodeId | None = None) -> list[NodeId]:
         """What can be worked on now: the ready leaves under `root` (None = the whole project), in
-        id order.
+        id order. Stacked ones included (see `NodeState.stacked_on`).
         """
         scope = self.nodes if root is None else self.descendants(root)
         return sorted(n for n in scope if self.is_leaf(n) and self.states[n].ready)

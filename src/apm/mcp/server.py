@@ -169,7 +169,10 @@ def build_server(project: Project | None = None, env: Mapping[str, str] | None =
     def apm_ready(
         root: Annotated[str | None, Field(description="Handle: only what's under it.")] = None,
     ) -> str:
-        """What can be worked on now: leaves that are todo with every dependency done."""
+        """What can be worked on now: todo leaves whose dependencies are done. A line marked
+        `·stacked` depends on work that is delivered but not merged yet: build it on top of the
+        branch named after "stacked on".
+        """
         _, graph = plan()
         ready = graph.ready_leaves(None if root is None else graph.resolve(root))
         return "\n".join(node_line(graph, n) for n in ready) or "(nothing is ready)"

@@ -363,6 +363,18 @@ textarea {
   --c-subtle: var(--good-subtle);
 }
 
+/* Ready, but on top of delivered work that isn't merged: the same green, drawn as a ring. */
+.state-stacked {
+  --c: var(--good);
+  --c-subtle: var(--good-subtle);
+}
+
+.dot.state-stacked,
+.state-stacked > .dot {
+  background: transparent !important;
+  box-shadow: inset 0 0 0 2px var(--c);
+}
+
 .state-blocked {
   --c: var(--warn);
   --c-subtle: var(--warn-subtle);
@@ -607,6 +619,11 @@ textarea {
 
 .menu-list .empty {
   padding: 6px 8px;
+}
+
+.menu-note {
+  color: var(--fg-muted);
+  font-size: 12px;
 }
 
 .snippet {

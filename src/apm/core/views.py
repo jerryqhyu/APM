@@ -6,8 +6,10 @@
 - Search over titles and bodies, and a node's history.
 
     1c0b9a44 [work/todo·ready] Stream agent output → 7d2e0f11
+    5e6f7a8b [work/todo·ready·stacked] Tag and publish → 7d2e0f11 · stacked on 7d2e0f11 (#20)
 """
 
+import re
 from dataclasses import asdict, dataclass
 from typing import Any
 
@@ -22,13 +24,36 @@ from apm.core.project import Project
 
 
 def state_label(graph: Graph, node_id: NodeId) -> str:
-    """The stored status, with the computed part for a todo node: `todo·ready`, `todo·blocked`."""
+    """The stored status, with the computed part for a todo node: `todo·ready`, `todo·blocked`,
+    or `todo·ready·stacked` when it can start on top of delivered but unmerged work.
+    """
     status, state = graph[node_id].status, graph.states[node_id]
     if state.blocked:
         return f"{status}·blocked"
     if state.ready:
-        return f"{status}·ready"
+        return f"{status}·ready·stacked" if state.stacked_on else f"{status}·ready"
     return str(status)
+
+
+_PR_NUMBER = re.compile(r"/pull/(\d+)")
+
+
+def pr_label(url: str | None) -> str | None:
+    """`#20` for a pull request URL, the URL itself if it has no number, None for no URL."""
+    if not url:
+        return None
+    match = _PR_NUMBER.search(url)
+    return f"#{match[1]}" if match else url
+
+
+def stacked_label(graph: Graph, node_id: NodeId) -> str:
+    """What a stacked node stacks on, e.g. `7d2e0f11 (#20), 9a8b7c6d`; empty if nothing."""
+    parts = []
+    for dep in graph.states[node_id].stacked_on:
+        delivery = graph[dep].delivery
+        pr = pr_label(delivery.pr if delivery else None)
+        parts.append(f"{graph.handles[dep]} ({pr})" if pr else graph.handles[dep])
+    return ", ".join(parts)
 
 
 def node_line(graph: Graph, node_id: NodeId) -> str:
@@ -40,6 +65,8 @@ def node_line(graph: Graph, node_id: NodeId) -> str:
         line += f" ({state.progress.done}/{state.progress.total})"
     if deps := graph.dependencies(node_id):
         line += " → " + ", ".join(names[d] for d in deps)
+    if state.ready and state.stacked_on:
+        line += " · stacked on " + stacked_label(graph, node_id)
     if state.dropped_deps:
         line += " ⚠ depends on dropped " + ", ".join(names[d] for d in state.dropped_deps)
     return line
@@ -78,6 +105,7 @@ def node_text(project: Project, graph: Graph, node_id: NodeId) -> str:
         ("depends on", graph.dependencies(node_id)),
         ("needed by", graph.dependents(node_id)),
         ("waiting on", graph.states[node_id].waiting_on),
+        ("stacked on", graph.states[node_id].stacked_on),
     ):
         lines += [f"{label}: {node_line(graph, other)}" for other in ids]
     if (d := node.delivery) is not None:
@@ -103,6 +131,10 @@ def node_view(graph: Graph, node_id: NodeId) -> dict[str, Any]:
         "blocked": state.blocked,
         "ready": state.ready,
         "waiting_on": list(state.waiting_on),
+        "stacked_on": [
+            {"id": dep, "handle": graph.handles[dep], "pr": pr_label(_pr_of(graph, dep))}
+            for dep in state.stacked_on
+        ],
         "dropped_deps": list(state.dropped_deps),
         "depends_on": list(graph.dependencies(node_id)),
         "dependents": list(graph.dependents(node_id)),
@@ -110,6 +142,11 @@ def node_view(graph: Graph, node_id: NodeId) -> dict[str, Any]:
         "progress": {"done": state.progress.done, "total": state.progress.total},
         "delivery": None if node.delivery is None else asdict(node.delivery),
     }
+
+
+def _pr_of(graph: Graph, node_id: NodeId) -> str | None:
+    delivery = graph[node_id].delivery
+    return delivery.pr if delivery else None
 
 
 def node_ref(graph: Graph, node_id: NodeId) -> dict[str, Any]:
