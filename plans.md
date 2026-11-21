@@ -108,7 +108,7 @@ A node with children is a **feature**, and every feature ends in a **review step
     graph.ndjson
     nodes/<uuid>.md
     .gitignore              contains ".cache/"
-    .cache/                 apm.db, write.lock, server.json
+    .cache/                 apm.db, write.lock, server.json, task-review/<uuid>.json
 ```
 
 `nodes/` is flat. Moving a node to a new parent changes one line in `graph.ndjson` and renames no files.
@@ -166,6 +166,14 @@ runner:
     apm-decomposer: { model: opus }
     apm-critic:     { model: sonnet }
     apm-implementer: { model: opus, budget_usd: 5.00, allowed_tools: ["Bash(git *)", "Bash(npm test*)"] }
+automation:                  # what `apm serve` does on its own (§7.7); every switch defaults to on
+  task_review: true
+  reconcile: true
+  reconcile_interval_s: 300
+  feature_review: true
+  accept_follow_ups: true
+  implement_follow_ups: true
+  feature_pr: true
 ```
 
 ### 3.5 Commit format (plan repo)
@@ -240,9 +248,13 @@ runs(id PK, node_id, agent, session_id, status, started, ended, cost_usd, error,
      prompt, parent_run, pid)
 run_events(run_id, seq, ts, json)             -- the stream-json events a transcript needs
 proposals(id PK, node_id, run_id, json, review, status, created, resolved)
+task_reviews(node_id, fingerprint, verdict, data, run_id, created)
+                                              -- one row per task review (§7.7)
 ```
 
-Deleting `.cache/` loses run logs and pending proposals, never anything about the project itself. They leave the machine only in an archive made with `--with-runs` (§3.8).
+`task_reviews.fingerprint` is the SHA-256 of the task's title, kind and body (`content_fingerprint`), so a review applies to exactly one version of the content and a status change or delivery doesn't invalidate it. `verdict` is `pass`, `too_big`, `unclear` or `error`; `data` is what the reviewer returned with it. Task reviews are not archived: an imported project's tasks are simply reviewed again.
+
+Deleting `.cache/` loses run logs, pending proposals and task reviews, never anything about the project itself. They leave the machine only in an archive made with `--with-runs` (§3.8).
 
 **No index of the plan yet.** Reads parse `graph.ndjson` into the in-memory graph each time, and search scans titles and bodies directly. At the size of a real plan (hundreds of nodes) that is instant, and there is nothing to keep in sync. The tables below are the design for when it stops being enough, and for playback (§5):
 
@@ -547,6 +559,26 @@ The plain code around it (`apm.core.feature_review`):
 - **Recording**: the verdict, a table of the criteria and the issues go into the **review step's** description under `## Feature review` (the feature's description, the spec, is untouched). Follow-ups become a proposal on the **feature**, so accepting them adds tasks that the step then waits on. A later turn of the same conversation replaces its earlier pending proposal.
 - **After**: incomplete sends the step back to `todo`. Complete opens the feature branch's PR into its home (title: the feature's; body: the feature's description and the review) and leaves the step `in_progress` until reconcile sees it merge; if the reviewed branch already is the home, the step and feature are done at once.
 
+### 7.7 Task review and the automation loop
+
+A task (a leaf that is not a review step) must fit in about five minutes of reading: at most **50 real lines** of source, not counting blank lines, comments, imports, tests, docs or agent/skill markdown. The task reviewer (`apm-task-reviewer`, with the `apm-task-sizing` skill, label **Review task**, `apm run task-reviewer <node>`) is read-only, reads the task and the code it will touch, and returns one verdict: `pass`; `too_big` with a split of at least two children, in the decomposer's shape; or `unclear` with a non-empty list of what is missing. Malformed output, a failed run or a run cut off by a restart is recorded as `error`.
+
+- **Recording.** Each verdict is a `task_reviews` row (§4) keyed by the content fingerprint. `too_big` also becomes a proposal on the task; accepting it turns the task into a feature with those children and its review step.
+- **The lock.** While a review runs, `.cache/task-review/<uuid>.json` holds the reviewer's pid, host and run id (`apm.core.review_lock`). Every plan operation that would edit, move, merge, delete, decompose or implement the task checks it and refuses with `TaskUnderReview` (HTTP 409); status changes and deliveries still go through. The marker is removed when the run ends however it ends; one whose pid is dead on this host doesn't count, so a crash never leaves a task locked.
+- **The gate.** Implement (UI, API, CLI, MCP, automation) on a `todo` task requires its latest review to be `pass` for its current fingerprint. `in_progress` and `done` tasks are not gated.
+- **Retries.** After an `error`, APM retries once per fingerprint (`Store.count_errors`), then waits for an edit or a review started by hand.
+
+**The automation loop** runs inside `apm serve`, each step behind its own `automation` switch (§3.4):
+
+1. `task_review`: creating a task or changing its title, kind or description, through any entry point, queues a review. A queue debounces bursts into one review of the final content. At startup, every `todo` task without a review for its current fingerprint is queued.
+2. `reconcile`: reconcile with retarget (§7.5) every `reconcile_interval_s` seconds.
+3. `feature_review`: when a feature's review step becomes ready, its feature review (§7.6) starts.
+4. `accept_follow_ups`: the follow-ups an incomplete review proposes are accepted, and so task-reviewed.
+5. `implement_follow_ups`: those follow-ups (and only tasks created that way) are implemented once they pass, one PR each into the feature branch; once they merge, step 3 reviews the feature again.
+6. `feature_pr`: a complete review opens the feature's PR into its home. Off, the reviewed commit is recorded and no PR is opened.
+
+Automated runs share `runner.max_concurrent` with everything else, waiting in the queue rather than failing for lack of a slot, and each gets its agent's `budget_usd`.
+
 ---
 
 ## 8. Agents and skills (plugin)
@@ -562,11 +594,13 @@ src/apm/plugin/
     apm-implementer.md    ready leaf → worktree → commits → PR → attach delivery
     apm-feature-reviewer.md  review step → checks the feature branch against the feature's
                           description, criterion by criterion (read-only, json-schema)
+    apm-task-reviewer.md  task → pass, too_big (with a split) or unclear (read-only, json-schema)
   skills/
     apm-node-format/      node fields, body sections, handles, the rules, what follows from them
     apm-decompose/        what a good breakdown looks like: 3–7 children, no overlap,
                           explicit deps, testable acceptance, prefer sibling edges
     apm-deliver/          branch naming, trailer format, PR body, recording the delivery
+    apm-task-sizing/      what counts as a real line, the 50-line limit, how to split a task
   .mcp.json               { "mcpServers": { "apm": { "command": "apm", "args": ["mcp"] } } }
 ```
 
