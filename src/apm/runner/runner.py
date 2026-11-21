@@ -34,11 +34,18 @@ from apm.core.feature_review import (
 )
 from apm.core.feature_review import parse_review as parse_feature_review
 from apm.core.files import read_body
+from apm.core.ids import handle
 from apm.core.lock import CACHE_DIR, pid_alive
 from apm.core.model import NodeId, Status
 from apm.core.ops import set_status
 from apm.core.project import Project, load_graph
 from apm.core.proposals import ProposalError, parse_decomposition, parse_review
+from apm.core.review_lock import (
+    read_review_lock,
+    release_review_lock,
+    take_review_lock,
+    under_review,
+)
 from apm.core.store import PROJECT, Proposal, Run, RunStatus, Store, TaskReview, content_fingerprint
 from apm.core.task_verdict import TaskVerdict, VerdictRefused, parse_task_verdict
 from apm.runner.agents import (
@@ -133,6 +140,9 @@ class Runner:
             # Started on a feature, it reviews through the feature's review step.
             node_id = review_subject(graph, node_id)[1] or node_id
         check_startable(spec, graph, node_id)
+        locked = spec.name in ("apm-implementer", "apm-decomposer")
+        if locked and under_review(self.project.apm_dir, node_id):
+            raise RunRefused(f"{handle(node_id)} is under review: wait for its review to finish")
         if spec.name == FEATURE_REVIEWER:
             check_reviewable(graph, node_id, branch)
         config = read_config(self.project.apm_dir)
@@ -143,6 +153,9 @@ class Runner:
         pipeline = self._pipeline(
             spec, config, run, critic=critic, worktree=worktree, message=message, branch=branch
         )
+        if spec.name == TASK_REVIEWER:
+            # Held for the pipeline's whole life: `_schedule` releases it however that ends.
+            take_review_lock(self.project.apm_dir, node_id, run.id)
         self._schedule(run, pipeline)
         return run
 
@@ -275,6 +288,8 @@ class Runner:
 
         def finished(_: asyncio.Task[None]) -> None:
             self._tasks.pop(slot, None)
+            if run.agent == TASK_REVIEWER:
+                self._release_review_lock(run)
             for run_id in [r for r, s in self._slots.items() if s == slot]:
                 del self._slots[run_id]
             # A pipeline cancelled before its first step never got to record how it ended.
@@ -820,6 +835,21 @@ class Runner:
                 self.store.finish_run(
                     run.id, "failed", error="interrupted: its host process exited"
                 )
+                if run.agent == TASK_REVIEWER:
+                    self._release_review_lock(run, record_error=True)
+
+    def _release_review_lock(self, run: Run, *, record_error: bool = False) -> None:
+        """Releases the task's review lock if `run` holds it. `record_error` also stores an
+        `error` review of the task's current content, for a run cut off before its verdict.
+        """
+        apm_dir = self.project.apm_dir
+        if (read_review_lock(apm_dir, run.node_id) or {}).get("run") == run.id:
+            release_review_lock(apm_dir, run.node_id)
+        graph = load_graph(self.project) if record_error else None
+        if graph is not None and run.node_id in graph:
+            fingerprint = content_fingerprint(graph[run.node_id], read_body(apm_dir, run.node_id))
+            data = {"error": "interrupted: its host process exited"}
+            self.store.add_task_review(TaskReview(run.node_id, fingerprint, "error", data, run.id))
 
     def _emit(self, event: dict[str, Any]) -> None:
         with contextlib.suppress(Exception):  # a broken listener must not break a run

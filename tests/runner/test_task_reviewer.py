@@ -1,5 +1,6 @@
 """The task reviewer: registered read-only, with a prompt, and refused where it doesn't apply."""
 
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -11,9 +12,11 @@ from apm.core.model import NodeId
 from apm.core.ops import NewNode, create_nodes, edit_body
 from apm.core.project import Project, load_graph
 from apm.core.proposals import accept_proposal
-from apm.core.store import content_fingerprint
+from apm.core.review_lock import TaskUnderReview, review_lock_path, take_review_lock, under_review
+from apm.core.store import Store, content_fingerprint
 from apm.core.task_verdict import TASK_VERDICT_SCHEMA
 from apm.runner.agents import AGENTS, EDIT_TOOLS, RunRefused, build_command, build_prompt
+from apm.runner.runner import Runner
 from tests.core.test_feature_review import feature
 from tests.runner.fake import FakeClaude
 from tests.runner.test_runner import Harness, option
@@ -110,12 +113,14 @@ async def test_the_fingerprint_is_taken_when_the_run_starts(
     before = fingerprint(project, task)
     run = harness.runner.start("apm-task-reviewer", task)
     request = await harness.next_request()
-    edit_body(project, task, "## Intent\n\nSomething else entirely.\n")
+    # The review lock refuses edits meanwhile, so the verdict is for exactly what was shown.
+    with pytest.raises(TaskUnderReview):
+        edit_body(project, task, "## Intent\n\nSomething else entirely.\n")
     await harness.runner.answer(request["id"], allow=True)
     await harness.runner.wait(run.id)
     stored = harness.store.latest_task_review(task)
     assert stored is not None
-    assert stored.fingerprint == before != fingerprint(project, task)
+    assert stored.fingerprint == before == fingerprint(project, task)
 
 
 async def test_too_big_proposes_a_split_that_turns_the_task_into_a_feature(
@@ -171,3 +176,77 @@ async def test_malformed_output_or_a_failed_run_is_stored_as_an_error(
     assert level == "warning"
     assert reason in text
     assert harness.store.list_proposals() == []
+
+
+async def test_it_holds_the_lock_until_it_succeeds(
+    project: Project, fake_claude: FakeClaude
+) -> None:
+    harness = Harness(project)
+    task = create_nodes(project, [NewNode(title="Parse lines")]).created[0]
+    run = harness.runner.start("apm-task-reviewer", task)
+    assert under_review(project.apm_dir, task)
+    await harness.runner.wait(run.id)
+    assert harness.store.get_run(run.id).status == "succeeded"
+    assert not under_review(project.apm_dir, task)
+
+
+async def test_it_releases_the_lock_when_it_fails(
+    project: Project, fake_claude: FakeClaude
+) -> None:
+    fake_claude.mode("fail")
+    harness = Harness(project)
+    task = create_nodes(project, [NewNode(title="Parse lines")]).created[0]
+    run = harness.runner.start("apm-task-reviewer", task)
+    assert under_review(project.apm_dir, task)
+    await harness.runner.wait(run.id)
+    assert harness.store.get_run(run.id).status == "failed"
+    assert not under_review(project.apm_dir, task)
+
+
+async def test_it_releases_the_lock_when_cancelled(
+    project: Project, fake_claude: FakeClaude
+) -> None:
+    fake_claude.mode("hang")
+    harness = Harness(project)
+    task = create_nodes(project, [NewNode(title="Parse lines")]).created[0]
+    run = harness.runner.start("apm-task-reviewer", task)
+    while not harness.store.list_events(run.id):  # wait until it is really running
+        await asyncio.sleep(0.02)
+    assert under_review(project.apm_dir, task)
+    await asyncio.wait_for(harness.runner.cancel(run.id), 10)
+    assert harness.store.get_run(run.id).status == "cancelled"
+    assert not under_review(project.apm_dir, task)
+
+
+@pytest.mark.parametrize("agent", ["apm-implementer", "apm-decomposer"])
+async def test_building_a_task_under_review_is_refused(project: Project, agent: str) -> None:
+    harness = Harness(project)
+    task = create_nodes(project, [NewNode(title="Parse lines")]).created[0]
+    take_review_lock(project.apm_dir, task, "some-run")
+    with pytest.raises(RunRefused, match=f"{handle(task)} is under review"):
+        harness.runner.start(agent, task)
+    assert harness.store.list_runs() == []
+
+
+def test_a_restart_releases_the_lock_of_a_killed_review(project: Project) -> None:
+    store = Store(project.apm_dir)
+    task = create_nodes(project, [NewNode(title="Parse lines")]).created[0]
+    dead = 2**22 + 12345
+    orphan = store.create_run(node_id=task, agent="apm-task-reviewer", pid=dead)
+    take_review_lock(project.apm_dir, task, orphan.id, pid=dead)
+    Runner(project, store)  # `apm serve` starting again
+    assert not review_lock_path(project.apm_dir, task).exists()
+    assert store.get_run(orphan.id).status == "failed"
+    review = store.latest_task_review(task)
+    assert review is not None
+    assert (review.verdict, review.run_id) == ("error", orphan.id)
+
+
+def test_a_restart_leaves_a_lock_another_run_holds(project: Project) -> None:
+    store = Store(project.apm_dir)
+    task = create_nodes(project, [NewNode(title="Parse lines")]).created[0]
+    orphan = store.create_run(node_id=task, agent="apm-task-reviewer", pid=2**22 + 12345)
+    take_review_lock(project.apm_dir, task, "a-live-run")
+    Runner(project, store)
+    assert under_review(project.apm_dir, task)
+    assert store.get_run(orphan.id).status == "failed"
