@@ -154,9 +154,16 @@ def commit() -> None:
 
 @app.command("reconcile")
 @command
-def reconcile_() -> None:
-    """Mark in-progress nodes done when their pull request or commits have merged."""
-    lines = describe(reconcile(find_project()))
+def reconcile_(
+    retarget: Annotated[
+        bool,
+        typer.Option(
+            "--retarget", help="Point open PRs whose base has landed at the default branch."
+        ),
+    ] = False,
+) -> None:
+    """Mark in-progress nodes done once their work is on the default branch."""
+    lines = describe(reconcile(find_project(), retarget=retarget))
     for line in lines:
         typer.echo(line)
     if not lines:

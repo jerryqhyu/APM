@@ -1,14 +1,15 @@
-import json
-import os
+import shutil
 from pathlib import Path
 
 import pytest
 
+from apm.core.files import read_body
 from apm.core.git import git, log
 from apm.core.model import Status
 from apm.core.ops import NewNode, attach_delivery, create_nodes, set_status
 from apm.core.project import Project, load_graph
-from apm.core.reconcile import describe, reconcile
+from apm.core.reconcile import PrRef, Report, describe, parse_pr_url, read_pr, reconcile
+from tests.core.fake_gh import FakeGh
 
 
 def code_commit(project: Project, name: str, branch: str | None = None) -> str:
@@ -22,12 +23,25 @@ def code_commit(project: Project, name: str, branch: str | None = None) -> str:
     return git(code, ["rev-parse", "HEAD"]).strip()
 
 
+def checkout(project: Project, branch: str) -> None:
+    git(project.code_dir, ["checkout", "--quiet", branch])
+
+
+def head(project: Project) -> str:
+    return git(project.code_dir, ["rev-parse", "HEAD"]).strip()
+
+
 @pytest.fixture
 def code(project: Project) -> Project:
     """The project's code directory as a git repo on `main` with one commit."""
     git(project.code_dir, ["init", "--quiet", "-b", "main"])
     code_commit(project, "README.md")
     return project
+
+
+@pytest.fixture
+def gh(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> FakeGh:
+    return FakeGh(tmp_path, monkeypatch)
 
 
 def delivered(project: Project, title: str, **delivery: object) -> str:
@@ -38,21 +52,15 @@ def delivered(project: Project, title: str, **delivery: object) -> str:
     return node
 
 
-def fake_gh(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, states: dict[str, str]) -> None:
-    """Puts a `gh` on PATH that answers `gh pr view <url> --json state` from `states`."""
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
-    script = bin_dir / "gh"
-    script.write_text(
-        "#!/bin/sh\n"
-        'case "$3" in\n'
-        + "".join(
-            f"  {url}) echo '{json.dumps({'state': state})}';;\n" for url, state in states.items()
-        )
-        + "  *) echo 'no such pr' >&2; exit 1;;\nesac\n"
-    )
-    script.chmod(0o755)
-    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+def done(report: Report) -> list[tuple[str, str]]:
+    return [(r.node_id, r.reason) for r in report.done]
+
+
+def found(report: Report) -> list[tuple[str, str, str]]:
+    return [(f.node_id, f.kind, f.message) for f in report.findings]
+
+
+# --- commits ---
 
 
 def test_a_node_whose_commits_are_on_main_becomes_done(code: Project) -> None:
@@ -60,46 +68,210 @@ def test_a_node_whose_commits_are_on_main_becomes_done(code: Project) -> None:
     merged = delivered(code, "Merged", branch="apm/feature", commits=[sha])
     other = code_commit(code, "other.py", branch="apm/other")
     unmerged = delivered(code, "Not merged", branch="apm/other", commits=[other])
-    git(code.code_dir, ["checkout", "--quiet", "main"])
+    checkout(code, "main")
     git(code.code_dir, ["merge", "--quiet", "--no-ff", "-m", "merge feature", "apm/feature"])
 
     result = reconcile(code)
-    assert [(r.node_id, r.reason) for r in result] == [(merged, "its commits are on main")]
+    assert done(result) == [(merged, "its commits are on main")]
     assert describe(result)[0].endswith("Merged: done (its commits are on main)")
     graph = load_graph(code)
     assert graph[merged].status is Status.DONE
     assert graph[unmerged].status is Status.IN_PROGRESS
     assert log(code.apm_dir)[0].subject.startswith("status ")
     assert "Reconciled: its commits are on main." in git(code.apm_dir, ["log", "-1", "--format=%b"])
-    assert reconcile(code) == []  # nothing left to do
+    assert reconcile(code) == Report()  # nothing left to do
 
 
-def test_a_merged_pull_request_wins_over_commit_ancestry(
-    code: Project, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    # A squash merge: the delivery commit itself never reaches main, but the PR is merged.
-    sha = code_commit(code, "squashed.py", branch="apm/squashed")
-    git(code.code_dir, ["checkout", "--quiet", "main"])
-    merged = delivered(code, "Squashed", commits=[sha], pr="https://example.com/pull/1")
-    still_open = delivered(code, "Open", pr="https://example.com/pull/2")
-    fake_gh(
-        tmp_path,
-        monkeypatch,
-        {"https://example.com/pull/1": "MERGED", "https://example.com/pull/2": "OPEN"},
-    )
-    assert [(r.node_id, r.reason) for r in reconcile(code)] == [(merged, "PR merged")]
+def test_a_squash_merge_without_a_pr_is_found_by_its_changes(code: Project) -> None:
+    first = code_commit(code, "one.py", branch="apm/squashed")
+    second = code_commit(code, "two.py")
+    node = delivered(code, "Squashed", branch="apm/squashed", commits=[first, second])
+    checkout(code, "main")
+    git(code.code_dir, ["merge", "--quiet", "--squash", "apm/squashed"])
+    git(code.code_dir, ["commit", "--quiet", "-m", "Squashed (#7)"])
+    assert done(reconcile(code)) == [(node, "its changes are on main (squashed or rebased)")]
+
+
+def test_a_rebased_delivery_without_a_pr_is_found_by_its_changes(code: Project) -> None:
+    sha = code_commit(code, "rebased.py", branch="apm/rebased")
+    node = delivered(code, "Rebased", branch="apm/rebased", commits=[sha])
+    checkout(code, "main")
+    code_commit(code, "meanwhile.py")  # main moved on, so a cherry-pick gets a new SHA
+    git(code.code_dir, ["cherry-pick", sha])
+    assert head(code) != sha
+    assert done(reconcile(code)) == [(node, "its changes are on main (squashed or rebased)")]
+
+
+def test_different_changes_with_the_same_files_do_not_count(code: Project) -> None:
+    sha = code_commit(code, "feature.py", branch="apm/feature")
+    node = delivered(code, "Not merged", branch="apm/feature", commits=[sha])
+    checkout(code, "main")
+    (code.code_dir / "feature.py").write_text("something else")
+    git(code.code_dir, ["add", "feature.py"])
+    git(code.code_dir, ["commit", "--quiet", "-m", "other work"])
+    assert reconcile(code) == Report()
+    assert load_graph(code)[node].status is Status.IN_PROGRESS
+
+
+# --- pull requests ---
+
+
+def test_a_pr_merged_into_main_makes_the_node_done(code: Project, gh: FakeGh) -> None:
+    merged = delivered(code, "Merged", branch="apm/a", pr=gh.add(20, merged=True, state="closed"))
+    still_open = delivered(code, "Open", branch="apm/b", pr=gh.add(21))
+    assert done(reconcile(code)) == [(merged, "PR #20 merged into main")]
     assert load_graph(code)[still_open].status is Status.IN_PROGRESS
+    assert ["api", "repos/o/r/pulls/20"] in gh.calls  # REST, not `gh pr view`
+    assert not any(call[0] == "pr" for call in gh.calls)
 
 
-def test_nodes_that_cannot_be_judged_are_left_alone(
-    code: Project, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_a_pr_merged_into_a_stack_branch_is_not_done_and_says_so_once(
+    code: Project, gh: FakeGh
 ) -> None:
-    fake_gh(tmp_path, monkeypatch, {})  # gh knows nothing
-    unknown_pr = delivered(code, "Unknown PR", pr="https://example.com/pull/9")
+    code_commit(code, "base.py", branch="apm/base")
+    base = delivered(code, "Base", branch="apm/base", pr=gh.add(20, base="main"))
+    sha = code_commit(code, "top.py", branch="apm/top")
+    checkout(code, "apm/base")
+    git(code.code_dir, ["merge", "--quiet", "--no-ff", "-m", "merge top", "apm/top"])
+    url = gh.add(21, base="apm/base", state="closed", merged=True, merge_commit=head(code))
+    top = delivered(code, "Top", branch="apm/top", commits=[sha], pr=url)
+    checkout(code, "main")
+
+    message = "PR #21 merged into apm/base (#20's branch), not yet on main"
+    assert found(reconcile(code)) == [(top, "merged-elsewhere", message)]
+    assert load_graph(code)[top].status is Status.IN_PROGRESS
+    assert load_graph(code)[base].status is Status.IN_PROGRESS
+    body = read_body(code.apm_dir, top)
+    assert f"**Reconcile:** {message}." in body
+    commits = len(log(code.apm_dir))
+
+    assert found(reconcile(code)) == [(top, "merged-elsewhere", message)]  # still reported
+    assert read_body(code.apm_dir, top) == body  # but the note isn't written twice
+    assert len(log(code.apm_dir)) == commits
+
+
+def test_a_stack_branch_that_lands_on_main_brings_its_merged_pr_with_it(
+    code: Project, gh: FakeGh
+) -> None:
+    code_commit(code, "base.py", branch="apm/base")
+    code_commit(code, "top.py", branch="apm/top")
+    checkout(code, "apm/base")
+    git(code.code_dir, ["merge", "--quiet", "--no-ff", "-m", "merge top", "apm/top"])
+    merge = head(code)
+    url = gh.add(21, base="apm/base", state="closed", merged=True, merge_commit=merge)
+    top = delivered(code, "Top", branch="apm/top", pr=url)
+    checkout(code, "main")
+    git(code.code_dir, ["merge", "--quiet", "--no-ff", "-m", "merge base", "apm/base"])
+    assert done(reconcile(code)) == [(top, "PR #21 merged into apm/base, which is now on main")]
+
+
+def test_a_pr_closed_without_merging_is_reported(code: Project, gh: FakeGh) -> None:
+    node = delivered(code, "Abandoned", branch="apm/x", pr=gh.add(30, state="closed"))
+    assert found(reconcile(code)) == [(node, "closed", "PR #30 was closed without merging")]
+    assert load_graph(code)[node].status is Status.IN_PROGRESS
+
+
+# --- retargeting ---
+
+
+def stacked_pair(code: Project, gh: FakeGh) -> tuple[str, str]:
+    """#20 (apm/base → main) is merged and done; #21 (apm/top) still targets apm/base."""
+    code_commit(code, "base.py", branch="apm/base")
+    base = delivered(code, "Base", branch="apm/base", pr=gh.add(20, merged=True, state="closed"))
+    code_commit(code, "top.py", branch="apm/top")
+    top = delivered(code, "Top", branch="apm/top", pr=gh.add(21, base="apm/base"))
+    checkout(code, "main")
+    return base, top
+
+
+def test_an_open_pr_on_a_landed_branch_is_reported_for_retargeting(
+    code: Project, gh: FakeGh
+) -> None:
+    base, top = stacked_pair(code, gh)
+    result = reconcile(code)
+    assert done(result) == [(base, "PR #20 merged into main")]
+    assert found(result) == [
+        (
+            top,
+            "retarget",
+            "PR #21 still targets apm/base (#20's branch), which has landed: retarget it to main",
+        )
+    ]
+    assert gh.pr(21)["base"]["ref"] == "apm/base"  # only reported
+    assert not any("PATCH" in call for call in gh.calls)
+
+
+def test_retarget_points_the_pr_at_the_default_branch(code: Project, gh: FakeGh) -> None:
+    _, top = stacked_pair(code, gh)
+    result = reconcile(code, retarget=True)
+    assert found(result) == [
+        (top, "retargeted", "PR #21 retargeted from apm/base (#20's branch) to main")
+    ]
+    assert ["api", "-X", "PATCH", "repos/o/r/pulls/21", "-f", "base=main"] in gh.calls
+    assert gh.pr(21)["base"]["ref"] == "main"
+    assert found(reconcile(code)) == []  # nothing left to retarget
+
+
+def test_an_open_pr_on_a_branch_that_has_not_landed_is_left_alone(
+    code: Project, gh: FakeGh
+) -> None:
+    code_commit(code, "base.py", branch="apm/base")
+    delivered(code, "Base", branch="apm/base", pr=gh.add(20))
+    code_commit(code, "top.py", branch="apm/top")
+    delivered(code, "Top", branch="apm/top", pr=gh.add(21, base="apm/base"))
+    checkout(code, "main")
+    assert reconcile(code, retarget=True) == Report()
+
+
+# --- reading pull requests ---
+
+
+def test_pr_urls_parse_into_rest_paths() -> None:
+    ref = parse_pr_url("https://github.com/jerryqhyu/APM/pull/21")
+    assert ref == PrRef("github.com", "jerryqhyu", "APM", 21)
+    assert ref.api_path == "repos/jerryqhyu/APM/pulls/21"
+    assert ref.host_args == []
+    enterprise = parse_pr_url("https://git.example.com/team/app/pull/3/files")
+    assert enterprise is not None
+    assert enterprise.host_args == ["--hostname", "git.example.com"]
+    assert parse_pr_url("https://example.com/merge_requests/3") is None
+
+
+def test_read_pr_reads_state_base_and_merge_commit(code: Project, gh: FakeGh) -> None:
+    url = gh.add(5, base="apm/base", state="closed", merged=True, merge_commit="abc123")
+    pr = read_pr(code.code_dir, url)
+    assert pr is not None
+    assert (pr.number, pr.state, pr.merged, pr.base, pr.merge_commit) == (
+        5,
+        "closed",
+        True,
+        "apm/base",
+        "abc123",
+    )
+    assert read_pr(code.code_dir, "https://github.com/o/r/pull/404") is None  # gh says Not Found
+    assert read_pr(code.code_dir, "not a url") is None
+
+
+def test_nodes_that_cannot_be_judged_are_left_alone(code: Project, gh: FakeGh) -> None:
+    unknown_pr = delivered(code, "Unknown PR", pr="https://github.com/o/r/pull/9")
     no_commits = delivered(code, "Branch only", branch="apm/x")
     missing = delivered(code, "Commit not in this clone", commits=["abcdef1234567"])
     (todo,) = create_nodes(code, [NewNode(title="Not started")]).created
-    assert reconcile(code) == []
+    assert reconcile(code) == Report()
     graph = load_graph(code)
     assert {graph[n].status for n in (unknown_pr, no_commits, missing)} == {Status.IN_PROGRESS}
     assert graph[todo].status is Status.TODO
+
+
+def test_without_gh_a_pr_node_falls_back_to_its_commits(
+    code: Project, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    only_git = tmp_path / "only-git"  # a PATH with git and no `gh`
+    only_git.mkdir()
+    (only_git / "git").symlink_to(shutil.which("git") or "/usr/bin/git")
+    monkeypatch.setenv("PATH", str(only_git))
+    sha = code_commit(code, "feature.py", branch="apm/feature")
+    node = delivered(code, "Merged", commits=[sha], pr="https://github.com/o/r/pull/1")
+    checkout(code, "main")
+    git(code.code_dir, ["merge", "--quiet", "--no-ff", "-m", "merge", "apm/feature"])
+    assert done(reconcile(code)) == [(node, "its commits are on main")]

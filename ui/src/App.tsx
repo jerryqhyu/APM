@@ -266,8 +266,9 @@ export function App() {
       }),
     reconcile: () =>
       quietly(async () => {
-        const result = await api<{ done: string[] }>("/api/reconcile", { method: "POST" });
-        toast(result.done.length ? result.done.join(" · ") : "Nothing has merged since last time.");
+        const result = await api<{ done: string[]; findings: string[] }>("/api/reconcile", { method: "POST" });
+        const lines = [...result.done, ...result.findings];
+        toast(lines.length ? lines.join(" · ") : "Nothing has reached the default branch since last time.");
       }),
     commitEdits: () =>
       quietly(async () => {

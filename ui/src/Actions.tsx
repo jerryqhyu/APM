@@ -72,7 +72,7 @@ export function Actions({
           <button onClick={handlers.check} title="Look for broken rules and warnings">
             Check plan
           </button>
-          <button onClick={handlers.reconcile} title="Mark nodes done whose pull request or commits have merged">
+          <button onClick={handlers.reconcile} title="Mark nodes done whose work is on the default branch, and report stacked PRs to retarget">
             Reconcile
           </button>
           <button onClick={handlers.commitEdits} title="Commit edits you made by hand in the .apm folder">
