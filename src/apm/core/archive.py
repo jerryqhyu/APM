@@ -9,6 +9,7 @@ An archive holds:
 
 Only those files are written. Machine-specific state stays behind: the code repo's `.apm-link`,
 and everything under `.apm/.cache/` (the server token, the write lock, the database itself).
+Task reviews never go in, even with runs: an imported project's tasks are reviewed again.
 
 `import_archive` restores such a file into a folder with no plan, all or nothing.
 """
