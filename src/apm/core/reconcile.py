@@ -6,13 +6,12 @@ This is plain code, not an agent: the question "did it merge?" has a definite an
 - Otherwise it is merged when every delivery commit is on the code repo's default branch.
 """
 
-import json
-import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
 from apm.core.config import read_config
-from apm.core.git import GitError, git, is_ancestor, rev_parse
+from apm.core.delivery import default_branch, pr_state
+from apm.core.git import GitError, is_ancestor
 from apm.core.ids import handle
 from apm.core.model import Delivery, NodeId, Status
 from apm.core.ops import set_status
@@ -50,12 +49,12 @@ def reconcile(project: Project, *, actor: str = "user") -> list[Reconciled]:
 
 def _merged(repo_dir: Path, delivery: Delivery) -> str | None:
     if delivery.pr:
-        state = _pr_state(repo_dir, delivery.pr)
+        state = pr_state(repo_dir, delivery.pr)
         if state is not None:
             return "PR merged" if state == "MERGED" else None
     if not delivery.commits:
         return None
-    target = _default_branch(repo_dir)
+    target = default_branch(repo_dir)
     if target is None:
         return None
     try:
@@ -63,41 +62,6 @@ def _merged(repo_dir: Path, delivery: Delivery) -> str | None:
     except GitError:  # a commit this clone doesn't have
         return None
     return f"its commits are on {target.removeprefix('origin/')}" if merged else None
-
-
-def _pr_state(repo_dir: Path, url: str) -> str | None:
-    """`OPEN`, `MERGED` or `CLOSED`, or None if `gh` can't tell us (not installed, not signed
-    in, offline).
-    """
-    try:
-        result = subprocess.run(
-            ["gh", "pr", "view", url, "--json", "state"],
-            cwd=repo_dir,
-            capture_output=True,
-            text=True,
-            timeout=30,
-            check=False,
-        )
-        return json.loads(result.stdout)["state"] if result.returncode == 0 else None
-    except OSError, subprocess.TimeoutExpired, ValueError, KeyError, TypeError:
-        return None
-
-
-def _default_branch(repo_dir: Path) -> str | None:
-    """The remote's default branch if there is a remote, else a local `main` or `master`."""
-    try:
-        ref = git(repo_dir, ["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"])
-        if ref.strip():
-            return ref.strip()
-    except GitError:
-        pass
-    for name in ("origin/main", "origin/master", "main", "master"):
-        try:
-            if rev_parse(repo_dir, name) is not None:
-                return name
-        except GitError:
-            return None
-    return None
 
 
 def describe(items: list[Reconciled]) -> list[str]:

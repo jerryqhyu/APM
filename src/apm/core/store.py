@@ -195,6 +195,14 @@ class Store:
             )
         return self.get_run(run_id)
 
+    def set_prompt(self, run_id: str, prompt: str) -> Run:
+        """Replaces a run's first message before it is sent: the runner adds what it works out
+        once the run has started (an implementer's base branch).
+        """
+        with self._db() as db:
+            db.execute("UPDATE runs SET prompt = ? WHERE id = ?", (prompt, run_id))
+        return self.get_run(run_id)
+
     def get_run(self, run_id: str) -> Run:
         with self._db() as db:
             row = db.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()

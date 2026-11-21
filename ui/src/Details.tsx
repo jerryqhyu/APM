@@ -91,6 +91,14 @@ export function NodeDetails({ detail, nodes, actions }: { detail: NodeDetail; no
         <section>
           <h3>Delivery</h3>
           <dl className="delivery">
+            {!detail.delivery.pr && detail.delivery.branch && (
+              <>
+                <dt>Pull request</dt>
+                <dd className="no-pr" title="The branch is delivered, but no pull request is recorded. The Notes say why.">
+                  None yet
+                </dd>
+              </>
+            )}
             {detail.delivery.pr && (
               <>
                 <dt>Pull request</dt>
