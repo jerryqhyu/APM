@@ -54,7 +54,7 @@ export function NodeDetails({ detail, nodes, actions }: { detail: NodeDetail; no
       </div>
       {review && !["none", "running"].includes(review.state) && (
         <div className={cx("callout", review.state !== "pass" && "warn")}>
-          <strong>{REVIEW_LABEL[review.state]}</strong> {review.reason ?? review.summary}
+          <strong>{REVIEW_LABEL[review.state]}</strong> {review.error ?? review.summary}
           {review.missing && review.missing.length > 0 && <ul>{review.missing.map((m) => <li key={m}>{m}</li>)}</ul>}
         </div>
       )}

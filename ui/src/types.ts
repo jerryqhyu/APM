@@ -154,7 +154,7 @@ export interface NodeDetail extends NodeView {
   proposals: Proposal[];
   under_review: boolean;
   /** Null while task review is off. */
-  review: { state: "none" | "running" | "stale" | "pass" | "too_big" | "unclear" | "error"; summary?: string; missing?: string[]; reason?: string } | null;
+  review: { state: "none" | "running" | "stale" | "pass" | "too_big" | "unclear" | "error"; summary?: string; missing?: string[]; error?: string } | null;
   implement_blocker: string | null;
 }
 
