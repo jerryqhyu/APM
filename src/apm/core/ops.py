@@ -13,6 +13,7 @@ from apm.core.model import Delivery, Kind, Node, NodeId, Status
 from apm.core.mutate import Draft, Mutation, OpError, mutate
 from apm.core.ndjson import canonical_ids
 from apm.core.project import Project
+from apm.core.review_lock import refuse_under_review
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -41,6 +42,7 @@ def create_nodes(
     """Creates a batch of nodes in one commit. `Mutation.created` lists their ids in input order."""
 
     def apply(draft: Draft) -> str:
+        refuse_under_review(project.apm_dir, (new.parent for new in nodes))
         created = _create(draft, nodes)
         if len(created) == 1:
             return f"{handle(created[0])}: {draft[created[0]].title}"
@@ -62,6 +64,7 @@ def decompose(
 
     def apply(draft: Draft) -> str:
         draft[parent]
+        refuse_under_review(project.apm_dir, [parent])
         created = _create(draft, [replace(child, parent=parent) for child in children])
         draft.touch(parent)
         return f"{handle(parent)}: {_count(len(created), 'child', 'children')}"
@@ -114,6 +117,7 @@ def update_node(
 
     def apply(draft: Draft) -> str:
         node = draft[node_id]
+        refuse_under_review(project.apm_dir, [node_id])
         if kind is not None and kind != node.kind and Kind.REVIEW in (kind, node.kind):
             raise OpError(
                 f"{handle(node_id)}: review steps are APM's to add and remove. To skip a"
@@ -134,6 +138,7 @@ def edit_body(
     project: Project, node_id: NodeId, text: str, *, actor: str = "user", run: str | None = None
 ) -> Mutation:
     def apply(draft: Draft) -> str:
+        refuse_under_review(project.apm_dir, [node_id])
         draft.set_body(node_id, text)
         return handle(node_id)
 
@@ -171,6 +176,7 @@ def move_node(
             draft[parent]
         if draft[node_id].kind is Kind.REVIEW:
             raise OpError(f"{handle(node_id)} is a review step: it stays with its feature")
+        refuse_under_review(project.apm_dir, [node_id, *draft.graph.descendants(node_id)])
         draft.put(replace(draft[node_id], parent=parent))
         return f"{handle(node_id)} → {'top' if parent is None else handle(parent)}"
 
@@ -193,6 +199,7 @@ def delete_node(
         title = draft[node_id].title
         _refuse_review_step(draft, node_id, "deleted")
         descendants = draft.graph.descendants(node_id)
+        refuse_under_review(project.apm_dir, [node_id, *descendants])
         if descendants and not recursive:
             children = draft.graph.children(node_id)
             tasks = [c for c in children if not draft.graph.is_review(c)]
@@ -237,6 +244,7 @@ def merge_nodes(
         if not doomed:
             raise OpError("nothing to merge: pick at least two nodes")
         group = {target, *doomed}
+        refuse_under_review(project.apm_dir, sorted(group))
         merged = [draft[n] for n in doomed]
         if any(n.kind is Kind.REVIEW for n in (keep, *merged)):
             raise OpError("a review step can't be merged: it belongs to its feature")

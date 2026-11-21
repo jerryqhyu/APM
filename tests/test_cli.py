@@ -19,6 +19,7 @@ from apm.core.archive import FORMAT_VERSION
 from apm.core.git import git, log
 from apm.core.ops import attach_delivery
 from apm.core.project import Project, find_project, load_graph
+from apm.core.review_lock import take_review_lock
 from apm.core.store import SCHEMA_VERSION, Store
 from apm.server.security import load_or_create_token
 from tests.runner.fake import FakeClaude
@@ -508,3 +509,10 @@ def test_help_lists_export_and_import() -> None:
         ("import", "Restore a project from an .apm.zip file into this folder."),
     ):
         assert any(name in line and description in line for line in lines), name
+
+
+def test_a_task_under_review_is_refused(cwd: Project) -> None:
+    node = add("Task")
+    take_review_lock(cwd.apm_dir, load_graph(cwd).resolve(node), "run-1")
+    assert f"error: {node} is under review" in apm("node", "set", node, "--title", "X", code=1)
+    apm("node", "status", node, "in_progress")

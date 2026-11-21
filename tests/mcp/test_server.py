@@ -10,6 +10,7 @@ from apm.core.ids import handle
 from apm.core.model import Delivery, Status
 from apm.core.ops import NewNode, attach_delivery, create_nodes, set_status
 from apm.core.project import Project, load_graph
+from apm.core.review_lock import take_review_lock
 from apm.mcp.server import SCOPE_ENV, Scope, build_server
 
 READ_TOOLS = {"apm_get_graph", "apm_get_node", "apm_search", "apm_ready", "apm_check"}
@@ -286,3 +287,11 @@ def test_a_subtree_is_one_create_call(project: Project) -> None:
     ]
     assert len(log(project.apm_dir)) == 2  # init + one commit
     assert "a title can't be blank" in session.refused("apm_update_node", node=feature, title=" ")
+
+
+def test_a_task_under_review_is_refused(plan: tuple[Project, str, str, str]) -> None:
+    project, _, first, _ = plan
+    take_review_lock(project.apm_dir, load_graph(project).resolve(first), "run-1")
+    session = Session(project)
+    assert f"{first} is under review" in session.refused("apm_update_node", node=first, title="X")
+    session.call("apm_set_status", node=first, status="in_progress")

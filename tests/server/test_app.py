@@ -16,6 +16,7 @@ from apm.core.ids import handle
 from apm.core.model import Status
 from apm.core.ops import NewNode, attach_delivery, create_nodes, set_status
 from apm.core.project import Project, load_graph
+from apm.core.review_lock import take_review_lock
 from apm.core.store import Store
 from apm.server.app import archive_name, create_app
 from apm.server.security import host_is_loopback, origin_allowed
@@ -585,3 +586,12 @@ def test_archive_names_are_safe_file_names() -> None:
     assert archive_name("My App/v2") == "My-App-v2.apm.zip"
     assert archive_name("../..") == "plan.apm.zip"
     assert archive_name("café") == "café.apm.zip"
+
+
+def test_a_task_under_review_is_refused_with_409(client: TestClient, project: Project) -> None:
+    node = client.post("/api/nodes", json={"title": "Task"}).json()["id"]
+    take_review_lock(project.apm_dir, load_graph(project).resolve(node), "run-1")
+    refused = client.patch(f"/api/nodes/{node}", json={"title": "X"})
+    assert refused.status_code == 409
+    assert "is under review" in refused.json()["error"]
+    assert client.patch(f"/api/nodes/{node}", json={"status": "in_progress"}).status_code == 200
