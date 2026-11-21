@@ -412,7 +412,7 @@ export function App() {
       </main>
 
       <aside className="side">
-        <Actions selected={selectedNodes} running={running} handlers={handlers} lookup={(id) => byId.get(id)} />
+        <Actions selected={selectedNodes} running={running} handlers={handlers} lookup={(id) => byId.get(id)} detail={detail} />
         <div className="tabs" role="tablist">
           <button role="tab" aria-selected={tab === "chat"} className={cx("tab", tab === "chat" && "active")} onClick={() => setTab("chat")}>
             Chat

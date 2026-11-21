@@ -1,7 +1,7 @@
 // The actions panel: every way to change the graph directly, for whatever is selected. One node,
 // several nodes, or (with nothing selected) the plan as a whole.
 
-import type { NodeView, Status } from "./types";
+import type { NodeDetail, NodeView, Status } from "./types";
 import { STATUS_LABEL, cx, stackedName } from "./util";
 
 export interface ActionHandlers {
@@ -29,8 +29,10 @@ export function Actions({
   running,
   handlers,
   lookup,
+  detail,
 }: {
   selected: NodeView[];
+  detail: NodeDetail | null;
   running: Set<string>;
   handlers: ActionHandlers;
   lookup: (id: string) => NodeView | undefined;
@@ -40,9 +42,16 @@ export function Actions({
   const sameStatus = selected.length > 0 && selected.every((n) => n.status === selected[0]!.status) ? selected[0]!.status : null;
 
   const heading = one ? one.title : selected.length ? `${selected.length} nodes selected` : "The whole plan";
+  // The server says whether a task is under review and why Implement can't start; the UI follows it.
+  const mine = one && detail?.id === one.id ? detail : null;
+  const locked = selected.some((n) => n.id === detail?.id && detail.under_review);
   const canImplement = one !== null && one.children === 0 && (one.ready || one.status === "in_progress");
   const implementHint = !one
     ? ""
+    : locked
+      ? "Under review: wait for its review to finish"
+      : mine?.implement_blocker
+        ? `Not yet: ${mine.implement_blocker}`
     : one.children > 0
       ? "Only a node with nothing inside it can be built directly"
       : one.blocked
@@ -52,7 +61,7 @@ export function Actions({
         : one.status === "done" || one.status === "dropped"
           ? `This node is ${STATUS_LABEL[one.status].toLowerCase()}`
           : "Claude builds this in its own worktree and opens a pull request";
-  const busy = one !== null && running.has(one.id);
+  const busy = one !== null && (running.has(one.id) || locked);
 
   // A feature is reviewed through its review step; the step itself shows the same button.
   const isStep = one?.kind === "review";
@@ -140,11 +149,13 @@ export function Actions({
                 <button onClick={() => handlers.add(one.parent)} title="Add a node next to this one">
                   Add sibling
                 </button>
-                <button onClick={handlers.rename}>Rename</button>
+                <button onClick={handlers.rename} disabled={locked}>
+                  Rename
+                </button>
                 <button onClick={() => handlers.toggleKind(one)} title="Work is something to build; a decision is a choice to make">
                   Make {one.kind === "work" ? "decision" : "work"}
                 </button>
-                <button onClick={() => handlers.move(one.id)} title="Put it inside another node">
+                <button onClick={() => handlers.move(one.id)} disabled={locked} title="Put it inside another node">
                   Move
                 </button>
                 <button onClick={() => handlers.link(one.id)} title="Say what this node needs first">
@@ -156,7 +167,7 @@ export function Actions({
               <>
                 <button
                   onClick={() => handlers.merge(ids)}
-                  disabled={selected.length < 2}
+                  disabled={selected.length < 2 || locked}
                   title={
                     selected.length < 2
                       ? "Select two or more nodes first: shift-click, or ⌘/ctrl-click"
@@ -165,7 +176,7 @@ export function Actions({
                 >
                   Merge
                 </button>
-                <button className="danger" onClick={() => handlers.remove(ids)}>
+                <button className="danger" onClick={() => handlers.remove(ids)} disabled={locked}>
                   Delete
                 </button>
               </>
@@ -183,10 +194,19 @@ export function Actions({
                   >
                     Decompose
                   </button>
+                  {one.children === 0 && one.status === "todo" && mine?.review && (
+                    <button
+                      onClick={() => handlers.runAgent("apm-task-reviewer", one.id)}
+                      disabled={busy}
+                      title="Claude checks that this task is small enough: at most about 50 lines of real code"
+                    >
+                      Review task
+                    </button>
+                  )}
                   {one.children === 0 && (
                     <button
                       onClick={() => handlers.runAgent("apm-implementer", one.id)}
-                      disabled={!canImplement || busy}
+                      disabled={!canImplement || busy || !!mine?.implement_blocker}
                       title={implementHint}
                     >
                       Implement

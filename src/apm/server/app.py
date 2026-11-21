@@ -31,8 +31,9 @@ from apm.core.mutate import commit_hand_edits
 from apm.core.project import Project, load_graph
 from apm.core.proposals import accept_proposal, close_orphaned, reject_proposal
 from apm.core.reconcile import Report, describe, reconcile
+from apm.core.review_lock import under_review
 from apm.core.store import PROJECT, Store
-from apm.core.task_review import implement_blocker
+from apm.core.task_review import implement_blocker, review_state
 from apm.core.views import all_nodes_view, level_json, node_history, node_ref, node_view, search
 from apm.runner.agents import AGENTS, MODES
 from apm.runner.auto import AutoQueue
@@ -199,15 +200,15 @@ def create_app(
 
     def node_detail(graph: Graph, node_id: NodeId) -> dict[str, Any]:
         state = graph.states[node_id]
+        config, body = read_config(project.apm_dir), read_body(project.apm_dir, node_id)
+        locked = under_review(project.apm_dir, node_id)
         return {
             **node_view(graph, node_id),
-            "body": read_body(project.apm_dir, node_id),
+            "body": body,
+            "under_review": locked,
+            "review": review_state(graph, store, config, node_id, body, locked),
             "implement_blocker": implement_blocker(
-                graph,
-                store,
-                read_config(project.apm_dir),
-                node_id,
-                partial(read_body, project.apm_dir),
+                graph, store, config, node_id, partial(read_body, project.apm_dir)
             ),
             "ancestors": [node_ref(graph, a) for a in reversed(graph.ancestors(node_id))],
             "links": {

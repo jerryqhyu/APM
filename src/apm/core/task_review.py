@@ -8,6 +8,7 @@ every entry point that starts reviews on its own.
 """
 
 from collections.abc import Callable
+from typing import Any
 
 from apm.core.config import ApmConfig
 from apm.core.graph import Graph
@@ -55,3 +56,19 @@ def implement_blocker(
     if latest.verdict != "pass":
         return f"this task's latest review says {latest.verdict}: fix it and review it again"
     return None
+
+
+def review_state(
+    graph: Graph, store: Store, config: ApmConfig, node_id: NodeId, body: str, running: bool
+) -> dict[str, Any] | None:
+    """What the UI shows of a task's review: `state` (none, running, pass, too_big, unclear,
+    error, or stale when the content changed since), plus what the reviewer returned. None while
+    `automation.task_review` is off.
+    """
+    if not config.automation.task_review:
+        return None
+    latest = store.latest_task_review(node_id)
+    if running or latest is None:
+        return {"state": "running" if running else "none"}
+    stale = latest.fingerprint != content_fingerprint(graph[node_id], body)
+    return {**latest.data, "state": "stale" if stale else latest.verdict, "verdict": latest.verdict}
