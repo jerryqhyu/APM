@@ -152,6 +152,10 @@ export interface NodeDetail extends NodeView {
   links: { depends_on: NodeRef[]; dependents: NodeRef[]; waiting_on: NodeRef[]; children: NodeRef[] };
   history: HistoryEntry[];
   proposals: Proposal[];
+  under_review: boolean;
+  /** Null while task review is off. */
+  review: { state: "none" | "running" | "stale" | "pass" | "too_big" | "unclear" | "error"; summary?: string; missing?: string[]; reason?: string } | null;
+  implement_blocker: string | null;
 }
 
 export interface Agent {

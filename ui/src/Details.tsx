@@ -15,8 +15,17 @@ export interface DetailActions {
   review: (proposal: Proposal) => void;
 }
 
+const REVIEW_LABEL: Record<string, string> = {
+  pass: "Review passed.",
+  too_big: "Too big to build as one task:",
+  unclear: "Too unclear to size. Missing:",
+  error: "The review failed:",
+  stale: "Changed since its last review: run Review task again.",
+};
+
 export function NodeDetails({ detail, nodes, actions }: { detail: NodeDetail; nodes: NodeView[]; actions: DetailActions }) {
   const state = stateOf(detail);
+  const review = detail.review;
   return (
     <article className="details">
       <div className="kicker">
@@ -41,7 +50,14 @@ export function NodeDetails({ detail, nodes, actions }: { detail: NodeDetail; no
             {detail.progress.done} of {detail.progress.total} done
           </span>
         )}
+        {detail.under_review && <span className="badge warn">Under review</span>}
       </div>
+      {review && !["none", "running"].includes(review.state) && (
+        <div className={cx("callout", review.state !== "pass" && "warn")}>
+          <strong>{REVIEW_LABEL[review.state]}</strong> {review.reason ?? review.summary}
+          {review.missing && review.missing.length > 0 && <ul>{review.missing.map((m) => <li key={m}>{m}</li>)}</ul>}
+        </div>
+      )}
 
       {detail.proposals.map((proposal) => (
         <div key={proposal.id} className="callout proposal">
