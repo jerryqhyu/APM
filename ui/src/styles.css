@@ -1424,6 +1424,33 @@ main {
   font-size: 12px;
 }
 
+.apm-notice {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 6px 0;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 13px;
+}
+
+.apm-notice.warn {
+  border-color: var(--warn);
+  background: var(--warn-subtle);
+}
+
+.apm-notice-who {
+  flex: none;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--fg-muted);
+}
+
+.apm-notice .markdown p {
+  margin: 0;
+}
+
 .turn-error {
   color: var(--bad);
   background: var(--bad-subtle);
@@ -1694,6 +1721,10 @@ main {
 .delivery dd {
   margin: 0;
   overflow-wrap: anywhere;
+}
+
+.delivery dd.no-pr {
+  color: var(--warn);
 }
 
 /* --- markdown --- */

@@ -277,6 +277,16 @@ function Turn({
             </div>
           );
         }
+        if (kind === "apm_notice") {
+          // A line from APM itself, after the agent's turn: e.g. the pull request it opened.
+          const level = String(event.data.level ?? "info");
+          return (
+            <div key={event.seq} className={cx("apm-notice", level === "warning" && "warn")}>
+              <span className="apm-notice-who">APM</span>
+              <Markdown text={String(event.data.text ?? "")} />
+            </div>
+          );
+        }
         return null;
       })}
       {!loaded && <p className="empty">Loading…</p>}
