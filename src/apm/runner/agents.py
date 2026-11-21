@@ -4,6 +4,7 @@ import json
 import os
 import re
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -148,8 +149,15 @@ class RunRefused(ApmError, ValueError):  # noqa: N818 (a refusal, not a failure)
     """The run can't start, for a reason the user can fix."""
 
 
-def check_startable(spec: AgentSpec, graph: Graph, node_id: NodeId) -> None:
-    """Raises `RunRefused` if `spec` shouldn't run on this node now."""
+def check_startable(
+    spec: AgentSpec,
+    graph: Graph,
+    node_id: NodeId,
+    implement_gate: Callable[[NodeId], str | None] | None = None,
+) -> None:
+    """Raises `RunRefused` if `spec` shouldn't run on this node now. `implement_gate` is
+    `implement_blocker` with the project's store, config and bodies bound.
+    """
     if node_id == PROJECT:
         if spec.needs_node:
             raise RunRefused(f"{spec.label} works on a node: pick one first")
@@ -173,6 +181,8 @@ def check_startable(spec: AgentSpec, graph: Graph, node_id: NodeId) -> None:
         raise RunRefused(f"not ready: waiting on {waiting}")
     if node.status in (Status.DONE, Status.DROPPED):
         raise RunRefused(f"this node is {node.status}")
+    if implement_gate is not None and (reason := implement_gate(node_id)):
+        raise RunRefused(reason)
 
 
 def check_mode(mode: str | None, config: ApmConfig) -> str:

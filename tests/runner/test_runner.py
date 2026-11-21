@@ -9,9 +9,9 @@ import pytest
 from apm.core.files import read_body
 from apm.core.ids import handle
 from apm.core.model import Status
-from apm.core.ops import NewNode, attach_delivery, create_nodes, set_status
+from apm.core.ops import NewNode, attach_delivery, create_nodes, set_status, update_node
 from apm.core.project import Project, load_graph
-from apm.core.store import Store
+from apm.core.store import ReviewVerdict, Store, TaskReview, content_fingerprint
 from apm.runner.agents import RunRefused
 from apm.runner.runner import Runner, RunnerBusy, _failure
 from tests.conftest import CodeRepo
@@ -25,6 +25,12 @@ class Harness:
         self.store = Store(project.apm_dir)
         self.events: list[dict[str, Any]] = []
         self.runner = Runner(project, self.store, self.events.append)
+
+    def review(self, node_id: str, verdict: ReviewVerdict = "pass") -> None:
+        """Records a task review of `node_id`'s current content."""
+        graph = load_graph(self.project)
+        fingerprint = content_fingerprint(graph[node_id], read_body(self.project.apm_dir, node_id))
+        self.store.add_task_review(TaskReview(node_id, fingerprint, verdict, {}))
 
     def types(self) -> list[str]:
         return [e["type"] for e in self.events]
@@ -392,6 +398,7 @@ async def test_the_implementer_gets_a_worktree_node_scope_and_extra_tools(
         + "runner:\n  permission_mode: acceptEdits\n  agents:\n    apm-implementer:\n"
         '      model: opus\n      budget_usd: 5\n      allowed_tools: ["Bash(uv run *)"]\n'
     )
+    harness.review(node)
     run = harness.runner.start("apm-implementer", node)
     await harness.runner.wait(run.id)
     assert harness.store.get_run(run.id).status == "succeeded"
@@ -422,6 +429,7 @@ async def test_work_stacked_on_a_delivered_dependency_can_be_implemented(
     ).created
     set_status(project, first, Status.IN_PROGRESS)
     attach_delivery(project, first, branch="apm/first", pr="https://github.com/o/r/pull/20")
+    harness.review(second)
     run = harness.runner.start("apm-implementer", second)
     await harness.runner.wait(run.id)
     assert harness.store.get_run(run.id).status == "succeeded"
@@ -453,6 +461,25 @@ async def test_runs_are_refused_when_they_cannot_start(harness: Harness, project
     with pytest.raises(RunRefused, match="unknown permission mode 'yolo'"):
         harness.runner.start("apm-assistant", first, mode="yolo")
     assert harness.store.list_runs() == []
+
+
+async def test_implement_needs_a_passing_review_of_the_current_content(
+    harness: Harness, project: Project, node: str
+) -> None:
+    with pytest.raises(RunRefused, match="has not been reviewed"):
+        harness.runner.start("apm-implementer", node)
+    for verdict in ("too_big", "unclear", "error"):
+        harness.review(node, verdict)
+        with pytest.raises(RunRefused, match=f"latest review says {verdict}"):
+            harness.runner.start("apm-implementer", node)
+    harness.review(node)
+    update_node(project, node, title="File I/O, renamed")  # the pass is for older content
+    with pytest.raises(RunRefused, match="has not been reviewed"):
+        harness.runner.start("apm-implementer", node)
+    harness.review(node)
+    run = harness.runner.start("apm-implementer", node)
+    await harness.runner.wait(run.id)
+    assert harness.store.get_run(run.id).status == "succeeded"
 
 
 async def test_runs_cut_off_by_a_dead_host_are_marked_failed(project: Project) -> None:
@@ -540,6 +567,7 @@ async def test_the_implementer_is_told_to_stack_on_its_dependency(
     harness: Harness, code_repo: CodeRepo, fake_claude: FakeClaude, fake_gh: FakeGh
 ) -> None:
     first, second = stacked_pair(code_repo)
+    harness.review(second)
     run = harness.runner.start("apm-implementer", second, "Keep it small.")
     await harness.runner.wait(run.id)
 
@@ -559,6 +587,7 @@ async def test_after_the_run_apm_opens_the_missing_pull_request(
     # As if the agent pushed its branch and recorded it, but couldn't open the PR.
     code_repo.push_branch("apm/second", base="apm/first")
     attach_delivery(code_repo.project, second, branch="apm/second")
+    harness.review(second)
     run = harness.runner.start("apm-implementer", second)
     await harness.runner.wait(run.id)
 
@@ -580,6 +609,7 @@ async def test_when_no_pull_request_can_be_opened_the_run_says_why(
     (node,) = create_nodes(code_repo.project, [NewNode(title="Solo")]).created
     attach_delivery(code_repo.project, node, branch="apm/solo")
     fake_gh.fail()
+    harness.review(node)
     run = harness.runner.start("apm-implementer", node)
     await harness.runner.wait(run.id)
 
@@ -600,6 +630,7 @@ async def test_a_run_that_delivered_nothing_says_so_in_the_chat_only(
     harness: Harness, node: str, fake_gh: FakeGh
 ) -> None:
     before = read_body(harness.project.apm_dir, node)
+    harness.review(node)
     run = harness.runner.start("apm-implementer", node)
     await harness.runner.wait(run.id)
     assert notices(harness, run.id) == [

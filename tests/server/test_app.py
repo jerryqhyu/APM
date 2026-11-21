@@ -138,6 +138,7 @@ def test_build_and_read_a_plan(client: TestClient, project: Project) -> None:
     ).json()
     assert commits(project) == 4  # init + one per node
     assert "Make it." in build["body"]
+    assert "not been reviewed" in build["implement_blocker"]  # the API reports the gate
     assert test["blocked"]
     assert test["links"]["waiting_on"][0]["title"] == "Build"
     assert [a["title"] for a in test["ancestors"]] == ["Ship v1"]

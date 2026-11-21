@@ -17,6 +17,7 @@ import os
 import signal
 from collections.abc import Callable, Coroutine
 from dataclasses import asdict, dataclass
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -47,6 +48,7 @@ from apm.core.review_lock import (
     under_review,
 )
 from apm.core.store import PROJECT, Proposal, Run, RunStatus, Store, TaskReview, content_fingerprint
+from apm.core.task_review import implement_blocker
 from apm.core.task_verdict import TaskVerdict, VerdictRefused, parse_task_verdict
 from apm.runner.agents import (
     AGENTS,
@@ -139,13 +141,17 @@ class Runner:
         if spec.name == FEATURE_REVIEWER and node_id in graph:
             # Started on a feature, it reviews through the feature's review step.
             node_id = review_subject(graph, node_id)[1] or node_id
-        check_startable(spec, graph, node_id)
+        # Under review says more than "not reviewed yet", so the lock is checked before the gate.
         locked = spec.name in ("apm-implementer", "apm-decomposer")
         if locked and under_review(self.project.apm_dir, node_id):
             raise RunRefused(f"{handle(node_id)} is under review: wait for its review to finish")
+        config = read_config(self.project.apm_dir)
+        body = partial(read_body, self.project.apm_dir)
+        check_startable(
+            spec, graph, node_id, partial(implement_blocker, graph, self.store, config, body=body)
+        )
         if spec.name == FEATURE_REVIEWER:
             check_reviewable(graph, node_id, branch)
-        config = read_config(self.project.apm_dir)
         mode = check_mode(mode, config)
         prompt = build_prompt(spec, graph, node_id, message)
         run = self._create_run(spec, node_id, prompt, mode=mode, config=config)
