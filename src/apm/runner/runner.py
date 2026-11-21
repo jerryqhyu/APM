@@ -17,6 +17,7 @@ import os
 import signal
 from collections.abc import Callable, Coroutine
 from dataclasses import asdict, dataclass
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -33,12 +34,14 @@ from apm.core.feature_review import (
     review_subject,
 )
 from apm.core.feature_review import parse_review as parse_feature_review
+from apm.core.files import read_body
 from apm.core.lock import CACHE_DIR, pid_alive
 from apm.core.model import NodeId, Status
 from apm.core.ops import set_status
 from apm.core.project import Project, load_graph
 from apm.core.proposals import ProposalError, parse_decomposition, parse_review
 from apm.core.store import PROJECT, Proposal, Run, RunStatus, Store
+from apm.core.task_review import implement_blocker
 from apm.runner.agents import (
     AGENTS,
     AgentSpec,
@@ -129,10 +132,13 @@ class Runner:
         if spec.name == FEATURE_REVIEWER and node_id in graph:
             # Started on a feature, it reviews through the feature's review step.
             node_id = review_subject(graph, node_id)[1] or node_id
-        check_startable(spec, graph, node_id)
+        config = read_config(self.project.apm_dir)
+        body = partial(read_body, self.project.apm_dir)
+        check_startable(
+            spec, graph, node_id, partial(implement_blocker, graph, self.store, config, body=body)
+        )
         if spec.name == FEATURE_REVIEWER:
             check_reviewable(graph, node_id, branch)
-        config = read_config(self.project.apm_dir)
         mode = check_mode(mode, config)
         prompt = build_prompt(spec, graph, node_id, message)
         run = self._create_run(spec, node_id, prompt, mode=mode, config=config)

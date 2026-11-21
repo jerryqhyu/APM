@@ -9,6 +9,7 @@ every entry point that starts reviews on its own.
 
 from collections.abc import Callable
 
+from apm.core.config import ApmConfig
 from apm.core.graph import Graph
 from apm.core.model import NodeId, Status
 from apm.core.store import Store, content_fingerprint
@@ -37,3 +38,20 @@ def due_task_reviews(graph: Graph, store: Store, body: Callable[[NodeId], str]) 
         and not graph.is_review(node_id)
         and needs_review(store, node_id, content_fingerprint(graph[node_id], body(node_id)))
     ]
+
+
+def implement_blocker(
+    graph: Graph, store: Store, config: ApmConfig, node_id: NodeId, body: Callable[[NodeId], str]
+) -> str | None:
+    """Why Implement may not start on this node now, or None: a To do task needs a passing
+    review of the content it has now, while `automation.task_review` is on. Every entry point
+    (UI, API, CLI, MCP, automation) goes through this, by way of `check_startable`.
+    """
+    if not config.automation.task_review or graph[node_id].status != Status.TODO:
+        return None
+    latest = store.latest_task_review(node_id)
+    if latest is None or latest.fingerprint != content_fingerprint(graph[node_id], body(node_id)):
+        return "this task's current content has not been reviewed: run Review task first"
+    if latest.verdict != "pass":
+        return f"this task's latest review says {latest.verdict}: fix it and review it again"
+    return None

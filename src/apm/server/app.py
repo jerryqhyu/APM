@@ -7,6 +7,7 @@ import shutil
 import tempfile
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from dataclasses import asdict
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +32,7 @@ from apm.core.project import Project, load_graph
 from apm.core.proposals import accept_proposal, close_orphaned, reject_proposal
 from apm.core.reconcile import Report, describe, reconcile
 from apm.core.store import PROJECT, Store
+from apm.core.task_review import implement_blocker
 from apm.core.views import all_nodes_view, level_json, node_history, node_ref, node_view, search
 from apm.runner.agents import AGENTS, MODES
 from apm.runner.runner import Runner
@@ -197,6 +199,13 @@ def create_app(
         return {
             **node_view(graph, node_id),
             "body": read_body(project.apm_dir, node_id),
+            "implement_blocker": implement_blocker(
+                graph,
+                store,
+                read_config(project.apm_dir),
+                node_id,
+                partial(read_body, project.apm_dir),
+            ),
             "ancestors": [node_ref(graph, a) for a in reversed(graph.ancestors(node_id))],
             "links": {
                 "depends_on": [node_ref(graph, n) for n in graph.dependencies(node_id)],
