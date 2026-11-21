@@ -274,6 +274,25 @@ def test_a_pass_opens_the_feature_s_pull_request(code_repo: CodeRepo, fake_gh: F
     assert delivery.commits == (target.sha,)  # what was reviewed, for reconcile without a PR
 
 
+def test_with_feature_pr_off_a_pass_opens_no_pull_request(
+    code_repo: CodeRepo, fake_gh: FakeGh
+) -> None:
+    project = code_repo.project
+    config = project.apm_dir / "apm.yaml"
+    config.write_text(config.read_text() + "automation:\n  feature_pr: false\n")
+    node, step, _, _ = built(code_repo, project, "Write")
+    target = find_target(project, node)
+    concluded = conclude(project, target, parse_review(COMPLETE))
+
+    assert (concluded.status, concluded.pr) == (Status.IN_PROGRESS, None)
+    assert not any(call[:3] == ["api", "-X", "POST"] for call in fake_gh.calls)
+    graph = load_graph(project)
+    assert graph[step].status is Status.IN_PROGRESS
+    delivery = graph[step].delivery
+    assert delivery is not None
+    assert (delivery.pr, delivery.commits) == (None, (target.sha,))
+
+
 def test_a_pass_on_the_destination_itself_finishes_the_feature(code_repo: CodeRepo) -> None:
     project = code_repo.project
     node, step, _, _ = built(code_repo, project, "Write")
