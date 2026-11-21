@@ -443,7 +443,7 @@ Limits: `max_concurrent` pipelines in total. One conversation takes one turn at 
 | `apm-assistant` (the chat) | `project` | Read, Grep, Glob, every plan tool | can be about one node or the whole project |
 | `apm-decomposer` | `read` | Read, Grep, Glob, the read tools | returns a decomposition (JSON schema); file-editing tools are disallowed |
 | `apm-critic` | `read` | Read, Grep, Glob, the read tools | returns a review (JSON schema); only started by the pipeline; `dontAsk` |
-| `apm-implementer` | `node:<id>` | Read, Grep, Glob, Edit, Write, `Bash(git *)`, `Bash(gh pr *)`, its node's tools | `--worktree` |
+| `apm-implementer` | `node:<id>` | Read, Grep, Glob, Edit, Write, `Bash(git *)`, `Bash(gh pr *)`, its node's tools | `--worktree`; its first message names the base branch (§7.4) |
 
 Give the implementer the commands that run your tests, e.g. `allowed_tools: ["Bash(uv run *)"]` under `runner.agents.apm-implementer`, or it has to ask (or, in `dontAsk`, cannot run them).
 
@@ -487,8 +487,16 @@ The chat (`apm-assistant`) is the open-ended one: it has `project` scope, so wit
 - **Only offered for a leaf that can start:** ready (every dependency done), or already in progress.
 - Spawned with `--worktree apm-<handle>-<slug>`, so it works in its own worktree under `.claude/worktrees/` and your checkout is never touched. `apm init` ignores that folder.
 - Scope `node:<id>`.
-- It works on branch `apm/<handle>-<slug>`. Commits carry `APM-Node:`. It opens a PR if `gh` is available.
+- It works on branch `apm/<handle>-<slug>`. Commits carry `APM-Node:`. It opens the PR itself, with `gh pr create --base <base>`.
 - It calls `apm_set_status(in_progress)` when it starts and `apm_attach_delivery` when the work is pushed, and ticks the acceptance criteria it verified in the node's body.
+- **The base branch** is plain code (`apm.core.delivery.choose_base`), worked out when the run starts and written into its first message. The candidates are the delivery branches of what the node depends on (its own dependencies and its ancestors', and the leaves of a dependency that has children). `origin` is fetched first, and a candidate counts as *open* if its branch still exists and isn't merged (its PR isn't merged, and its tip isn't on the default branch).
+  - One open candidate: the agent starts from it and the PR targets it, so stacked PRs each show only their own node's changes.
+  - None: the default branch.
+  - Several: the default branch, and the first message names the unmerged ones so the PR can say what must merge first. A branch can only stack on one.
+- **The PR is the agent's job, with a fallback.** After a successful implementer turn, APM checks the node's delivery (`ensure_pull_request`):
+  - A PR is recorded: nothing to do.
+  - A branch but no PR: APM looks for an open PR from that branch and records it, or opens one through the GitHub REST API (`gh api repos/<owner>/<repo>/pulls`, which works where `gh pr`'s GraphQL calls are refused). The title is the node's title; the body is the node's body and its `APM-Node:` line; the base comes from `choose_base`; owner and repo come from the repo's `remote` in apm.yaml, else its `origin`.
+  - If no PR can be opened, that is unfinished work, never something to mark done. The conversation gets a line from APM saying why, and, when a branch is waiting, the node's Notes say so too ("No pull request yet"). Details shows "Pull request: None yet". A turn that recorded no branch at all only gets the line in the conversation, since the agent may simply have stopped to ask something.
 
 ### 7.5 Reconciling
 
@@ -586,7 +594,7 @@ apm plugin-path                  where the Claude Code plugin is
 | **M3** | `apm serve`: runner, decomposer + critic, proposals, SQLite runs; two-way runs with questions, permission prompts and modes; the chat | `apm run decomposer <h>` → proposal → `apm proposal accept` → one commit; the CLI checks in §7.1 are answered | **Built**; verified with real runs |
 | **M4** | UI: level view, drill-down, actions, conversation, details, proposal review | Planning a feature entirely in the UI, start to finish | **Built**; verified in a browser with real runs |
 | **M5** | Indexer frames + playback scrubber + delivery overlay | Replaying the APM plan from its first commit | Not built |
-| **M6** | `apm-implementer` (worktrees, trailers, `gh` PR) | A ready leaf becomes a PR that links back to its node | **Built**; verified with a real run up to the commit. Opening a PR is untested (the test repo had no remote) |
+| **M6** | `apm-implementer` (worktrees, trailers, PR against the right base, APM's fallback) | A ready leaf becomes a PR that links back to its node, stacked on unmerged work it builds on | **Built**; verified with real runs up to the push (the PRs of the archive stack, #20–#24, were opened by hand from a container without `gh pr`, which is what the fallback now covers). Base selection and the fallback are tested against a local `origin` and a stand-in for `gh` |
 | **M7** | Reconciling | A merged PR moves its node to `done` with no manual step | **Built** as `apm reconcile` (§7.5); the PR path is tested against a stand-in for `gh` |
 | **M8** | Archives: `apm export` / `apm import`, Export archive… in the UI (§3.8) | A project, with its history and optionally its runs, round-trips through one `.apm.zip` | **Built**; round trip, refusals and the download are tested |
 
