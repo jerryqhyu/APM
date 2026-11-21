@@ -14,7 +14,7 @@ from apm.core.archive import MANIFEST_FILE, PROPOSALS_FILE, RUNS_FILE, import_ar
 from apm.core.git import log
 from apm.core.ids import handle
 from apm.core.model import Status
-from apm.core.ops import NewNode, create_nodes, set_status
+from apm.core.ops import NewNode, attach_delivery, create_nodes, set_status
 from apm.core.project import Project, load_graph
 from apm.core.store import Store
 from apm.server.app import archive_name, create_app
@@ -178,6 +178,18 @@ def test_build_and_read_a_plan(client: TestClient, project: Project) -> None:
 
     assert [n["title"] for n in client.get("/api/ready").json()] == ["Build"]
     assert [h["title"] for h in client.get("/api/search", params={"q": "make"}).json()] == ["Build"]
+
+
+def test_ready_includes_stacked_work_and_says_so(client: TestClient, project: Project) -> None:
+    first = client.post("/api/nodes", json={"title": "First"}).json()["id"]
+    second = client.post("/api/nodes", json={"title": "Second", "depends_on": [first]}).json()["id"]
+    client.patch(f"/api/nodes/{first}", json={"status": "in_progress"})
+    assert client.get("/api/ready").json() == []
+    attach_delivery(project, first, branch="apm/first", pr="https://github.com/o/r/pull/20")
+    (ready,) = client.get("/api/ready").json()
+    assert (ready["id"], ready["ready"], ready["blocked"]) == (second, True, False)
+    assert ready["stacked_on"] == [{"id": first, "handle": handle(first), "pr": "#20"}]
+    assert client.get("/api/project").json()["counts"]["ready"] == 1
 
 
 def test_each_edit_is_one_commit(client: TestClient, project: Project) -> None:
@@ -405,7 +417,7 @@ def test_merge_and_project_actions(client: TestClient, project: Project) -> None
     assert graph[c].depends_on == (a,)
     assert client.post("/api/merge", json={"target": a, "others": [a]}).status_code == 422
 
-    assert client.post("/api/reconcile").json() == {"done": []}
+    assert client.post("/api/reconcile").json() == {"done": [], "findings": []}
     assert client.post("/api/commit").json() == {"sha": None, "nodes": []}
     detail = client.get(f"/api/nodes/{a}").json()
     assert detail["links"]["dependents"][0]["title"] == "C"

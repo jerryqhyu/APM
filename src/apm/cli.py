@@ -154,9 +154,16 @@ def commit() -> None:
 
 @app.command("reconcile")
 @command
-def reconcile_() -> None:
-    """Mark in-progress nodes done when their pull request or commits have merged."""
-    lines = describe(reconcile(find_project()))
+def reconcile_(
+    retarget: Annotated[
+        bool,
+        typer.Option(
+            "--retarget", help="Point open PRs whose base has landed at the default branch."
+        ),
+    ] = False,
+) -> None:
+    """Mark in-progress nodes done once their work is on the default branch."""
+    lines = describe(reconcile(find_project(), retarget=retarget))
     for line in lines:
         typer.echo(line)
     if not lines:
@@ -169,7 +176,7 @@ def ready(
     root_: Annotated[str | None, typer.Option("--root", help="Only under this node.")] = None,
     as_json: Json = False,
 ) -> None:
-    """List what can be worked on now: ready leaves."""
+    """List what can be worked on now: ready leaves, stacked ones marked."""
     _, graph = plan()
     ids = graph.ready_leaves(graph.resolve(root_) if root_ else None)
     if as_json:

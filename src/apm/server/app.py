@@ -29,7 +29,7 @@ from apm.core.model import Kind, NodeId, Status
 from apm.core.mutate import commit_hand_edits
 from apm.core.project import Project, load_graph
 from apm.core.proposals import accept_proposal, close_orphaned, reject_proposal
-from apm.core.reconcile import describe, reconcile
+from apm.core.reconcile import Report, describe, reconcile
 from apm.core.store import PROJECT, Store
 from apm.core.views import all_nodes_view, level_json, node_history, node_ref, node_view, search
 from apm.runner.agents import AGENTS, MODES
@@ -360,8 +360,12 @@ def create_app(
         return {"changed": result.sha is not None}
 
     @app.post("/api/reconcile")
-    def run_reconcile() -> dict[str, Any]:
-        return {"done": describe(reconcile(project))}
+    def run_reconcile(retarget: bool = False) -> dict[str, Any]:
+        report = reconcile(project, retarget=retarget)
+        return {
+            "done": describe(Report(done=report.done)),
+            "findings": describe(Report(findings=report.findings)),
+        }
 
     @app.post("/api/commit")
     def commit_edits() -> dict[str, Any]:
