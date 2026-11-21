@@ -7,6 +7,7 @@ from apm.core.delivery import (
     add_note,
     choose_base,
     ensure_pull_request,
+    feature_branch,
     github_repo,
     note_missing_pr,
 )
@@ -112,8 +113,11 @@ def test_a_dependency_of_an_ancestor_counts_too(code_repo: CodeRepo) -> None:
     code_repo.push_branch("apm/dep")
     delivered(project, dep, "apm/dep")
     # The child is a task of Parent, so its work goes into Parent's feature branch, which APM
-    # creates; the unmerged dependency is stacked on all the same.
-    assert choose_base(project, child) == Base("apm/dep", stacked_on=dep, feature=parent)
+    # creates; the unmerged dependency is stacked on all the same, but the PR targets the feature.
+    home = feature_branch(load_graph(project), parent)
+    assert choose_base(project, child) == Base(
+        "apm/dep", stacked_on=dep, feature=parent, target=home
+    )
 
 
 def test_a_code_dir_that_is_not_a_repo_has_no_base(project: Project) -> None:

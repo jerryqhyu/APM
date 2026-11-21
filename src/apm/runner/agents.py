@@ -231,15 +231,19 @@ def base_instructions(graph: Graph, base: Base | None) -> str:
         return (
             "Start it from the repository's default branch, and open the pull request against it."
         )
-    branch = base.branch
-    target = f"open the pull request against {branch} (`gh pr create --base {branch}`)"
+    branch, into = base.branch, base.pr_base
+    target = f"open the pull request against {into} (`gh pr create --base {into}`)"
     if base.stacked_on is not None:
         dep = base.stacked_on
         title = graph[dep].title if dep in graph else "a dependency"
         return (
             f'It builds on {handle(dep)} ("{title}"), whose branch {branch} is not merged yet, so'
-            f" stack on it: start from origin/{branch} and {target}. The pull request then shows"
-            " only this node's changes."
+            f" stack on it: start from origin/{branch} and {target}."
+            + (
+                " The pull request then shows only this node's changes."
+                if into == branch
+                else f" Until {branch} is merged, the pull request also shows its changes."
+            )
         )
     if base.feature is not None and base.feature in graph:
         feature = graph[base.feature]
