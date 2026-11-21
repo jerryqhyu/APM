@@ -510,7 +510,8 @@ def conclude(
       on, and you run the review again once they're done.
     - Complete: the feature branch gets its pull request into its home (the enclosing feature's
       branch, or the default branch), and the step stays in progress until it merges. If the
-      reviewed branch already is that home, the step is done.
+      reviewed branch already is that home, the step is done. With `automation.feature_pr` off,
+      the pull request is left to you.
     """
     step = target.step
     if step is None:
@@ -554,6 +555,8 @@ def conclude(
         )
     if graph[step].status is not Status.IN_PROGRESS:
         set_status(project, step, Status.IN_PROGRESS, actor=ACTOR, run=run)
+    if not read_config(project.apm_dir).automation.feature_pr:
+        return Concluded(Status.IN_PROGRESS)
     feature = graph[target.feature]
     body = (
         f"{read_body(project.apm_dir, target.feature).strip()}\n\n"

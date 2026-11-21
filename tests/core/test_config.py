@@ -13,6 +13,15 @@ DEFAULT_RUNNER = {
     "permission_mode": "auto",
     "agents": {},
 }
+DEFAULT_AUTOMATION = {
+    "task_review": True,
+    "reconcile": True,
+    "reconcile_interval_s": 300.0,
+    "feature_review": True,
+    "accept_follow_ups": True,
+    "implement_follow_ups": True,
+    "feature_pr": True,
+}
 
 
 def issues_for(text: str) -> list[str]:
@@ -46,6 +55,7 @@ def test_parses_the_example_from_plans_md() -> None:
                 },
             },
         },
+        "automation": DEFAULT_AUTOMATION,
     }
 
 
@@ -53,7 +63,16 @@ def test_fills_defaults_and_a_single_repo_is_the_default() -> None:
     config = parse_config("name: x\ncode:\n  repos:\n    app: { path: '..' }\n")
     assert config.code.repos["app"].model_dump() == {"path": "..", "remote": None, "default": True}
     assert config.runner.model_dump() == DEFAULT_RUNNER
+    assert config.automation.model_dump() == DEFAULT_AUTOMATION
     assert default_repo(config) == "app"
+
+
+def test_each_automation_switch_can_be_set_alone() -> None:
+    config = parse_config(
+        f"{MINIMAL}automation: {{ feature_pr: false, reconcile_interval_s: 60 }}\n"
+    )
+    expected = {**DEFAULT_AUTOMATION, "feature_pr": False, "reconcile_interval_s": 60.0}
+    assert config.automation.model_dump() == expected
 
 
 def test_fills_defaults_inside_a_partial_runner_section() -> None:
@@ -121,6 +140,13 @@ REPOS = "name: x\ncode: { repos: { a: { path: a } } }\n"
         (f"{REPOS}runner: {{ max_concurrent: 1.5 }}", r"runner\.max_concurrent: "),
         (f"{REPOS}runner: {{ max_concurrent: '2' }}", r"runner\.max_concurrent: "),
         ("name: x\ncode: { repos: { a: { path: a, default: 'yes' } } }", r"default: "),
+        (f"{REPOS}automation: {{ feature_prs: false }}", r"automation\.feature_prs: "),
+        (f"{REPOS}automation: {{ task_review: 'no' }}", r"automation\.task_review: "),
+        (f"{REPOS}automation: {{ reconcile: 1 }}", r"automation\.reconcile: "),
+        (
+            f"{REPOS}automation: {{ reconcile_interval_s: 0 }}",
+            r"automation\.reconcile_interval_s: ",
+        ),
         (
             "name: x\ncode: { repos: { 'My Repo': { path: a } } }",
             r"code\.repos\.My Repo: invalid key: must be lowercase",
@@ -139,6 +165,10 @@ REPOS = "name: x\ncode: { repos: { a: { path: a } } }\n"
         "a fractional max_concurrent",
         "a quoted number",
         "a quoted boolean",
+        "an unknown automation switch",
+        "a quoted automation switch",
+        "a number for an automation switch",
+        "a zero reconcile interval",
         "a bad repo key",
         "a missing name",
         "an empty file",
