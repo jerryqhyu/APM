@@ -151,6 +151,7 @@ def test_build_and_read_a_plan(client: TestClient, project: Project) -> None:
         ("apm-decomposer", "Decompose", True),
         ("apm-implementer", "Implement", True),
         ("apm-feature-reviewer", "Review feature", True),
+        ("apm-task-reviewer", "Review task", True),
     ]
     assert info["default_mode"] == "auto"
     assert [m["name"] for m in info["modes"]] == [

@@ -176,7 +176,14 @@ def main() -> int:
 
     answer = None
     if "--json-schema" in argv and "no-answer" not in modes:
-        if agent == "apm-feature-reviewer":
+        if agent == "apm-task-reviewer":
+            answer = {
+                "verdict": "pass",
+                "summary": "About 20 lines.",
+                "children": [],
+                "missing": [],
+            }
+        elif agent == "apm-feature-reviewer":
             answer = json.loads(json.dumps(GAPS if "review-gaps" in modes else FEATURE_REVIEW))
         elif agent == "apm-critic":
             verdict = "revise" if "revise" in modes else "accept"

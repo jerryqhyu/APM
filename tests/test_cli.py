@@ -295,6 +295,17 @@ def test_run_a_decomposer_then_accept_part_of_its_proposal(
     assert "no proposal nope" in apm("proposal", "show", "nope", code=1)
 
 
+def test_run_a_task_reviewer(cwd: Project, fake_claude: FakeClaude) -> None:
+    assert "task-reviewer" in apm("run", "--help")
+    node = add("Parse lines")
+    output = apm("run", "task-reviewer", node)
+    assert "▶ apm-task-reviewer" in output
+    assert "— finished · $0.25" in output
+    (call,) = fake_claude.calls
+    assert call["agent"] == "apm-task-reviewer"
+    assert "apm-task-sizing" in call["prompt"]
+
+
 def test_reject_a_proposal_and_report_a_failed_run(cwd: Project, fake_claude: FakeClaude) -> None:
     node = add("File I/O")
     output = apm("run", "apm-decomposer", node, "--no-critic")
