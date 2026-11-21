@@ -33,6 +33,7 @@ from apm.core.reconcile import Report, describe, reconcile
 from apm.core.store import PROJECT, Store
 from apm.core.views import all_nodes_view, level_json, node_history, node_ref, node_view, search
 from apm.runner.agents import AGENTS, MODES
+from apm.runner.auto import AutoQueue
 from apm.runner.runner import Runner
 from apm.server.security import bearer, host_is_loopback, origin_allowed, token_matches
 
@@ -151,10 +152,12 @@ def create_app(
     async def lifespan(_: FastAPI) -> AsyncGenerator[None]:
         hub.bind(asyncio.get_running_loop())
         watcher = asyncio.create_task(_watch_head(project, hub))
+        auto = asyncio.create_task(AutoQueue(runner).drive(hub.subscribe()))
         try:
             yield
         finally:
             watcher.cancel()
+            auto.cancel()
             await runner.shutdown()
 
     app = FastAPI(
