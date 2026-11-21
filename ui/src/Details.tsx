@@ -35,7 +35,7 @@ export function NodeDetails({ detail, nodes, actions }: { detail: NodeDetail; no
       <TitleEditor key={detail.id} title={detail.title} onSave={(title) => actions.patch({ title })} />
       <div className="dateline">
         <StatePill node={detail} />
-        <span>{detail.kind === "decision" ? "Decision" : "Work"}</span>
+        <span>{detail.kind === "decision" ? "Decision" : detail.kind === "review" ? "Review step" : "Work"}</span>
         {detail.children > 0 && (
           <span>
             {detail.progress.done} of {detail.progress.total} done

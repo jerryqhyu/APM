@@ -111,7 +111,9 @@ def test_a_dependency_of_an_ancestor_counts_too(code_repo: CodeRepo) -> None:
     (child,) = create_nodes(project, [NewNode(title="Child", parent=parent)]).created
     code_repo.push_branch("apm/dep")
     delivered(project, dep, "apm/dep")
-    assert choose_base(project, child) == Base("apm/dep", stacked_on=dep)
+    # The child is a task of Parent, so its work goes into Parent's feature branch, which APM
+    # creates; the unmerged dependency is stacked on all the same.
+    assert choose_base(project, child) == Base("apm/dep", stacked_on=dep, feature=parent)
 
 
 def test_a_code_dir_that_is_not_a_repo_has_no_base(project: Project) -> None:

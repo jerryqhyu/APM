@@ -979,6 +979,14 @@ main {
   color: var(--done);
 }
 
+.kind.review {
+  color: var(--accent);
+}
+
+.card.review-step {
+  border-style: dashed;
+}
+
 .card-progress {
   display: flex;
   align-items: center;

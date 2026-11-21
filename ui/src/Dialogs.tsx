@@ -78,6 +78,7 @@ export function AddNodeDialog({
 const GUIDANCE: Record<string, { placeholder: string; go: string }> = {
   "apm-decomposer": { placeholder: "For example: keep it to three steps, or slice by user-visible feature.", go: "Decompose" },
   "apm-implementer": { placeholder: "Anything Claude should know beyond what the node says.", go: "Start building" },
+  "apm-feature-reviewer": { placeholder: "For example: look hard at error handling.", go: "Start review" },
 };
 
 export function RunAgentDialog({
@@ -92,13 +93,14 @@ export function RunAgentDialog({
   node: NodeView;
   modes: Mode[];
   defaultMode: string;
-  onStart: (message: string, critic: boolean, mode: string) => Promise<void>;
+  onStart: (message: string, critic: boolean, mode: string, branch: string) => Promise<void>;
   onClose: () => void;
 }) {
   const [message, setMessage] = useState("");
   const [critic, setCritic] = useState(true);
   const [mode, setMode] = useState(defaultMode);
-  const { busy, error, submit } = useSubmit(() => onStart(message, critic, mode));
+  const [branch, setBranch] = useState("");
+  const { busy, error, submit } = useSubmit(() => onStart(message, critic, mode, branch.trim()));
   const text = GUIDANCE[agent.name] ?? { placeholder: "", go: "Start" };
   return (
     <Modal
@@ -137,6 +139,16 @@ export function RunAgentDialog({
           ))}
         </select>
       </label>
+      {agent.name === "apm-feature-reviewer" && (
+        <label className="field">
+          <span>Branch (optional)</span>
+          <input
+            value={branch}
+            placeholder={node.delivery?.branch ?? node.feature_branch ?? "APM works it out from the tasks"}
+            onChange={(e) => setBranch(e.target.value)}
+          />
+        </label>
+      )}
       {agent.name === "apm-decomposer" && (
         <label className="check">
           <input type="checkbox" checked={critic} onChange={(e) => setCritic(e.target.checked)} />

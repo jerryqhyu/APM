@@ -20,6 +20,7 @@ from apm.core.proposals import (
 )
 from apm.core.store import Store
 from apm.core.validate import InvariantError
+from tests.conftest import tasks_of
 
 PROPOSAL: dict[str, Any] = {
     "rationale": "Parse first, then write.",
@@ -61,7 +62,7 @@ def test_accepting_creates_the_children_in_one_commit(project: Project) -> None:
 
     parse, fmt = result.created
     graph = load_graph(project)
-    assert graph.children(parent) == (parse, fmt)
+    assert tasks_of(graph, parent) == (parse, fmt)
     assert graph[fmt].kind is Kind.DECISION
     assert graph[fmt].depends_on == tuple(sorted([other, parse]))
     assert read_body(project.apm_dir, parse) == (

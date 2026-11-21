@@ -22,8 +22,20 @@ from typing import Any
 
 from apm.core.config import ApmConfig, read_config
 from apm.core.delivery import Base, choose_base, ensure_pull_request, note_missing_pr
+from apm.core.feature_review import (
+    ReviewRefused,
+    Target,
+    check_reviewable,
+    conclude,
+    find_target,
+    prepare_worktree,
+    record_review,
+    review_subject,
+)
+from apm.core.feature_review import parse_review as parse_feature_review
 from apm.core.lock import CACHE_DIR, pid_alive
-from apm.core.model import NodeId
+from apm.core.model import NodeId, Status
+from apm.core.ops import set_status
 from apm.core.project import Project, load_graph
 from apm.core.proposals import ProposalError, parse_decomposition, parse_review
 from apm.core.store import PROJECT, Proposal, Run, RunStatus, Store
@@ -36,10 +48,13 @@ from apm.runner.agents import (
     check_mode,
     check_startable,
     critic_prompt,
+    feature_review_prompt,
     mcp_config,
     revision_prompt,
     worktree_name,
 )
+
+FEATURE_REVIEWER = "apm-feature-reviewer"
 
 # Kept from the stream: what a transcript needs. Token deltas, rate-limit notices and the like
 # are dropped.
@@ -99,23 +114,31 @@ class Runner:
         *,
         critic: bool = True,
         mode: str | None = None,
+        branch: str | None = None,
     ) -> Run:
         """Starts `agent` on a node (None = the project as a whole) and returns its run at once;
         the work continues in the background. Must be called from a running event loop.
+
+        `branch` is for the feature reviewer: the branch to review, if APM shouldn't work it out.
         """
         spec = AGENTS.get(agent)
         if spec is None or not spec.user_startable:
             raise RunRefused(f"unknown agent {agent!r}")
         node_id = node_id or PROJECT
         graph = load_graph(self.project)
+        if spec.name == FEATURE_REVIEWER and node_id in graph:
+            # Started on a feature, it reviews through the feature's review step.
+            node_id = review_subject(graph, node_id)[1] or node_id
         check_startable(spec, graph, node_id)
+        if spec.name == FEATURE_REVIEWER:
+            check_reviewable(graph, node_id, branch)
         config = read_config(self.project.apm_dir)
         mode = check_mode(mode, config)
         prompt = build_prompt(spec, graph, node_id, message)
         run = self._create_run(spec, node_id, prompt, mode=mode, config=config)
         worktree = worktree_name(graph, node_id) if spec.worktree else None
         pipeline = self._pipeline(
-            spec, config, run, critic=critic, worktree=worktree, message=message
+            spec, config, run, critic=critic, worktree=worktree, message=message, branch=branch
         )
         self._schedule(run, pipeline)
         return run
@@ -155,6 +178,7 @@ class Runner:
         worktree = None
         if not started and spec.worktree:
             worktree = worktree_name(load_graph(self.project), previous.node_id)
+        reviewed = self._review_target_of(run_id) if spec.name == FEATURE_REVIEWER else None
         pipeline = self._pipeline(
             spec,
             config,
@@ -164,6 +188,7 @@ class Runner:
             cwd=cwd,
             worktree=worktree,
             message=None if started else typed,
+            branch=reviewed.get("branch") if reviewed else None,
         )
         self._schedule(run, pipeline)
         return run
@@ -269,16 +294,27 @@ class Runner:
         worktree: str | None = None,
         cwd: Path | None = None,
         message: str | None = None,
+        branch: str | None = None,
     ) -> None:
         """`message` is what the user typed, for a run whose first message the runner completes
-        once it has started: an implementer's, with the base branch.
+        once it has started: an implementer's, with the base branch, or a feature reviewer's,
+        with the commit it reviews (`branch` names it, else APM works it out).
         """
         implementer = spec.name == "apm-implementer"
+        reviewer = spec.name == FEATURE_REVIEWER
         if implementer and message is not None and not resume:
             run = await self._with_base(spec, run, message)
+        if reviewer and not resume:
+            prepared = await self._review_setup(run, branch, message or "")
+            if prepared is None:
+                return
+            run, cwd = prepared
         answer = await self._execute(spec, config, run, resume=resume, worktree=worktree, cwd=cwd)
         if implementer and answer is not None:
             await self._ensure_pr(run)
+        if reviewer and answer is not None:
+            await self._record_feature_review(run, answer)
+            return
         if spec.name != "apm-decomposer" or answer is None:
             return
         try:
@@ -340,6 +376,132 @@ class Runner:
         except ProposalError:
             return None
         return answer, run
+
+    # --- a feature review ---
+
+    async def _review_setup(
+        self, run: Run, branch: str | None, message: str
+    ) -> tuple[Run, Path] | None:
+        """Works out the commit to review and checks it out (git, so not on the event loop), then
+        puts both in the run's first message. If it can't, the run fails and says why.
+        """
+        try:
+            target = await asyncio.to_thread(find_target, self.project, run.node_id, branch)
+            cwd = await asyncio.to_thread(prepare_worktree, self.project, run.node_id, target)
+        except Exception as err:  # refused, or git failed: the user can fix either
+            failed = self.store.finish_run(run.id, "failed", error=str(err))
+            self._emit({"type": "run.finished", "run": asdict(failed)})
+            return None
+        if target.step is not None:
+            with contextlib.suppress(Exception):  # the status is a courtesy, not the review
+                await asyncio.to_thread(
+                    set_status,
+                    self.project,
+                    target.step,
+                    Status.IN_PROGRESS,
+                    actor=f"agent:{FEATURE_REVIEWER}",
+                    run=run.id,
+                )
+        graph = load_graph(self.project)
+        run = self.store.set_prompt(
+            run.id, feature_review_prompt(graph, run.node_id, target, message)
+        )
+        self._record(run.id, target.as_event())
+        self._notice(
+            run.id, "info", f"Reviewing `{target.branch}` at `{target.short}`: {target.why}."
+        )
+        return run, cwd
+
+    def _review_target_of(self, run_id: str) -> dict[str, Any] | None:
+        """The commit a review conversation is about, as its first turn recorded it."""
+        run: Run | None = self.store.get_run(run_id)
+        while run is not None:
+            for event in self.store.list_events(run.id):
+                if event.data.get("type") == "apm_review_target":
+                    return event.data
+            run = self.store.get_run(run.parent_run) if run.parent_run else None
+        return None
+
+    async def _record_feature_review(self, run: Run, answer: dict[str, Any]) -> None:
+        """After every turn of a review: the verdict goes into the feature's description and the
+        follow-ups into a proposal, replacing what an earlier turn of this review proposed.
+        """
+        target = self._review_target_of(run.id)
+        if target is None:
+            self._notice(
+                run.id,
+                "warning",
+                "APM lost track of which commit this review is about,"
+                " so it recorded nothing. Start a new review.",
+            )
+            return
+        try:
+            review = parse_feature_review(answer)
+        except ReviewRefused as err:
+            failed = self.store.finish_run(run.id, "failed", error=str(err))
+            self._emit({"type": "run.finished", "run": asdict(failed)})
+            return
+        conversation = self._conversation(run.id)
+        earlier = [
+            r.id
+            for r in self.store.list_runs(node_id=run.node_id, limit=500)
+            if r.id != run.id and r.agent == run.agent and self._conversation(r.id) == conversation
+        ]
+        try:
+            recorded = await asyncio.to_thread(
+                record_review,
+                self.project,
+                self.store,
+                run.node_id,
+                review,
+                branch=target["branch"],
+                sha=target["sha"],
+                run=run.id,
+                supersedes=earlier,
+                feature=target.get("feature"),
+            )
+        except Exception as err:  # the review itself is done: report, don't raise
+            self._notice(run.id, "warning", f"APM couldn't record the review: {err}")
+            return
+        for replaced in recorded.replaced:
+            self._emit({"type": "proposal.resolved", "id": replaced, "status": "rejected"})
+        concluded = None
+        try:
+            concluded = await asyncio.to_thread(
+                conclude, self.project, Target.from_event(target), review, run=run.id
+            )
+        except Exception as err:  # the verdict is recorded: report, don't raise
+            self._notice(run.id, "warning", f"APM couldn't move the review step on: {err}")
+        where = f"`{target['branch']}` at `{target['sha'][:7]}`"
+        met = sum(1 for c in review.criteria if c.status == "met")
+        if recorded.complete:
+            into = target.get("default") or "the default branch"
+            text = (
+                f"**Complete**: the feature on {where} meets its description ({met} of"
+                f" {len(review.criteria)} criteria met)."
+            )
+            pr = concluded.pr if concluded is not None else None
+            if concluded is not None and concluded.landed:
+                text += " It is already where it belongs, so the review step is done."
+            elif pr is not None and pr.pr:
+                text += f" Its pull request into {pr.base}: {pr.pr}"
+            elif pr is not None and pr.problem:
+                text += f" APM couldn't open its pull request: {pr.problem}."
+            else:
+                text += f" It is ready to go into {into}."
+            self._notice(run.id, "info", text)
+        else:
+            text = (
+                f"**Incomplete**: {met} of {len(review.criteria)} criteria met on {where}. The"
+                " verdict is in the review step's description, under Feature review."
+            )
+            if recorded.proposal is not None:
+                count = len(recorded.proposal.data.get("children", []))
+                waiting = "task waits" if count == 1 else "tasks wait"
+                text += f" {count} follow-up {waiting} under Proposals."
+            self._notice(run.id, "warning", text)
+        if recorded.proposal is not None:
+            self._emit({"type": "proposal.created", "proposal": proposal_dict(recorded.proposal)})
 
     # --- an implementer's base branch and pull request ---
 

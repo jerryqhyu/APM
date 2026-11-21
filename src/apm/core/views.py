@@ -144,7 +144,15 @@ def node_view(graph: Graph, node_id: NodeId) -> dict[str, Any]:
         "children": len(graph.children(node_id)),
         "progress": {"done": state.progress.done, "total": state.progress.total},
         "delivery": None if node.delivery is None else asdict(node.delivery),
+        "review_step": (step := graph.review_step(node_id)),
+        "feature_branch": _branch_of(graph, step),
     }
+
+
+def _branch_of(graph: Graph, step: NodeId | None) -> str | None:
+    """A feature's branch, once APM has made it (it is recorded on the review step)."""
+    delivery = graph[step].delivery if step is not None else None
+    return delivery.branch if delivery is not None else None
 
 
 def _pr_of(graph: Graph, node_id: NodeId) -> str | None:
@@ -164,8 +172,13 @@ def node_ref(graph: Graph, node_id: NodeId) -> dict[str, Any]:
 
 
 def all_nodes_view(graph: Graph) -> list[dict[str, Any]]:
-    """Every node, in id order."""
-    return [node_view(graph, node_id) for node_id in sorted(graph.nodes)]
+    """Every node, in outline order: depth first, children in creation order with each review
+    step last. Nodes the outline can't reach (a missing parent) follow, in id order.
+    """
+    order = [n for top in graph.children(None) for n in (top, *graph.descendants(top))]
+    seen = set(order)
+    order += [n for n in sorted(graph.nodes) if n not in seen]
+    return [node_view(graph, node_id) for node_id in order]
 
 
 def level_json(graph: Graph, root: NodeId | None) -> dict[str, Any]:

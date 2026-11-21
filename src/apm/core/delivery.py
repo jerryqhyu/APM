@@ -2,8 +2,9 @@
 
 Plain code around the implementer, not part of it:
 
-- `choose_base`: where an implementer starts and which branch its pull request targets. A leaf
-  that depends on unmerged work stacks on it, so its pull request shows only its own changes.
+- `choose_base`: where an implementer starts and which branch its pull request targets. A task
+  inside a feature targets the feature's branch (`ensure_feature_branch` creates it). A leaf that
+  depends on unmerged work stacks on it, so its pull request shows only its own changes.
 - `ensure_pull_request`: after an implementer run, opens the pull request itself if the agent
   pushed a branch but couldn't open one (no `gh`, or `gh pr` refused). It goes through the GitHub
   REST API (`gh api`), which works where `gh pr`'s GraphQL calls are blocked.
@@ -30,6 +31,7 @@ from apm.core.errors import ApmError
 from apm.core.files import read_body
 from apm.core.git import GitError, git, is_ancestor, rev_parse
 from apm.core.graph import Graph
+from apm.core.ids import handle
 from apm.core.model import NodeId, Status
 from apm.core.ops import attach_delivery, edit_body
 from apm.core.project import Project, load_graph
@@ -180,6 +182,82 @@ class Base:
     """Set when several dependencies have unmerged branches: a branch can only stack on one, so
     the work starts from the default branch and has to wait for them.
     """
+    feature: NodeId | None = None
+    """The feature whose branch this is, when the work goes into a feature branch."""
+
+
+# --- feature branches ---
+
+FEATURE_PREFIX = "feature/"
+
+
+def feature_branch(graph: Graph, feature: NodeId) -> str:
+    """The branch a feature's tasks go into: the one recorded on its review step, else
+    `feature/<handle>-<slug>`.
+    """
+    step = graph.review_step(feature)
+    delivery = graph[step].delivery if step is not None else None
+    if delivery is not None and delivery.branch:
+        return delivery.branch
+    words = re.sub(r"[^a-z0-9]+", "-", graph[feature].title.lower()).strip("-")[:32].rstrip("-")
+    return f"{FEATURE_PREFIX}{handle(feature)}-{words or 'feature'}"
+
+
+def home_branch(graph: Graph, node_id: NodeId) -> str | None:
+    """Where `node_id`'s pull request goes: its feature's branch, or None for the default branch.
+    A review step's goes one level up (see `Graph.feature_of`).
+    """
+    feature = graph.feature_of(node_id)
+    return feature_branch(graph, feature) if feature is not None else None
+
+
+def branch_ref(repo_dir: Path, branch: str) -> str | None:
+    """`origin/<branch>` if the remote has it, else `<branch>` if it exists locally, else None."""
+    for ref, name in (
+        (f"refs/remotes/origin/{branch}", f"origin/{branch}"),
+        (f"refs/heads/{branch}", branch),
+    ):
+        try:
+            if rev_parse(repo_dir, ref):
+                return name
+        except GitError:
+            continue
+    return None
+
+
+def ensure_feature_branch(
+    project: Project, repo_dir: Path, feature: NodeId, *, run: str | None = None
+) -> str:
+    """The feature's branch, created if it doesn't exist yet: from its own home (the enclosing
+    feature's branch, made first if need be, or the default branch), pushed to `origin`, and
+    recorded on the feature's review step. Returns its name.
+    """
+    graph = load_graph(project)
+    name = feature_branch(graph, feature)
+    step = graph.review_step(feature)
+    if branch_tip(repo_dir, name) is None:
+        outer = graph.feature_of(step) if step is not None else None
+        if outer is not None:
+            start = branch_ref(repo_dir, ensure_feature_branch(project, repo_dir, outer, run=run))
+        else:
+            start = default_branch(repo_dir)
+        if start is None:
+            raise GitError(["branch", name], None, "there is no branch to start it from")
+        sha = git(repo_dir, ["rev-parse", start]).strip()
+        try:
+            git(repo_dir, ["remote", "get-url", "origin"])
+            git(repo_dir, ["push", "--quiet", "origin", f"{sha}:refs/heads/{name}"])
+            git(
+                repo_dir,
+                ["fetch", "--quiet", "origin", f"+refs/heads/{name}:refs/remotes/origin/{name}"],
+            )
+        except GitError:
+            git(repo_dir, ["branch", "--quiet", name, sha])  # no origin: a local branch will do
+    if step is not None:
+        delivery = load_graph(project)[step].delivery
+        if delivery is None or delivery.branch != name:
+            attach_delivery(project, step, branch=name, actor=ACTOR, run=run)
+    return name
 
 
 def choose_base(project: Project, node_id: NodeId, *, repo_key: str | None = None) -> Base:
@@ -208,25 +286,31 @@ def choose_base(project: Project, node_id: NodeId, *, repo_key: str | None = Non
     except GitError:
         return Base(None)
     fetch_origin(repo_dir)
-    target = default_branch(repo_dir)
-    if target is None:
+    default = default_branch(repo_dir)
+    if default is None:
         return Base(None)
+    feature = graph.feature_of(node_id)
+    home = ensure_feature_branch(project, repo_dir, feature) if feature is not None else None
+    target = (branch_ref(repo_dir, home) if home else None) or default
+    name = home or default.removeprefix("origin/")
+    if graph.is_review(node_id):
+        # A review step's branch is the feature branch: it never stacks on its own tasks.
+        return Base(name, feature=feature)
     open_branches: list[tuple[NodeId, str]] = []
     seen: set[str] = set()
     for dep, branch, pr in _dependency_branches(graph, node_id, key):
         if branch not in seen:
             seen.add(branch)
-            if _is_open(repo_dir, branch, pr, target):
+            if branch_is_open(repo_dir, branch, pr, target):
                 open_branches.append((dep, branch))
     if len(open_branches) == 1:
         (dep, branch), *_ = open_branches
-        return Base(branch, stacked_on=dep)
+        return Base(branch, stacked_on=dep, feature=feature)
     # Several, but one was built on the others (it depends on them): its branch holds them all.
     # The same rule decides whether the node is ready, stacked (`Graph.stack_top`).
     if (top := graph.stack_top(dep for dep, _ in open_branches)) is not None:
-        return Base(dict(open_branches)[top], stacked_on=top)
-    name = target.removeprefix("origin/")
-    return Base(name, unmerged=tuple(open_branches) if open_branches else ())
+        return Base(dict(open_branches)[top], stacked_on=top, feature=feature)
+    return Base(name, unmerged=tuple(open_branches) if open_branches else (), feature=feature)
 
 
 def _dependency_branches(
@@ -246,7 +330,7 @@ def _dependency_branches(
                 yield leaf, delivery.branch, delivery.pr
 
 
-def _is_open(repo_dir: Path, branch: str, pr: str | None, target: str) -> bool:
+def branch_is_open(repo_dir: Path, branch: str, pr: str | None, target: str) -> bool:
     """True if `branch` still exists and its work isn't on `target` yet."""
     if pr and (state := read_pr(repo_dir, pr)) is not None and state.merged:
         return False
@@ -315,7 +399,14 @@ class PrOutcome:
     base: str | None = None
 
 
-def ensure_pull_request(project: Project, node_id: NodeId, *, run: str | None = None) -> PrOutcome:
+def ensure_pull_request(
+    project: Project,
+    node_id: NodeId,
+    *,
+    run: str | None = None,
+    title: str | None = None,
+    body: str | None = None,
+) -> PrOutcome:
     """Makes sure a delivered leaf has a pull request, and that it's recorded on the node.
 
     If the delivery has a branch but no pull request, it looks for an open one for that branch,
@@ -349,8 +440,9 @@ def ensure_pull_request(project: Project, node_id: NodeId, *, run: str | None = 
             problem=f"couldn't tell which GitHub repository {what} is", branch=branch, base=base
         )
     owner, name = slug
-    title = graph[node_id].title
-    body = f"{read_body(project.apm_dir, node_id).strip()}\n\nAPM-Node: {node_id}\n".lstrip()
+    title = title or graph[node_id].title
+    text = body if body is not None else read_body(project.apm_dir, node_id)
+    body = f"{text.strip()}\n\nAPM-Node: {node_id}\n".lstrip()
     try:
         url = _open_pr_for(repo_dir, owner, name, branch)
         action: Literal["found", "opened"] = "found"

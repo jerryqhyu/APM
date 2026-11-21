@@ -13,6 +13,8 @@ type NodeId = str
 class Kind(StrEnum):
     WORK = "work"
     DECISION = "decision"
+    REVIEW = "review"
+    """A feature's review step: APM adds one to every node with children (plans.md §3.9)."""
 
 
 class Status(StrEnum):

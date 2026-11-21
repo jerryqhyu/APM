@@ -10,6 +10,7 @@ APM is a project planner you run on your own machine. You keep a plan as a graph
 - [Changing the graph yourself](#changing-the-graph-yourself)
 - [Having Claude break a node down](#having-claude-break-a-node-down)
 - [Having Claude build a node](#having-claude-build-a-node)
+- [Finishing a feature: the review step](#finishing-a-feature-the-review-step)
 - [From the terminal](#from-the-terminal)
 - [In your own Claude Code session](#in-your-own-claude-code-session)
 - [Settings](#settings)
@@ -63,7 +64,7 @@ That is the whole loop: talk, shape the plan, build a piece, repeat.
 
 **Node.** One piece of the plan. It has a title, a description, a status, and a kind: *work* (something to build) or *decision* (a choice to make).
 
-**Nesting.** A node can contain other nodes. You start with a big idea and break it down until each piece is small enough to build in one go. A node with nothing inside it is a **leaf**; leaves are what actually get built.
+**Nesting.** A node can contain other nodes. You start with a big idea and break it down until each piece is small enough to build in one go. A node with nothing inside it is a **leaf**; leaves are what actually get built. A node with children is a **feature**, and its last child is always its **review step** (marked ✓, with a dashed border), which checks the finished feature against its description. APM adds it for you; see [Finishing a feature](#finishing-a-feature-the-review-step).
 
 **Dependencies.** A node can need another node first, anywhere in the plan. In the graph, an arrow runs from what is needed to what needs it.
 
@@ -74,7 +75,7 @@ That is the whole loop: talk, shape the plan, build a piece, repeat.
 | **Ready** | To do, and nothing it needs is unfinished. You can start it. |
 | **Ready · stacked on #20** | To do, and what it needs is built and pushed but not merged yet. You can start it now: it builds on that work's branch. It becomes plain **Ready** once that merges. |
 | **Blocked** | To do, but something it needs isn't done yet, and isn't pushed either. A node inside a blocked node is blocked too. |
-| **2/5** on a node | Two of the five leaves inside it are done. |
+| **2/5** on a node | Two of the five leaves inside it are done. The review step counts, so a feature reaches 5/5 only once it has been reviewed and has landed. |
 
 **Handle.** The short code on each node, like `1c0b9a44`. Use it to name a node in the terminal or to Claude.
 
@@ -188,7 +189,7 @@ Select a node and press **Decompose**. You can add guidance ("three steps at mos
 2. A second agent reviews the draft. If it finds a serious problem, the first one revises once.
 3. You get a **proposal**. Its children appear as dashed cards, and **Proposals** in the top bar counts it.
 
-Nothing is written yet. Press **Review** to see the reasoning, the reviewer's notes, and each proposed child. You can edit any child, untick ones you don't want, then **Accept** or **Reject**. Accepting adds the children in one step.
+Nothing is written yet. Press **Review** to see the reasoning, the reviewer's notes, and each proposed child. You can edit any child, untick ones you don't want, then **Accept** or **Reject**. Accepting adds the children in one step, together with the node's review step if it doesn't have one yet.
 
 Decompose versus conversation: use Decompose when you want a reviewed proposal to look over before anything changes. Use the conversation when you want to shape things back and forth.
 
@@ -202,16 +203,38 @@ Decompose versus conversation: use Decompose when you want a reviewed proposal t
 4. pushes and opens a pull request with the GitHub CLI (`gh`);
 5. records the branch, commits and pull request on the node, and ticks the acceptance criteria it verified.
 
+**Feature branches.** A node inside a feature is built into the feature's branch, `feature/<handle>-<title>`, not straight into your default branch. APM creates that branch the first time one of the feature's tasks is implemented, and its pull request targets it. The feature goes on to your default branch later, in one pull request, once its review step has passed.
+
 **Stacking.** If the node builds on another node's work that isn't merged yet, the branch starts from that node's branch and the pull request targets it, so each pull request shows only its own changes. APM works this out when the run starts (it fetches first) and tells Claude. Otherwise the base is your default branch. If it waits on several unmerged branches, it builds on the one that was built on the others; if they're on separate branches, the node shows as **Blocked** until all but one of them merge.
 
 **If Claude can't open the pull request** (no `gh`, or `gh` refuses), it still pushes and records the branch, and APM opens the pull request itself once the run ends. You see a line from APM in the conversation either way. If nobody could open it, that line says why, the node's Notes say so, and Details shows **Pull request: None yet**. Nothing is marked done.
 
-You follow it in the node's conversation and can reply to it there. The node stays **In progress** until its work reaches your default branch and you press **Reconcile** (APM also checks when `apm serve` starts), or until you mark it done. You don't need to mark it done for the next step to start: once its branch is pushed, what depends on it is **Ready · stacked**.
+You follow it in the node's conversation and can reply to it there. The node stays **In progress** until its work reaches where it belongs (its feature's branch, or your default branch) and you press **Reconcile** (APM also checks when `apm serve` starts), or until you mark it done. You don't need to mark it done for the next step to start: once its branch is pushed, what depends on it is **Ready · stacked**.
 
 Two things to know:
 
 - **Claude can only run your tests if the command is allowed.** Add it in the settings (see below), or approve it when asked.
 - **The worktree stays** after the run. Remove it with `git worktree remove <path>` when you no longer need it.
+
+## Finishing a feature: the review step
+
+"Every task is merged" isn't the same as "the feature works". So every feature ends in a **review step**: its last child, which waits on all the others. When they're all done (merged into the feature branch), it becomes **Ready**, and you press **Review feature**, on the step or on the feature itself.
+
+Claude then:
+
+1. checks out the feature branch, exactly as it is, in a separate folder (your checkout isn't touched);
+2. reads the feature's description (its intent, acceptance criteria and decisions) and every task;
+3. reads what the feature changed, and checks each acceptance criterion against the code: **Met** (with the file and line, or the test, that shows it), **Partly**, **Missing**, or **Not checked** (it can't be verified by reading);
+4. looks for what the criteria don't spell out: decisions that weren't followed, places where two tasks don't fit together, missing tests or docs.
+
+It changes no files. Its verdict goes into the review step's description under **Feature review**, as a table you can read later. Then:
+
+- **Complete**: APM opens the feature branch's pull request into your default branch (or into the enclosing feature's branch), titled after the feature and with the review in its description. The step stays **In progress** until that pull request merges; **Reconcile** then marks the step and the feature done.
+- **Incomplete**: the step goes back to **To do**, and the gaps come back as **follow-up tasks**, waiting under **Proposals**, the same way a breakdown does. Accept them, build them, and press **Review feature** again once they're merged. You can also reply in the review's conversation ("look again at error handling"); a new verdict replaces the old one.
+
+Claude says "complete" only when every criterion is met and nothing major is wrong. APM holds it to that: a "complete" with a missing criterion or a major issue is recorded as incomplete.
+
+**To review another branch**, type it in the **Branch** field when you start the review. **To skip a review**, set the step to **Dropped**. You can't delete or move a review step: APM keeps it waiting on exactly the feature's tasks, adding the ones you add later and dropping the ones you drop.
 
 ## From the terminal
 
@@ -242,6 +265,7 @@ apm run assistant -m "Where does the plan stand?"          # chat about the whol
 apm run assistant 1c0b9a44 -m "Is this well specified?"    # chat about one node
 apm run decomposer 1c0b9a44 -m "Three steps at most."      # then: apm proposal show <id>
 apm run implementer 7d2e0f11 --mode manual                 # build, asking before each change
+apm run feature-reviewer 3f9e2a10                          # review a finished feature (--branch to pick one)
 apm proposal accept <id>                                    # or: apm proposal reject <id>
 apm reconcile                                               # mark merged work done
 apm reconcile --retarget                                    # ...and retarget stacked PRs

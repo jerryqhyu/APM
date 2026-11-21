@@ -61,6 +61,14 @@ def plan(project: Project) -> tuple[Project, str, str, str]:
     return project, handle(parent), handle(first), handle(second)
 
 
+def review_of(project: Project, feature: str) -> str:
+    """The handle of `feature`'s review step, which APM added."""
+    graph = load_graph(project)
+    step = graph.review_step(graph.resolve(feature))
+    assert step is not None
+    return handle(step)
+
+
 def test_lists_every_tool_with_a_description(project: Project) -> None:
     tools = asyncio.run(Session(project).server.list_tools())
     assert {t.name for t in tools} == READ_TOOLS | WRITE_TOOLS
@@ -70,18 +78,21 @@ def test_lists_every_tool_with_a_description(project: Project) -> None:
 def test_read_tools(plan: tuple[Project, str, str, str]) -> None:
     project, parent, first, second = plan
     session = Session(project, "read")
+    review = review_of(project, parent)
     assert session.call("apm_get_graph").splitlines() == [
-        f"{parent} [work/todo·ready] Parent (0/2)",
+        f"{parent} [work/todo·ready] Parent (0/3)",
         f"  {first} [work/todo·ready] First",
         f"  {second} [work/todo·blocked] Second → {first}",
+        f"  {review} [review/todo·blocked] Feature review → {first}, {second}",
     ]
     assert session.call("apm_get_graph", root=parent, depth=1).splitlines() == [
         f"{first} [work/todo·ready] First",
         f"{second} [work/todo·blocked] Second → {first}",
+        f"{review} [review/todo·blocked] Feature review → {first}, {second}",
     ]
     shown = session.call("apm_get_node", node=second)
     assert shown.splitlines()[0] == f"{second} [work/todo·blocked] Second → {first}"
-    assert f"parent: {parent} [work/todo·ready] Parent (0/2)" in shown
+    assert f"parent: {parent} [work/todo·ready] Parent (0/3)" in shown
     assert f"waiting on: {first} [work/todo·ready] First" in shown
     assert "## Intent" in shown
     assert session.call("apm_ready") == f"{first} [work/todo·ready] First"
@@ -210,7 +221,7 @@ def test_node_scope_allows_only_its_own_status_delivery_and_body(
         "delivery recorded"
     )
     assert session.call("apm_update_node", node=first, body="Notes.") == "updated body"
-    assert session.call("apm_get_graph").count("\n") == 2  # reading is never restricted
+    assert session.call("apm_get_graph").count("\n") == 3  # reading is never restricted
 
     message = f"may only update status, delivery and body of {ids[first]}"
     assert message in session.refused("apm_set_status", node=second, status="done")
@@ -268,9 +279,10 @@ def test_a_subtree_is_one_create_call(project: Project) -> None:
     )
     feature, model, view = (line.split()[0] for line in created.splitlines())
     assert session.call("apm_get_graph").splitlines() == [
-        f"{feature} [work/todo·ready] Feature (0/2)",
+        f"{feature} [work/todo·ready] Feature (0/3)",
         f"  {model} [work/todo·ready] Model",
         f"  {view} [work/todo·blocked] View → {model}",
+        f"  {review_of(project, feature)} [review/todo·blocked] Feature review → {model}, {view}",
     ]
     assert len(log(project.apm_dir)) == 2  # init + one commit
     assert "a title can't be blank" in session.refused("apm_update_node", node=feature, title=" ")

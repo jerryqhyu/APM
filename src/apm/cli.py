@@ -539,7 +539,9 @@ def free_port(preferred: int) -> int:
 @app.command()
 @command
 def run(
-    agent: Annotated[str, typer.Argument(help="assistant, decomposer or implementer.")],
+    agent: Annotated[
+        str, typer.Argument(help="assistant, decomposer, implementer or feature-reviewer.")
+    ],
     handle: Annotated[
         str | None, typer.Argument(help="The node. Omit to chat about the whole project.")
     ] = None,
@@ -552,6 +554,10 @@ def run(
     mode: Annotated[
         str | None,
         typer.Option(help="Permission mode: auto, manual, acceptEdits, plan or dontAsk."),
+    ] = None,
+    branch: Annotated[
+        str | None,
+        typer.Option(help="feature-reviewer: the branch to review. Default: APM works it out."),
     ] = None,
 ) -> None:
     """Run an agent and follow it here. It asks you in the terminal when it needs an answer."""
@@ -579,7 +585,10 @@ def run(
             typer.echo(f"✗ {event['run']['status']}: {event['run']['error'] or ''}", err=True)
         elif event["type"] == "proposal.created":
             proposal = event["proposal"]
-            typer.echo(f"proposal {proposal['id']}: {len(proposal['data']['children'])} children")
+            count = len(proposal["data"]["children"])
+            typer.echo(
+                f"proposal {proposal['id']}: {count} {'child' if count == 1 else 'children'}"
+            )
             typer.echo(f"next: apm proposal show {proposal['id']}")
 
     async def go() -> None:
@@ -603,7 +612,7 @@ def run(
 
         asker = asyncio.create_task(answer_requests())
         try:
-            started = runner.start(name, node_id, message, critic=critic, mode=mode)
+            started = runner.start(name, node_id, message, critic=critic, mode=mode, branch=branch)
             await runner.wait(started.id)
         finally:
             asker.cancel()

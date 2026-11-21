@@ -18,7 +18,7 @@ from apm.cli import app, open_when_listening
 from apm.core.archive import FORMAT_VERSION
 from apm.core.git import git, log
 from apm.core.ops import attach_delivery
-from apm.core.project import Project, load_graph
+from apm.core.project import Project, find_project, load_graph
 from apm.core.store import SCHEMA_VERSION, Store
 from apm.server.security import load_or_create_token
 from tests.runner.fake import FakeClaude
@@ -37,6 +37,14 @@ def cwd(project: Project, monkeypatch: pytest.MonkeyPatch) -> Project:
     """Runs the test from inside a fresh project."""
     monkeypatch.chdir(project.code_dir)
     return project
+
+
+def review_of(feature: str) -> str:
+    """The handle of `feature`'s review step (APM adds it), in the project of the cwd."""
+    graph = load_graph(find_project(Path.cwd()))
+    step = graph.review_step(graph.resolve(feature))
+    assert step is not None
+    return graph.handles[step]
 
 
 def add(title: str, *args: str) -> str:
@@ -70,16 +78,19 @@ def test_init_then_build_a_plan(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     test = add("Test", "-p", ship, "--dep", build)
     choice = add("Pick a database", "--kind", "decision")
 
+    review = review_of(ship)
     assert apm("node", "ls").splitlines() == [
-        f"{ship} [work/todo·ready] Ship v1 (0/2)",
+        f"{ship} [work/todo·ready] Ship v1 (0/3)",
         f"  {build} [work/todo·ready] Build",
         f"  {test} [work/todo·blocked] Test → {build}",
+        f"  {review} [review/todo·blocked] Feature review → {build}, {test}",
         f"{choice} [decision/todo·ready] Pick a database",
     ]
-    assert apm("node", "ls", "--depth", "1").splitlines()[0].endswith("[+2 below]")
+    assert apm("node", "ls", "--depth", "1").splitlines()[0].endswith("[+3 below]")
     assert apm("node", "ls", "--root", ship).splitlines() == [
         f"{build} [work/todo·ready] Build",
         f"{test} [work/todo·blocked] Test → {build}",
+        f"{review} [review/todo·blocked] Feature review → {build}, {test}",
     ]
     assert apm("ready").splitlines() == [
         f"{build} [work/todo·ready] Build",
@@ -116,7 +127,7 @@ def test_show_prints_links_and_body(cwd: Project) -> None:
     second = add("Second", "-p", parent, "--dep", first)
     shown = apm("node", "show", second)
     assert shown.splitlines()[0] == f"{second} [work/todo·blocked] Second → {first}"
-    assert f"parent: {parent} [work/todo·ready] Parent (0/2)" in shown
+    assert f"parent: {parent} [work/todo·ready] Parent (0/3)" in shown
     assert f"depends on: {first} [work/todo·ready] First" in shown
     assert f"waiting on: {first} [work/todo·ready] First" in shown
     assert f"needed by: {second} [work/todo·blocked] Second → {first}" in apm("node", "show", first)
@@ -131,11 +142,13 @@ def test_show_prints_links_and_body(cwd: Project) -> None:
 def test_json_output_for_lists(cwd: Project) -> None:
     parent = add("Parent")
     child = add("Child", "-p", parent)
+    review = review_of(parent)
     nodes = json.loads(apm("node", "ls", "--json"))
-    assert [n["handle"] for n in nodes] == [parent, child]
-    assert nodes[0]["progress"] == {"done": 0, "total": 1}
+    assert [n["handle"] for n in nodes] == [parent, child, review]
+    assert nodes[0]["progress"] == {"done": 0, "total": 2}
     assert [n["handle"] for n in json.loads(apm("node", "ls", "--root", parent, "--json"))] == [
-        child
+        child,
+        review,
     ]
     assert [n["handle"] for n in json.loads(apm("ready", "--json"))] == [child]
     assert json.loads(apm("search", "child", "--json"))[0]["title"] == "Child"
@@ -152,7 +165,7 @@ def test_set_move_link_and_delete(cwd: Project) -> None:
 
     apm("node", "mv", child, b)
     assert load_graph(cwd).children(None) != ()
-    assert f"parent: {b} [work/todo·ready] B (0/1)" in apm("node", "show", child)
+    assert f"parent: {b} [work/todo·ready] B (0/2)" in apm("node", "show", child)
     apm("node", "mv", child, "--top")
     assert "parent:" not in apm("node", "show", child)
     assert "give a new parent, or --top" in apm("node", "mv", child, code=1)

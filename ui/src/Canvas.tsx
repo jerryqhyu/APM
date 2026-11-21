@@ -42,6 +42,7 @@ const PlanCard = memo(function PlanCard({ data }: NodeProps<Node<PlanData>>) {
         selected && "selected",
         entangled && "entangled",
         node.kind === "decision" && "decision",
+        node.kind === "review" && "review-step",
       )}
       title={node.children ? "Double-click to open" : undefined}
     >
@@ -63,6 +64,11 @@ const PlanCard = memo(function PlanCard({ data }: NodeProps<Node<PlanData>>) {
         {node.kind === "decision" && (
           <span className="kind" title="Decision">
             ◆{" "}
+          </span>
+        )}
+        {node.kind === "review" && (
+          <span className="kind review" title="Review step: checks the feature once every task is done">
+            ✓{" "}
           </span>
         )}
         {node.title}
@@ -95,6 +101,7 @@ const GhostCard = memo(function GhostCard({ data }: NodeProps<Node<GhostData>>) 
       </div>
       <div className="card-title">
         {data.child.kind === "decision" && <span className="kind">◆ </span>}
+        {data.child.kind === "review" && <span className="kind review">✓ </span>}
         {data.child.title}
       </div>
       <Handle type="source" position={Position.Right} isConnectable={false} />

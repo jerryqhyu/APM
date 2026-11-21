@@ -85,6 +85,8 @@ class StartRun(BaseModel):
     message: str = ""
     critic: bool = True
     mode: str | None = None
+    branch: str | None = None
+    """For the feature reviewer: the branch to review. None = APM works it out."""
 
 
 class ContinueRun(BaseModel):
@@ -392,7 +394,14 @@ def create_app(
     @app.post("/api/runs", status_code=201)
     async def start_run(body: StartRun) -> dict[str, Any]:
         node_id = locate(body.node_id)[1] if body.node_id else None
-        run = runner.start(body.agent, node_id, body.message, critic=body.critic, mode=body.mode)
+        run = runner.start(
+            body.agent,
+            node_id,
+            body.message,
+            critic=body.critic,
+            mode=body.mode,
+            branch=body.branch,
+        )
         return asdict(run)
 
     @app.post("/api/runs/{run_id}/continue", status_code=201)

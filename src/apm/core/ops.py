@@ -81,6 +81,8 @@ def _create(draft: Draft, nodes: Sequence[NewNode]) -> list[NodeId]:
             by_key[new.key] = node_id
     for node_id, new in zip(ids, nodes, strict=True):
         title = clean_title(new.title)
+        if new.kind is Kind.REVIEW:
+            raise OpError(f'"{title}": APM adds a review step to every feature itself')
         if unknown := [key for key in new.depends_on_keys if key not in by_key]:
             raise OpError(f'"{title}" depends on unknown key "{unknown[0]}"')
         if new.parent_key is not None and new.parent_key not in by_key:
@@ -112,6 +114,11 @@ def update_node(
 
     def apply(draft: Draft) -> str:
         node = draft[node_id]
+        if kind is not None and kind != node.kind and Kind.REVIEW in (kind, node.kind):
+            raise OpError(
+                f"{handle(node_id)}: review steps are APM's to add and remove. To skip a"
+                " feature's review, set its review step to dropped"
+            )
         changed = [
             name
             for name, value in (("title", new_title), ("kind", kind))
@@ -162,6 +169,8 @@ def move_node(
     def apply(draft: Draft) -> str:
         if parent is not None:
             draft[parent]
+        if draft[node_id].kind is Kind.REVIEW:
+            raise OpError(f"{handle(node_id)} is a review step: it stays with its feature")
         draft.put(replace(draft[node_id], parent=parent))
         return f"{handle(node_id)} → {'top' if parent is None else handle(parent)}"
 
@@ -182,12 +191,18 @@ def delete_node(
 
     def apply(draft: Draft) -> str:
         title = draft[node_id].title
+        _refuse_review_step(draft, node_id, "deleted")
         descendants = draft.graph.descendants(node_id)
         if descendants and not recursive:
-            count = _count(len(draft.graph.children(node_id)), "child", "children")
+            children = draft.graph.children(node_id)
+            tasks = [c for c in children if not draft.graph.is_review(c)]
+            count = _count(len(tasks), "child", "children")
+            if len(tasks) < len(children):
+                count += " and its review step"
             raise OpError(
                 f"{handle(node_id)} has {count}: delete them first, or delete recursively"
             )
+        shown = [d for d in descendants if not draft.graph.is_review(d)]
         doomed = {node_id, *descendants}
         dependents = {d for n in doomed for d in draft.graph.dependents(n)} - doomed
         for dependent in dependents:
@@ -196,9 +211,7 @@ def delete_node(
             draft.put(replace(node, depends_on=kept))
         for doomed_id in doomed:
             draft.remove(doomed_id)
-        extra = (
-            f" (+{_count(len(descendants), 'descendant', 'descendants')})" if descendants else ""
-        )
+        extra = f" (+{_count(len(shown), 'descendant', 'descendants')})" if shown else ""
         return f"{handle(node_id)}: {title}{extra}"
 
     return mutate(project, "delete", apply, actor=actor, run=run)
@@ -225,6 +238,28 @@ def merge_nodes(
             raise OpError("nothing to merge: pick at least two nodes")
         group = {target, *doomed}
         merged = [draft[n] for n in doomed]
+        if any(n.kind is Kind.REVIEW for n in (keep, *merged)):
+            raise OpError("a review step can't be merged: it belongs to its feature")
+        # The features being merged away bring their children along, but the target ends up with
+        # one review step: its own, else one of theirs (a started one first). The rest go,
+        # unless one of them already holds work.
+        reviews = [s for n in sorted(group) if (s := draft.graph.review_step(n)) is not None]
+        started = [s for s in reviews if draft[s].delivery or draft[s].status is not Status.TODO]
+        keep_review = draft.graph.review_step(target) or next(iter(started or reviews), None)
+        for step in reviews:
+            if step == keep_review:
+                continue
+            if draft[step].delivery is not None or draft[step].status is not Status.TODO:
+                raise OpError(
+                    f"{handle(step)} is a review step that has started: merge those features"
+                    " once it is done, or drop it first"
+                )
+            draft.remove(step)
+            doomed_steps = {step}
+            for other in list(draft.graph.nodes.values()):
+                if doomed_steps & set(other.depends_on):
+                    kept = tuple(d for d in other.depends_on if d not in doomed_steps)
+                    draft.put(replace(other, depends_on=kept))
 
         deliveries = [n.delivery for n in (keep, *merged) if n.delivery is not None]
         if len(deliveries) > 1:
@@ -276,6 +311,7 @@ def link(
 
     def apply(draft: Draft) -> str:
         node = draft[src]
+        _refuse_review_links(draft, src)
         draft.put(replace(node, depends_on=canonical_ids([*node.depends_on, draft[dst].id])))
         return f"{handle(src)} → {handle(dst)}"
 
@@ -289,6 +325,7 @@ def unlink(
 
     def apply(draft: Draft) -> str:
         node = draft[src]
+        _refuse_review_links(draft, src)
         draft.put(replace(node, depends_on=tuple(d for d in node.depends_on if d != dst)))
         return f"{handle(src)} from {handle(dst)}"
 
@@ -337,6 +374,25 @@ def attach_delivery(
         return f"{handle(node_id)}: {detail}" if detail else handle(node_id)
 
     return mutate(project, "deliver", apply, actor=actor, run=run)
+
+
+def _refuse_review_step(draft: Draft, node_id: NodeId, done: str) -> None:
+    node = draft[node_id]
+    if node.kind is Kind.REVIEW and node.parent is not None:
+        others = [c for c in draft.graph.children(node.parent) if c != node_id]
+        if others:
+            raise OpError(
+                f"{handle(node_id)} is its feature's review step, so it can't be {done}. To skip"
+                " the review, set it to dropped"
+            )
+
+
+def _refuse_review_links(draft: Draft, node_id: NodeId) -> None:
+    if draft[node_id].kind is Kind.REVIEW:
+        raise OpError(
+            f"{handle(node_id)} is a review step: it depends on its feature's other children,"
+            " and APM keeps it that way"
+        )
 
 
 def clean_title(title: str) -> str:

@@ -2,7 +2,7 @@
 
 from collections.abc import Iterable
 
-from apm.core.model import Delivery, Node, NodeId, Status
+from apm.core.model import Delivery, Kind, Node, NodeId, Status
 
 
 def make_id(n: int) -> NodeId:
@@ -20,11 +20,13 @@ def node(
     deps: Iterable[NodeId] = (),
     status: Status = Status.TODO,
     delivery: Delivery | None = None,
+    kind: Kind = Kind.WORK,
 ) -> Node:
     return Node(
         id=node_id,
         parent=parent,
         title=f"node {node_id[-2:]}",
+        kind=kind,
         status=status,
         depends_on=tuple(sorted(deps)),
         delivery=delivery,
