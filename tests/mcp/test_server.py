@@ -8,7 +8,7 @@ from apm.core.files import read_body
 from apm.core.git import log
 from apm.core.ids import handle
 from apm.core.model import Delivery, Status
-from apm.core.ops import NewNode, create_nodes
+from apm.core.ops import NewNode, attach_delivery, create_nodes, set_status
 from apm.core.project import Project, load_graph
 from apm.mcp.server import SCOPE_ENV, Scope, build_server
 
@@ -89,6 +89,16 @@ def test_read_tools(plan: tuple[Project, str, str, str]) -> None:
     assert session.call("apm_search", query="second") == f"{second} Second"
     assert session.call("apm_search", query="zebra") == "(no matches)"
     assert session.call("apm_check") == "ok"
+
+
+def test_ready_marks_stacked_work(plan: tuple[Project, str, str, str]) -> None:
+    project, _, first, second = plan
+    first_id = load_graph(project).resolve(first)
+    set_status(project, first_id, Status.IN_PROGRESS)
+    attach_delivery(project, first_id, branch="apm/first")
+    assert Session(project).call("apm_ready") == (
+        f"{second} [work/todo·ready·stacked] Second → {first} · stacked on {first}"
+    )
 
 
 def test_an_empty_plan_reads_cleanly(project: Project) -> None:

@@ -11,7 +11,7 @@ import { ProposalReview } from "./ProposalReview";
 import { type Theme, useTheme } from "./theme";
 import type { AgentRequest, Level, NodeDetail, NodeView, Project, Proposal, Run, Status, Tree } from "./types";
 import { Spinner } from "./ui";
-import { cx, errorText } from "./util";
+import { cx, errorText, stackedName } from "./util";
 
 interface Route {
   /** The node whose inside the graph shows; null = the top level. */
@@ -266,8 +266,9 @@ export function App() {
       }),
     reconcile: () =>
       quietly(async () => {
-        const result = await api<{ done: string[] }>("/api/reconcile", { method: "POST" });
-        toast(result.done.length ? result.done.join(" · ") : "Nothing has merged since last time.");
+        const result = await api<{ done: string[]; findings: string[] }>("/api/reconcile", { method: "POST" });
+        const lines = [...result.done, ...result.findings];
+        toast(lines.length ? lines.join(" · ") : "Nothing has reached the default branch since last time.");
       }),
     commitEdits: () =>
       quietly(async () => {
@@ -338,8 +339,9 @@ export function App() {
             {readyNodes.length ? (
               readyNodes.map((n) => (
                 <button key={n.id} className="menu-item" onClick={() => goTo(n.id)}>
-                  <span className="dot state-ready" />
+                  <span className={cx("dot", n.stack_top ? "state-stacked" : "state-ready")} />
                   {n.title}
+                  {n.stack_top && <span className="menu-note">stacked on {stackedName(n)}</span>}
                 </button>
               ))
             ) : (

@@ -17,6 +17,7 @@ from apm import __version__
 from apm.cli import app, open_when_listening
 from apm.core.archive import FORMAT_VERSION
 from apm.core.git import git, log
+from apm.core.ops import attach_delivery
 from apm.core.project import Project, load_graph
 from apm.core.store import SCHEMA_VERSION, Store
 from apm.server.security import load_or_create_token
@@ -90,6 +91,23 @@ def test_init_then_build_a_plan(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     assert apm("ready", "--root", ship).splitlines() == [f"{test} [work/todo·ready] Test → {build}"]
     assert apm("check").strip() == "ok"
     assert log(code / ".apm")[0].subject == f"status {build}: done"
+
+
+def test_ready_lists_stacked_work_and_says_what_it_stacks_on(cwd: Project) -> None:
+    first = add("First")
+    second = add("Second", "--dep", first)
+    apm("node", "status", first, "in_progress")
+    assert apm("ready").splitlines() == []
+    attach_delivery(
+        cwd, load_graph(cwd).resolve(first), branch="apm/first", pr="https://github.com/o/r/pull/20"
+    )
+    assert apm("ready").splitlines() == [
+        f"{second} [work/todo·ready·stacked] Second → {first} · stacked on {first} (#20)"
+    ]
+    (data,) = json.loads(apm("ready", "--json"))
+    assert data["stacked_on"] == [
+        {"id": load_graph(cwd).resolve(first), "handle": first, "pr": "#20"}
+    ]
 
 
 def test_show_prints_links_and_body(cwd: Project) -> None:

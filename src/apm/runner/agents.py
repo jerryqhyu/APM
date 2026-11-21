@@ -135,7 +135,8 @@ def check_startable(spec: AgentSpec, graph: Graph, node_id: NodeId) -> None:
         raise RunRefused("only a leaf can be implemented: this node has children")
     state = graph.states[node_id]
     if node.status is Status.TODO and not state.ready:
-        waiting = ", ".join(handle(n) for n in state.waiting_on) or "a dropped ancestor"
+        blocking = [n for n in state.waiting_on if n not in state.stacked_on]
+        waiting = ", ".join(handle(n) for n in blocking) or "a dropped ancestor"
         raise RunRefused(f"not ready: waiting on {waiting}")
     if node.status in (Status.DONE, Status.DROPPED):
         raise RunRefused(f"this node is {node.status}")

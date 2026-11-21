@@ -71,7 +71,11 @@ def graphs(draw: st.DrawFn, *, max_nodes: int = 12) -> list[Node]:
                 kind=kind,
                 status=status,
                 depends_on=tuple(sorted(deps)),
-                delivery=Delivery(repo="app") if deliver and idx not in has_children else None,
+                delivery=(
+                    Delivery(repo="app", branch=f"apm/{idx}" if idx % 2 else None)
+                    if deliver and idx not in has_children
+                    else None
+                ),
             )
         )
     return nodes

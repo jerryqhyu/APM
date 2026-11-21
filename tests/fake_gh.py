@@ -1,10 +1,13 @@
 """A stand-in for the `gh` CLI, for the parts of APM that open pull requests.
 
-It answers the two REST calls APM makes, and `gh pr view`:
+It answers the REST calls APM makes:
 
 - `gh api -X GET repos/<o>/<r>/pulls ...`: the open pull requests, from FAKE_GH_OPEN (JSON, `[]`
   by default).
 - `gh api -X POST repos/<o>/<r>/pulls ...`: a new pull request, `https://github.com/o/r/pull/7`.
+- `gh api [--hostname H] repos/<o>/<r>/pulls/<n>`: one pull request, from the JSON file at
+  FAKE_GH_PRS (see `FakeGh.add`); 404 if it isn't there.
+- `gh api -X PATCH repos/<o>/<r>/pulls/<n> -f base=<branch>`: retargets it in that file.
 - FAKE_GH=fail: every call fails the way GitHub refuses a pull request with no changes.
 
 Every call's arguments are appended to FAKE_GH_LOG as one JSON line.
@@ -12,6 +15,7 @@ Every call's arguments are appended to FAKE_GH_LOG as one JSON line.
 
 import json
 import os
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -30,6 +34,8 @@ def main() -> int:
         print(json.dumps(refusal))
         print("gh: Validation Failed (HTTP 422)", file=sys.stderr)
         return 1
+    if (one := _one_pr(args)) is not None:
+        return one
     if args[:3] == ["api", "-X", "GET"]:
         print(os.environ.get("FAKE_GH_OPEN", "[]"))
         return 0
@@ -38,6 +44,40 @@ def main() -> int:
         return 0
     print(f"fake gh: unexpected call {args}", file=sys.stderr)
     return 1
+
+
+_ONE_PR = re.compile(r"^repos/[^/]+/[^/]+/pulls/\d+$")
+
+
+def _one_pr(args: list[str]) -> int | None:
+    """Answers a call about one pull request (read or retarget); None if it isn't one."""
+    if not args or args[0] != "api":
+        return None
+    rest, method, fields, path = args[1:], "GET", {}, None
+    while rest:
+        arg = rest.pop(0)
+        if arg in ("--hostname", "-X", "-f"):
+            value = rest.pop(0)
+            if arg == "-X":
+                method = value
+            elif arg == "-f":
+                key, _, field = value.partition("=")
+                fields[key] = field
+        else:
+            path = arg
+    if path is None or not _ONE_PR.match(path):
+        return None
+    store = Path(os.environ.get("FAKE_GH_PRS", "/nonexistent"))
+    prs = json.loads(store.read_text()) if store.exists() else {}
+    if path not in prs:
+        print(json.dumps({"message": "Not Found"}))
+        print("gh: Not Found (HTTP 404)", file=sys.stderr)
+        return 1
+    if method == "PATCH" and "base" in fields:
+        prs[path]["base"]["ref"] = fields["base"]
+        store.write_text(json.dumps(prs))
+    print(json.dumps(prs[path]))
+    return 0
 
 
 class FakeGh:
@@ -53,6 +93,8 @@ class FakeGh:
         script.chmod(0o755)
         monkeypatch.setenv("PATH", f"{self.bin}{os.pathsep}{os.environ['PATH']}")
         monkeypatch.setenv("FAKE_GH_LOG", str(self.log))
+        self.prs = tmp_path / "gh-prs.json"
+        monkeypatch.setenv("FAKE_GH_PRS", str(self.prs))
         monkeypatch.delenv("FAKE_GH", raising=False)
         monkeypatch.delenv("FAKE_GH_OPEN", raising=False)
 
@@ -70,6 +112,36 @@ class FakeGh:
         assert git is not None
         (only_git / "git").symlink_to(git)
         self._monkeypatch.setenv("PATH", str(only_git))
+
+    def add(
+        self,
+        number: int,
+        *,
+        base: str = "main",
+        state: str = "open",
+        merged: bool = False,
+        merge_commit: str | None = None,
+        repo: str = "o/r",
+    ) -> str:
+        """Makes pull request `number` exist, as `gh api .../pulls/<n>` will return it. Returns
+        its URL.
+        """
+        prs = json.loads(self.prs.read_text()) if self.prs.exists() else {}
+        url = f"https://github.com/{repo}/pull/{number}"
+        prs[f"repos/{repo}/pulls/{number}"] = {
+            "number": number,
+            "html_url": url,
+            "state": state,
+            "merged": merged,
+            "merge_commit_sha": merge_commit,
+            "base": {"ref": base},
+        }
+        self.prs.write_text(json.dumps(prs))
+        return url
+
+    def pr(self, number: int, repo: str = "o/r") -> dict:
+        """Pull request `number` as the fake holds it now."""
+        return json.loads(self.prs.read_text())[f"repos/{repo}/pulls/{number}"]
 
     @property
     def calls(self) -> list[list[str]]:

@@ -72,7 +72,8 @@ That is the whole loop: talk, shape the plan, build a piece, repeat.
 | You see | It means |
 |---|---|
 | **Ready** | To do, and nothing it needs is unfinished. You can start it. |
-| **Blocked** | To do, but something it needs isn't done yet. A node inside a blocked node is blocked too. |
+| **Ready · stacked on #20** | To do, and what it needs is built and pushed but not merged yet. You can start it now: it builds on that work's branch. It becomes plain **Ready** once that merges. |
+| **Blocked** | To do, but something it needs isn't done yet, and isn't pushed either. A node inside a blocked node is blocked too. |
 | **2/5** on a node | Two of the five leaves inside it are done. |
 
 **Handle.** The short code on each node, like `1c0b9a44`. Use it to name a node in the terminal or to Claude.
@@ -163,7 +164,7 @@ With nothing selected, the panel acts on the whole plan:
 |---|---|
 | **Add node** | Adds a node at the top level. |
 | **Check plan** | Looks for broken rules and warnings. |
-| **Reconcile** | Marks nodes done whose pull request or commits have merged. |
+| **Reconcile** | Marks nodes done whose work is on your default branch. A pull request merged into another step's branch doesn't count yet: Reconcile says where it went. It also lists open pull requests that still target a branch that has landed, to retarget. |
 | **Commit hand edits** | Records changes you made by editing the plan's files directly. |
 | **Export archive…** | Downloads the plan and its history as one `.apm.zip` file (see [Sharing or moving a project](#sharing-or-moving-a-project)). |
 
@@ -193,7 +194,7 @@ Decompose versus conversation: use Decompose when you want a reviewed proposal t
 
 ## Having Claude build a node
 
-**Implement** is available on a leaf that is Ready or already In progress. Claude then:
+**Implement** is available on a leaf that is Ready (stacked or not) or already In progress. Claude then:
 
 1. works in its own copy of your repository (a git worktree under `.claude/worktrees/`), so your own checkout is not touched;
 2. builds what the node describes, on a branch named `apm/<handle>-<title>`;
@@ -201,11 +202,11 @@ Decompose versus conversation: use Decompose when you want a reviewed proposal t
 4. pushes and opens a pull request with the GitHub CLI (`gh`);
 5. records the branch, commits and pull request on the node, and ticks the acceptance criteria it verified.
 
-**Stacking.** If the node builds on another node's work that isn't merged yet, the branch starts from that node's branch and the pull request targets it, so each pull request shows only its own changes. APM works this out when the run starts (it fetches first) and tells Claude. Otherwise the base is your default branch. If the node waits on several unmerged branches, it builds on the default branch and its pull request says what has to merge first.
+**Stacking.** If the node builds on another node's work that isn't merged yet, the branch starts from that node's branch and the pull request targets it, so each pull request shows only its own changes. APM works this out when the run starts (it fetches first) and tells Claude. Otherwise the base is your default branch. If it waits on several unmerged branches, it builds on the one that was built on the others; if they're on separate branches, the node shows as **Blocked** until all but one of them merge.
 
 **If Claude can't open the pull request** (no `gh`, or `gh` refuses), it still pushes and records the branch, and APM opens the pull request itself once the run ends. You see a line from APM in the conversation either way. If nobody could open it, that line says why, the node's Notes say so, and Details shows **Pull request: None yet**. Nothing is marked done.
 
-You follow it in the node's conversation and can reply to it there. The node stays **In progress** until you mark it done, or until its pull request merges and you press **Reconcile** (APM also checks when `apm serve` starts).
+You follow it in the node's conversation and can reply to it there. The node stays **In progress** until its work reaches your default branch and you press **Reconcile** (APM also checks when `apm serve` starts), or until you mark it done. You don't need to mark it done for the next step to start: once its branch is pushed, what depends on it is **Ready · stacked**.
 
 Two things to know:
 
@@ -243,6 +244,7 @@ apm run decomposer 1c0b9a44 -m "Three steps at most."      # then: apm proposal 
 apm run implementer 7d2e0f11 --mode manual                 # build, asking before each change
 apm proposal accept <id>                                    # or: apm proposal reject <id>
 apm reconcile                                               # mark merged work done
+apm reconcile --retarget                                    # ...and retarget stacked PRs
 ```
 
 When an agent needs an answer, `apm run` asks you in the terminal.

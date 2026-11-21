@@ -7,6 +7,9 @@ Plain code around the implementer, not part of it:
 - `ensure_pull_request`: after an implementer run, opens the pull request itself if the agent
   pushed a branch but couldn't open one (no `gh`, or `gh pr` refused). It goes through the GitHub
   REST API (`gh api`), which works where `gh pr`'s GraphQL calls are blocked.
+- `read_pr` / `set_pr_base`: one pull request through the same REST API (state, whether it
+  merged, its base, its merge commit; and retargeting it). `choose_base` and `apm reconcile` use
+  them, never `gh pr view`.
 
 `gh` must be installed and signed in for anything here that talks to GitHub. Without it, every
 function degrades to what local git can tell, and says why when that isn't enough.
@@ -71,14 +74,76 @@ def _gh_failure(result: subprocess.CompletedProcess[str]) -> str:
     return lines[-1] if lines else f"exit code {result.returncode}"
 
 
-def pr_state(repo_dir: Path, url: str) -> str | None:
-    """`OPEN`, `MERGED` or `CLOSED`, or None if `gh` can't tell us (not installed, not signed
-    in, offline).
+_PR_URL = re.compile(r"^https?://(?P<host>[^/]+)/(?P<owner>[^/]+)/(?P<repo>[^/]+)/pull/(?P<n>\d+)")
+
+
+@dataclass(frozen=True, slots=True)
+class PrRef:
+    host: str
+    owner: str
+    repo: str
+    number: int
+
+    @property
+    def api_path(self) -> str:
+        return f"repos/{self.owner}/{self.repo}/pulls/{self.number}"
+
+    @property
+    def host_args(self) -> list[str]:
+        return [] if self.host == "github.com" else ["--hostname", self.host]
+
+
+def parse_pr_url(url: str) -> PrRef | None:
+    """`https://github.com/o/r/pull/20` → host, owner, repo, number. None if it isn't one."""
+    match = _PR_URL.match(url.strip())
+    if match is None:
+        return None
+    return PrRef(match["host"], match["owner"], match["repo"], int(match["n"]))
+
+
+def pr_number(url: str) -> int | None:
+    ref = parse_pr_url(url)
+    return ref.number if ref else None
+
+
+@dataclass(frozen=True, slots=True)
+class PullRequest:
+    ref: PrRef
+    state: str
+    """`open` or `closed`, as GitHub says it."""
+    merged: bool
+    base: str
+    """The branch it targets (or targeted when it merged)."""
+    merge_commit: str | None
+
+    @property
+    def number(self) -> int:
+        return self.ref.number
+
+
+def read_pr(repo_dir: Path, url: str) -> PullRequest | None:
+    """The pull request at `url`, or None if it can't be read (not a GitHub PR URL, no `gh`, not
+    signed in, offline).
     """
+    ref = parse_pr_url(url)
+    if ref is None:
+        return None
     try:
-        return json.loads(gh(repo_dir, ["pr", "view", url, "--json", "state"], timeout=30))["state"]
+        data = json.loads(gh(repo_dir, ["api", *ref.host_args, ref.api_path]))
+        return PullRequest(
+            ref=ref,
+            state=str(data["state"]),
+            merged=bool(data.get("merged") or data.get("merged_at")),
+            base=str(data["base"]["ref"]),
+            merge_commit=data.get("merge_commit_sha") or None,
+        )
     except GhError, ValueError, KeyError, TypeError:
         return None
+
+
+def set_pr_base(repo_dir: Path, pr: PullRequest, base: str) -> None:
+    """Points `pr` at `base`. Raises `GhError` if GitHub refuses."""
+    gh(repo_dir, ["api", *pr.ref.host_args, "-X", "PATCH", pr.ref.api_path, "-f", f"base={base}"])
 
 
 def default_branch(repo_dir: Path) -> str | None:
@@ -127,7 +192,9 @@ def choose_base(project: Project, node_id: NodeId, *, repo_key: str | None = Non
 
     - Exactly one open candidate: stack on it.
     - None: the default branch.
-    - Several: the default branch, with the open ones listed so the agent can say what it waits on.
+    - Several, one built on the others (`Graph.stack_top`): stack on that one.
+    - Several on separate branches: the default branch, with the open ones listed so the agent
+      can say what it waits on.
     """
     graph = load_graph(project)
     config = read_config(project.apm_dir)
@@ -140,7 +207,7 @@ def choose_base(project: Project, node_id: NodeId, *, repo_key: str | None = Non
         git(repo_dir, ["rev-parse", "--git-dir"])
     except GitError:
         return Base(None)
-    _fetch(repo_dir)
+    fetch_origin(repo_dir)
     target = default_branch(repo_dir)
     if target is None:
         return Base(None)
@@ -154,6 +221,10 @@ def choose_base(project: Project, node_id: NodeId, *, repo_key: str | None = Non
     if len(open_branches) == 1:
         (dep, branch), *_ = open_branches
         return Base(branch, stacked_on=dep)
+    # Several, but one was built on the others (it depends on them): its branch holds them all.
+    # The same rule decides whether the node is ready, stacked (`Graph.stack_top`).
+    if (top := graph.stack_top(dep for dep, _ in open_branches)) is not None:
+        return Base(dict(open_branches)[top], stacked_on=top)
     name = target.removeprefix("origin/")
     return Base(name, unmerged=tuple(open_branches) if open_branches else ())
 
@@ -177,9 +248,9 @@ def _dependency_branches(
 
 def _is_open(repo_dir: Path, branch: str, pr: str | None, target: str) -> bool:
     """True if `branch` still exists and its work isn't on `target` yet."""
-    if pr and pr_state(repo_dir, pr) == "MERGED":
+    if pr and (state := read_pr(repo_dir, pr)) is not None and state.merged:
         return False
-    tip = _tip(repo_dir, branch)
+    tip = branch_tip(repo_dir, branch)
     if tip is None:
         return False  # gone (deleted once merged, or never pushed): nothing to stack on
     try:
@@ -188,7 +259,8 @@ def _is_open(repo_dir: Path, branch: str, pr: str | None, target: str) -> bool:
         return False
 
 
-def _tip(repo_dir: Path, branch: str) -> str | None:
+def branch_tip(repo_dir: Path, branch: str) -> str | None:
+    """The SHA of `branch` on `origin`, else locally; None if it's in neither."""
     for ref in (f"refs/remotes/origin/{branch}", f"refs/heads/{branch}"):
         try:
             if sha := rev_parse(repo_dir, ref):
@@ -198,7 +270,7 @@ def _tip(repo_dir: Path, branch: str) -> str | None:
     return None
 
 
-def _fetch(repo_dir: Path) -> None:
+def fetch_origin(repo_dir: Path) -> None:
     """`git fetch --prune origin`, if there is an `origin`. Best effort: offline is fine."""
     try:
         git(repo_dir, ["remote", "get-url", "origin"])
