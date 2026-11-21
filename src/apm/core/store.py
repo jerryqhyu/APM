@@ -1,21 +1,22 @@
 """The local database (plans.md §4): `.apm/.cache/apm.db`, never committed.
 
-It holds what only matters on this machine: agent runs, their event logs, and proposals waiting
-for a decision. Deleting it loses those and nothing about the plan itself.
+It holds what only matters on this machine: agent runs, their event logs, proposals waiting
+for a decision, and task reviews. Deleting it loses those and nothing about the plan itself.
 """
 
+import hashlib
 import json
 import sqlite3
 import time
 import uuid
 from collections.abc import Generator, Iterable
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import astuple, dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
 from apm.core.lock import CACHE_DIR
-from apm.core.model import NodeId
+from apm.core.model import Node, NodeId
 
 DB_FILE = "apm.db"
 SCHEMA_VERSION = 2
@@ -24,6 +25,7 @@ PROJECT = ""
 
 type RunStatus = Literal["running", "succeeded", "failed", "cancelled"]
 type ProposalStatus = Literal["pending", "accepted", "rejected"]
+type ReviewVerdict = Literal["pass", "too_big", "unclear", "error"]
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -61,6 +63,15 @@ CREATE TABLE IF NOT EXISTS proposals(
     resolved REAL
 );
 CREATE INDEX IF NOT EXISTS proposals_node ON proposals(node_id, created);
+CREATE TABLE IF NOT EXISTS task_reviews(
+    node_id TEXT NOT NULL,
+    fingerprint TEXT NOT NULL,
+    verdict TEXT NOT NULL,
+    data TEXT NOT NULL,
+    run_id TEXT,
+    created REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS task_reviews_node ON task_reviews(node_id, created);
 """
 
 
@@ -103,6 +114,25 @@ class Proposal:
     status: ProposalStatus
     created: float
     resolved: float | None
+
+
+@dataclass(frozen=True, slots=True)
+class TaskReview:
+    """A task's review, for one version of its content (see `content_fingerprint`)."""
+
+    node_id: NodeId
+    fingerprint: str
+    verdict: ReviewVerdict
+    data: dict[str, Any]
+    """What the reviewer returned with its verdict."""
+    run_id: str | None = None
+    created: float = field(default_factory=time.time)
+
+
+def content_fingerprint(node: Node, body: str) -> str:
+    """Identifies what a task review reads: title, kind and body, not status or delivery."""
+    content = json.dumps([node.title, node.kind, body], ensure_ascii=False)
+    return hashlib.sha256(content.encode()).hexdigest()
 
 
 class Store:
@@ -316,6 +346,31 @@ class Store:
                 "UPDATE proposals SET status = 'pending', resolved = NULL WHERE id = ?",
                 (proposal_id,),
             )
+
+    # --- task reviews (not archived: an imported project's tasks are simply reviewed again) ---
+
+    def add_task_review(self, review: TaskReview) -> None:
+        values = list(astuple(review))
+        values[3] = json.dumps(review.data, ensure_ascii=False)
+        with self._db() as db:
+            db.execute("INSERT INTO task_reviews VALUES(?, ?, ?, ?, ?, ?)", values)
+
+    def latest_task_review(self, node_id: NodeId) -> TaskReview | None:
+        with self._db() as db:
+            row = db.execute(
+                "SELECT * FROM task_reviews WHERE node_id = ? ORDER BY created DESC, rowid DESC",
+                (node_id,),
+            ).fetchone()
+        return None if row is None else TaskReview(**{**row, "data": json.loads(row["data"])})
+
+    def count_errors(self, node_id: NodeId, fingerprint: str) -> int:
+        """How many reviews of this content failed to give a verdict."""
+        with self._db() as db:
+            return db.execute(
+                "SELECT COUNT(*) FROM task_reviews"
+                " WHERE node_id = ? AND fingerprint = ? AND verdict = 'error'",
+                (node_id, fingerprint),
+            ).fetchone()[0]
 
     # --- restoring (from an archive, see `apm.core.archive`) ---
 
