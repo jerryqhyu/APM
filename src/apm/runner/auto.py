@@ -5,6 +5,9 @@ run would work on, e.g. a task's content fingerprint) changed restarts that run'
 of edits ends in one run on the final content. `pump` starts the runs whose wait is over while
 there is room under `runner.max_concurrent`; a run that can't start yet stays queued. One version
 gets one automatic run per server: a run that errored is tried again after an edit or a restart.
+
+It also reconciles (retargeting open PRs) every `reconcile_interval_s`, and queues a feature
+review whenever a review step becomes ready, again after its follow-ups are done.
 """
 
 import asyncio
@@ -18,11 +21,13 @@ from typing import Any
 from apm.core.config import read_config
 from apm.core.errors import ApmError
 from apm.core.files import read_body
-from apm.core.model import NodeId
+from apm.core.graph import Graph
+from apm.core.model import Kind, NodeId
 from apm.core.project import load_graph
+from apm.core.reconcile import reconcile
 from apm.core.store import content_fingerprint
 from apm.core.task_review import due_task_reviews
-from apm.runner.runner import Runner, RunnerBusy
+from apm.runner.runner import FEATURE_REVIEWER, Runner, RunnerBusy
 
 TASK_REVIEWER = "apm-task-reviewer"
 DEBOUNCE_S = 3.0
@@ -38,23 +43,44 @@ class AutoQueue:
     """(agent, node) → (version, when it may start)."""
     started: dict[tuple[str, NodeId], str] = field(default_factory=dict)
     """(agent, node) → the version last started."""
+    next_reconcile: float = 0.0
+    """When the next periodic reconcile is due (0 = at once)."""
 
     def push(self, agent: str, node_id: NodeId, version: str) -> None:
         key = (agent, node_id)
         if version not in (self.started.get(key), self.queued.get(key, ("",))[0]):
             self.queued[key] = (version, self.clock() + self.debounce_s)
 
+    def reconcile(self) -> bool:
+        """Reconciles, retargeting open PRs, once `reconcile_interval_s` has passed since the
+        last time. True if it ran.
+        """
+        automation = read_config(self.runner.project.apm_dir).automation
+        if not automation.reconcile or self.clock() < self.next_reconcile:
+            return False
+        self.next_reconcile = self.clock() + automation.reconcile_interval_s
+        with contextlib.suppress(Exception):  # git or gh failed: try again next interval
+            reconcile(self.runner.project, actor="apm", retarget=True)
+        return True
+
     def scan(self) -> None:
-        """Queues the task reviews that are due and drops queued ones that no longer are."""
-        project, due = self.runner.project, {}
-        if read_config(project.apm_dir).automation.task_review:
-            graph, body = load_graph(project), partial(read_body, project.apm_dir)
+        """Queues the task and feature reviews that are due and drops queued ones that no longer
+        are.
+        """
+        project = self.runner.project
+        due: dict[tuple[str, NodeId], str] = {}
+        automation = read_config(project.apm_dir).automation
+        graph, body = load_graph(project), partial(read_body, project.apm_dir)
+        if automation.task_review:
             for node_id in due_task_reviews(graph, self.runner.store, body):
-                due[node_id] = content_fingerprint(graph[node_id], body(node_id))
-        for key in [k for k in self.queued if k[0] == TASK_REVIEWER and k[1] not in due]:
+                due[TASK_REVIEWER, node_id] = content_fingerprint(graph[node_id], body(node_id))
+        if automation.feature_review:
+            for step in due_feature_reviews(graph):
+                due[FEATURE_REVIEWER, step] = ",".join(sorted(graph.dependencies(step)))
+        for key in [k for k in self.queued if k not in due]:
             del self.queued[key]
-        for node_id, fingerprint in due.items():
-            self.push(TASK_REVIEWER, node_id, fingerprint)
+        for (agent, node_id), version in due.items():
+            self.push(agent, node_id, version)
 
     def pump(self) -> None:
         """Starts the runs whose wait is over, oldest first, while there is room."""
@@ -77,9 +103,18 @@ class AutoQueue:
         rescan = True
         while True:
             with contextlib.suppress(ApmError):  # a broken apm.yaml waits for its fix
+                if await asyncio.to_thread(self.reconcile):
+                    rescan = True
                 if rescan:
                     await asyncio.to_thread(self.scan)
                 self.pump()
             rescan = False
             with contextlib.suppress(TimeoutError):
                 rescan = (await asyncio.wait_for(events.get(), tick_s))["type"] == "graph.changed"
+
+
+def due_feature_reviews(graph: Graph) -> list[NodeId]:
+    """The review steps that are ready. Their version is the tasks they wait on, so a step that
+    waits on new follow-ups is reviewed again once those are done.
+    """
+    return [n for n in graph.nodes if graph[n].kind is Kind.REVIEW and graph.states[n].ready]
