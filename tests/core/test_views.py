@@ -26,25 +26,26 @@ def test_outline_shows_state_progress_and_dependencies() -> None:
 
 
 def test_stacked_work_is_marked_with_what_it_stacks_on() -> None:
-    with_pr = Delivery(repo="app", branch="apm/a", pr="https://github.com/o/r/pull/20")
+    first = Delivery(repo="app", branch="apm/a", pr="https://github.com/o/r/pull/20")
+    second = Delivery(repo="app", branch="apm/b", pr="https://github.com/o/r/pull/21")
     graph = Graph(
         [
-            node(A, status=Status.IN_PROGRESS, delivery=with_pr),
-            node(B, status=Status.IN_PROGRESS, delivery=Delivery(repo="app", branch="apm/b")),
+            node(A, status=Status.IN_PROGRESS, delivery=first),
+            node(B, deps=[A], status=Status.IN_PROGRESS, delivery=second),
             node(C, deps=[A, B]),
         ]
     )
     assert outline(graph).splitlines()[2] == (
         "0000000c [work/todo·ready·stacked] node 0c → 0000000a, 0000000b"
-        " · stacked on 0000000a (#20), 0000000b"
+        " · stacked on 0000000b (#21)"
     )
     view = node_view(graph, C)
-    assert (view["ready"], view["blocked"]) == (True, False)
+    assert (view["ready"], view["blocked"], view["stack_top"]) == (True, False, B)
     assert view["stacked_on"] == [
         {"id": A, "handle": "0000000a", "pr": "#20"},
-        {"id": B, "handle": "0000000b", "pr": None},
+        {"id": B, "handle": "0000000b", "pr": "#21"},
     ]
-    assert node_view(graph, A)["stacked_on"] == []
+    assert (node_view(graph, A)["stacked_on"], node_view(graph, A)["stack_top"]) == ([], None)
 
 
 def test_pr_label_is_the_number_when_there_is_one() -> None:

@@ -2,7 +2,7 @@
 // several nodes, or (with nothing selected) the plan as a whole.
 
 import type { NodeView, Status } from "./types";
-import { STATUS_LABEL, cx, stackedNames } from "./util";
+import { STATUS_LABEL, cx, stackedName } from "./util";
 
 export interface ActionHandlers {
   open: (id: string) => void;
@@ -45,8 +45,8 @@ export function Actions({
       ? "Only a node with nothing inside it can be built directly"
       : one.blocked
         ? "Blocked: what it waits on isn’t done yet"
-        : one.status === "todo" && one.stacked_on.length
-          ? `Stacked on ${stackedNames(one.stacked_on)}: Claude starts from that branch and opens its pull request against it`
+        : one.status === "todo" && one.stack_top
+          ? `Stacked on ${stackedName(one)}: Claude starts from that branch and opens its pull request against it`
         : one.status === "done" || one.status === "dropped"
           ? `This node is ${STATUS_LABEL[one.status].toLowerCase()}`
           : "Claude builds this in its own worktree and opens a pull request";

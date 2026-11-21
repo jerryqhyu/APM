@@ -6,13 +6,16 @@ from typing import Any
 
 import pytest
 
+from apm.core.files import read_body
 from apm.core.ids import handle
 from apm.core.model import Status
 from apm.core.ops import NewNode, attach_delivery, create_nodes, set_status
-from apm.core.project import Project
+from apm.core.project import Project, load_graph
 from apm.core.store import Store
 from apm.runner.agents import RunRefused
 from apm.runner.runner import Runner, RunnerBusy, _failure
+from tests.conftest import CodeRepo
+from tests.fake_gh import NEW_PR, FakeGh
 from tests.runner.fake import FakeClaude
 
 
@@ -507,3 +510,104 @@ async def test_the_reviewer_cannot_be_replied_to(
     critic = next(r for r in harness.store.list_runs() if r.agent == "apm-critic")
     with pytest.raises(RunRefused, match="Review runs on its own"):
         harness.runner.continue_run(critic.id, "Why?")
+
+
+# --- an implementer's base branch and pull request ---
+
+
+def notices(harness: Harness, run_id: str) -> list[tuple[str, str]]:
+    return [
+        (e.data["level"], e.data["text"])
+        for e in harness.store.list_events(run_id)
+        if e.data["type"] == "apm_notice"
+    ]
+
+
+def stacked_pair(code_repo: CodeRepo) -> tuple[str, str]:
+    """`first`, done and delivered on an unmerged branch, and `second`, which depends on it."""
+    project = code_repo.project
+    first, second = create_nodes(
+        project,
+        [NewNode(title="First", key="a"), NewNode(title="Second", depends_on_keys=["a"])],
+    ).created
+    code_repo.push_branch("apm/first")
+    attach_delivery(project, first, branch="apm/first", pr="https://github.com/o/r/pull/1")
+    set_status(project, first, Status.DONE)
+    return first, second
+
+
+async def test_the_implementer_is_told_to_stack_on_its_dependency(
+    harness: Harness, code_repo: CodeRepo, fake_claude: FakeClaude, fake_gh: FakeGh
+) -> None:
+    first, second = stacked_pair(code_repo)
+    run = harness.runner.start("apm-implementer", second, "Keep it small.")
+    await harness.runner.wait(run.id)
+
+    (call,) = fake_claude.calls
+    prompt = call["prompt"]
+    assert f'It builds on {handle(first)} ("First"), whose branch apm/first is not merged' in prompt
+    assert "start from origin/apm/first" in prompt
+    assert "`gh pr create --base apm/first`" in prompt
+    assert prompt.endswith("Guidance from the user:\nKeep it small.")
+    assert harness.store.get_run(run.id).prompt == prompt  # what the conversation shows
+
+
+async def test_after_the_run_apm_opens_the_missing_pull_request(
+    harness: Harness, code_repo: CodeRepo, fake_gh: FakeGh
+) -> None:
+    _, second = stacked_pair(code_repo)
+    # As if the agent pushed its branch and recorded it, but couldn't open the PR.
+    code_repo.push_branch("apm/second", base="apm/first")
+    attach_delivery(code_repo.project, second, branch="apm/second")
+    run = harness.runner.start("apm-implementer", second)
+    await harness.runner.wait(run.id)
+
+    assert harness.store.get_run(run.id).status == "succeeded"
+    node = load_graph(code_repo.project)[second]
+    assert node.delivery is not None
+    assert node.delivery.pr == NEW_PR
+    assert node.status is Status.TODO  # opening a PR marks nothing done
+    assert fake_gh.field(fake_gh.calls[-1], "base") == "apm/first"
+    assert notices(harness, run.id) == [
+        ("info", f"APM opened the pull request against apm/first: {NEW_PR}")
+    ]
+    assert "apm_notice" in [e["event"]["data"]["type"] for e in harness.events if "event" in e]
+
+
+async def test_when_no_pull_request_can_be_opened_the_run_says_why(
+    harness: Harness, code_repo: CodeRepo, fake_gh: FakeGh
+) -> None:
+    (node,) = create_nodes(code_repo.project, [NewNode(title="Solo")]).created
+    attach_delivery(code_repo.project, node, branch="apm/solo")
+    fake_gh.fail()
+    run = harness.runner.start("apm-implementer", node)
+    await harness.runner.wait(run.id)
+
+    ((level, text),) = notices(harness, run.id)
+    assert level == "warning"
+    assert text.startswith("No pull request yet: `gh api` failed: No commits between.")
+    assert "Branch `apm/solo` is pushed" in text
+    body = read_body(code_repo.project.apm_dir, node)
+    assert "**No pull request yet.** Branch `apm/solo` is delivered" in body
+    graph = load_graph(code_repo.project)
+    assert graph[node].status is Status.TODO
+    delivery = graph[node].delivery
+    assert delivery is not None
+    assert delivery.pr is None
+
+
+async def test_a_run_that_delivered_nothing_says_so_in_the_chat_only(
+    harness: Harness, node: str, fake_gh: FakeGh
+) -> None:
+    before = read_body(harness.project.apm_dir, node)
+    run = harness.runner.start("apm-implementer", node)
+    await harness.runner.wait(run.id)
+    assert notices(harness, run.id) == [
+        (
+            "warning",
+            "No pull request yet: the run recorded no branch, so there is nothing to open one"
+            " from.",
+        )
+    ]
+    assert read_body(harness.project.apm_dir, node) == before
+    assert fake_gh.calls == []

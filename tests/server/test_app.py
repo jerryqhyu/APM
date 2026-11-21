@@ -417,7 +417,7 @@ def test_merge_and_project_actions(client: TestClient, project: Project) -> None
     assert graph[c].depends_on == (a,)
     assert client.post("/api/merge", json={"target": a, "others": [a]}).status_code == 422
 
-    assert client.post("/api/reconcile").json() == {"done": []}
+    assert client.post("/api/reconcile").json() == {"done": [], "findings": []}
     assert client.post("/api/commit").json() == {"sha": None, "nodes": []}
     detail = client.get(f"/api/nodes/{a}").json()
     assert detail["links"]["dependents"][0]["title"] == "C"

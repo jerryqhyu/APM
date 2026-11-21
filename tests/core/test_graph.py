@@ -207,6 +207,7 @@ def test_a_delivered_dependency_lets_work_stack_on_it() -> None:
     assert not state.blocked
     assert state.waiting_on == (A,)
     assert state.stacked_on == (A,)
+    assert state.stack_top == A
     assert graph.ready_leaves() == [B]
 
 
@@ -216,7 +217,8 @@ def test_a_pull_request_alone_is_enough_to_stack_on() -> None:
     assert graph.states[B].stacked_on == (A,)
 
 
-def test_work_can_stack_on_two_delivered_dependencies() -> None:
+def test_two_delivered_dependencies_on_separate_branches_block() -> None:
+    # A branch can stack on one branch, and A and B know nothing of each other.
     graph = Graph(
         [
             node(A, status=IN_PROGRESS, delivery=PUSHED),
@@ -224,8 +226,35 @@ def test_work_can_stack_on_two_delivered_dependencies() -> None:
             node(C, deps=[A, B]),
         ]
     )
-    assert graph.states[C].ready
-    assert graph.states[C].stacked_on == (A, B)
+    state = graph.states[C]
+    assert state.blocked
+    assert not state.ready
+    assert state.stacked_on == (A, B)
+    assert state.stack_top is None
+
+
+def test_two_delivered_dependencies_in_a_chain_stack_on_the_later_one() -> None:
+    # B was built on A (it depends on it), so B's branch holds both: C stacks on B.
+    graph = Graph(
+        [
+            node(A, status=IN_PROGRESS, delivery=PUSHED),
+            node(B, deps=[A], status=IN_PROGRESS, delivery=Delivery(repo="app", branch="apm/b")),
+            node(C, deps=[A, B]),
+        ]
+    )
+    state = graph.states[C]
+    assert state.ready
+    assert state.stacked_on == (A, B)
+    assert state.stack_top == B
+
+
+def test_stack_top_needs_one_dependency_to_cover_the_rest() -> None:
+    graph = Graph([node(A), node(B, deps=[A]), node(C, deps=[B]), node(D)])
+    assert graph.stack_top([]) is None
+    assert graph.stack_top([A]) == A
+    assert graph.stack_top([A, C]) == C  # through B
+    assert graph.stack_top([A, B, C]) == C
+    assert graph.stack_top([A, D]) is None
 
 
 def test_in_progress_without_a_pushed_branch_still_blocks() -> None:
@@ -345,7 +374,10 @@ def test_states_agree_with_the_definitions(nodes: list[Node]) -> None:
             and bool(delivery.branch or delivery.pr)
         }
         assert set(state.stacked_on) == stacked
-        assert state.blocked == (n.status is Status.TODO and bool(waiting - stacked))
+        top = graph.stack_top(stacked)
+        assert state.stack_top == top
+        blocking = (waiting - stacked) if (top or not stacked) else waiting
+        assert state.blocked == (n.status is Status.TODO and bool(blocking))
         assert not (state.blocked and state.ready)
         if state.ready:
             assert n.status is Status.TODO

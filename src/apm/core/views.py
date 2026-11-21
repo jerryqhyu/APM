@@ -7,6 +7,9 @@
 
     1c0b9a44 [work/todo·ready] Stream agent output → 7d2e0f11
     5e6f7a8b [work/todo·ready·stacked] Tag and publish → 7d2e0f11 · stacked on 7d2e0f11 (#20)
+
+A stacked node builds on its `stack_top`: the delivered, unmerged dependency whose branch holds
+all the work it waits on.
 """
 
 import re
@@ -31,7 +34,7 @@ def state_label(graph: Graph, node_id: NodeId) -> str:
     if state.blocked:
         return f"{status}·blocked"
     if state.ready:
-        return f"{status}·ready·stacked" if state.stacked_on else f"{status}·ready"
+        return f"{status}·ready·stacked" if state.stack_top else f"{status}·ready"
     return str(status)
 
 
@@ -47,13 +50,12 @@ def pr_label(url: str | None) -> str | None:
 
 
 def stacked_label(graph: Graph, node_id: NodeId) -> str:
-    """What a stacked node stacks on, e.g. `7d2e0f11 (#20), 9a8b7c6d`; empty if nothing."""
-    parts = []
-    for dep in graph.states[node_id].stacked_on:
-        delivery = graph[dep].delivery
-        pr = pr_label(delivery.pr if delivery else None)
-        parts.append(f"{graph.handles[dep]} ({pr})" if pr else graph.handles[dep])
-    return ", ".join(parts)
+    """What a stacked node builds on, e.g. `7d2e0f11 (#20)`; empty if nothing."""
+    top = graph.states[node_id].stack_top
+    if top is None:
+        return ""
+    pr = pr_label(_pr_of(graph, top))
+    return f"{graph.handles[top]} ({pr})" if pr else graph.handles[top]
 
 
 def node_line(graph: Graph, node_id: NodeId) -> str:
@@ -65,7 +67,7 @@ def node_line(graph: Graph, node_id: NodeId) -> str:
         line += f" ({state.progress.done}/{state.progress.total})"
     if deps := graph.dependencies(node_id):
         line += " → " + ", ".join(names[d] for d in deps)
-    if state.ready and state.stacked_on:
+    if state.ready and state.stack_top:
         line += " · stacked on " + stacked_label(graph, node_id)
     if state.dropped_deps:
         line += " ⚠ depends on dropped " + ", ".join(names[d] for d in state.dropped_deps)
@@ -135,6 +137,7 @@ def node_view(graph: Graph, node_id: NodeId) -> dict[str, Any]:
             {"id": dep, "handle": graph.handles[dep], "pr": pr_label(_pr_of(graph, dep))}
             for dep in state.stacked_on
         ],
+        "stack_top": state.stack_top,
         "dropped_deps": list(state.dropped_deps),
         "depends_on": list(graph.dependencies(node_id)),
         "dependents": list(graph.dependents(node_id)),

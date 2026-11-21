@@ -30,6 +30,8 @@ export interface NodeView {
   waiting_on: string[];
   /** Ready because of these: start on top of their branch. Empty when everything it needs is done. */
   stacked_on: StackedOn[];
+  /** Which of `stacked_on` to build on: its branch holds them all. Null if it can't stack. */
+  stack_top: string | null;
   dropped_deps: string[];
   depends_on: string[];
   dependents: string[];

@@ -41,7 +41,8 @@ class NodeState:
     """What follows from a node's status and its surroundings (plans.md §2.3)."""
 
     blocked: bool
-    """`todo`, and something in `waiting_on` that isn't in `stacked_on`."""
+    """`todo`, and waiting on something it can't stack on: a dependency that isn't delivered, or
+    delivered dependencies on separate branches."""
     ready: bool
     """`todo`, not blocked, and not under a dropped ancestor. Includes stacked work: check
     `stacked_on` to tell "everything it needs is done" from "it can stack on open work"."""
@@ -52,8 +53,12 @@ class NodeState:
     """
     stacked_on: tuple[NodeId, ...]
     """The part of `waiting_on` that is delivered but not merged: `in_progress` leaves whose
-    delivery has a branch or a pull request. Work can start on top of them (a stacked branch), so
-    they don't block; they stop being listed here once they're `done`.
+    delivery has a branch or a pull request. They stop being listed here once they're `done`.
+    """
+    stack_top: NodeId | None
+    """The one of `stacked_on` to build on, whose branch holds all their work (see
+    `Graph.stack_top`). None when there is nothing to stack on, or when `stacked_on` spans separate
+    branches; then the node is blocked until all but one of them merge.
     """
     dropped_deps: tuple[NodeId, ...]
     """The node's own dependencies that are `dropped`. A flag for the user to resolve."""
@@ -171,7 +176,8 @@ class Graph:
             ancestors = self.ancestors(node_id)
             waiting = own_waiting[node_id].union(*(own_waiting[a] for a in ancestors))
             stacked = waiting & stackable
-            blocking = waiting - stacked
+            top = self.stack_top(stacked)
+            blocking = (waiting - stacked) if (top or not stacked) else waiting
             todo = node.status is Status.TODO
             under_dropped = any(nodes[a].status is Status.DROPPED for a in ancestors)
             states[node_id] = NodeState(
@@ -179,6 +185,7 @@ class Graph:
                 ready=todo and not blocking and not under_dropped,
                 waiting_on=tuple(sorted(waiting)),
                 stacked_on=tuple(sorted(stacked)),
+                stack_top=top,
                 dropped_deps=tuple(
                     d for d in self.dependencies(node_id) if nodes[d].status is Status.DROPPED
                 ),
@@ -198,6 +205,21 @@ class Graph:
             and delivery is not None
             and bool(delivery.branch or delivery.pr)
         )
+
+    def stack_top(self, delivered: Iterable[NodeId]) -> NodeId | None:
+        """The one of `delivered` (delivered but unmerged nodes) to stack new work on: the only
+        one, or the one that depends, directly or not, on all the others, so its branch was built
+        on theirs and holds their work. None if there are none, or if they're on separate
+        branches.
+        """
+        candidates = sorted(set(delivered))
+        if len(candidates) <= 1:
+            return candidates[0] if candidates else None
+        for top in candidates:
+            below = nx.descendants(self.deps, top)
+            if all(other == top or other in below for other in candidates):
+                return top
+        return None
 
     def ready_leaves(self, root: NodeId | None = None) -> list[NodeId]:
         """What can be worked on now: the ready leaves under `root` (None = the whole project), in

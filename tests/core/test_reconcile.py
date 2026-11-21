@@ -1,15 +1,18 @@
-import shutil
 from pathlib import Path
 
 import pytest
+from typer.testing import CliRunner
 
+from apm.cli import app
+from apm.core.delivery import PrRef, parse_pr_url, read_pr
 from apm.core.files import read_body
 from apm.core.git import git, log
+from apm.core.ids import handle
 from apm.core.model import Status
 from apm.core.ops import NewNode, attach_delivery, create_nodes, set_status
 from apm.core.project import Project, load_graph
-from apm.core.reconcile import PrRef, Report, describe, parse_pr_url, read_pr, reconcile
-from tests.core.fake_gh import FakeGh
+from apm.core.reconcile import Report, describe, reconcile
+from tests.fake_gh import FakeGh
 
 
 def code_commit(project: Project, name: str, branch: str | None = None) -> str:
@@ -40,8 +43,8 @@ def code(project: Project) -> Project:
 
 
 @pytest.fixture
-def gh(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> FakeGh:
-    return FakeGh(tmp_path, monkeypatch)
+def gh(fake_gh: FakeGh) -> FakeGh:
+    return fake_gh
 
 
 def delivered(project: Project, title: str, **delivery: object) -> str:
@@ -264,14 +267,31 @@ def test_nodes_that_cannot_be_judged_are_left_alone(code: Project, gh: FakeGh) -
 
 
 def test_without_gh_a_pr_node_falls_back_to_its_commits(
-    code: Project, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    code: Project, gh: FakeGh, tmp_path: Path
 ) -> None:
-    only_git = tmp_path / "only-git"  # a PATH with git and no `gh`
-    only_git.mkdir()
-    (only_git / "git").symlink_to(shutil.which("git") or "/usr/bin/git")
-    monkeypatch.setenv("PATH", str(only_git))
+    gh.missing(tmp_path)
     sha = code_commit(code, "feature.py", branch="apm/feature")
     node = delivered(code, "Merged", commits=[sha], pr="https://github.com/o/r/pull/1")
     checkout(code, "main")
     git(code.code_dir, ["merge", "--quiet", "--no-ff", "-m", "merge", "apm/feature"])
     assert done(reconcile(code)) == [(node, "its commits are on main")]
+
+
+def test_the_cli_reports_and_with_retarget_retargets(
+    code: Project, gh: FakeGh, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _, top = stacked_pair(code, gh)
+    monkeypatch.chdir(code.code_dir)
+    runner = CliRunner()
+    first = runner.invoke(app, ["reconcile"])
+    assert first.exit_code == 0, first.output
+    assert "PR #20 merged into main" in first.output
+    assert "retarget it to main" in first.output
+    assert gh.pr(21)["base"]["ref"] == "apm/base"
+
+    second = runner.invoke(app, ["reconcile", "--retarget"])
+    assert second.exit_code == 0, second.output
+    assert f"{handle(top)} Top: PR #21 retargeted from apm/base (#20's branch) to main" in (
+        second.output
+    )
+    assert ["api", "-X", "PATCH", "repos/o/r/pulls/21", "-f", "base=main"] in gh.calls

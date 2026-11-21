@@ -11,21 +11,28 @@ This is plain code, not an agent: the question "did it merge?" has a definite an
 - An open PR that still targets a branch which has landed is reported, and with `retarget=True`
   pointed at the default branch.
 
-Pull requests are read through the GitHub REST API (`gh api`), which works where `gh pr`'s GraphQL
-calls are refused. Without `gh`, reconcile falls back to what local git can tell.
+Pull requests are read through the GitHub REST API (`apm.core.delivery.read_pr`), which works
+where `gh pr`'s GraphQL calls are refused. Without `gh`, reconcile falls back to what local git
+can tell.
 """
 
-import contextlib
-import json
-import os
-import re
-import subprocess
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
 from apm.core.config import read_config
+from apm.core.delivery import (
+    GhError,
+    PullRequest,
+    add_note,
+    branch_tip,
+    default_branch,
+    fetch_origin,
+    pr_number,
+    read_pr,
+    set_pr_base,
+)
 from apm.core.files import read_body
 from apm.core.git import GitError, git, is_ancestor, rev_parse
 from apm.core.graph import Graph
@@ -34,8 +41,6 @@ from apm.core.model import Delivery, NodeId, Status
 from apm.core.ops import edit_body, set_status
 from apm.core.project import Project, load_graph
 
-GH_TIMEOUT_S = 30.0
-FETCH_TIMEOUT_S = 30.0
 PATCH_ID_SCAN = 500
 """How many recent commits of the default branch a squash merge is looked for in."""
 
@@ -83,7 +88,7 @@ def reconcile(project: Project, *, actor: str = "user", retarget: bool = False) 
         repo_dir = (project.apm_dir / repo.path).resolve()
         if repo_dir not in fetched:
             fetched.add(repo_dir)
-            _fetch(repo_dir)
+            fetch_origin(repo_dir)
         judge = _Judge(project, graph, repo_dir, node_id, node.delivery, actor, retarget)
         if (reason := judge.done_reason()) is not None:
             set_status(project, node_id, Status.DONE, note=f"Reconciled: {reason}.", actor=actor)
@@ -182,7 +187,7 @@ class _Judge:
         """True if `branch`'s work is on the default branch: its tip is, or the node that
         delivered it is done, or that node's PR merged into the default branch.
         """
-        tip = _tip(self.repo_dir, branch)
+        tip = branch_tip(self.repo_dir, branch)
         if tip is not None and self._on_target(tip):
             return True
         for other in self.graph.nodes.values():
@@ -230,146 +235,7 @@ class _Judge:
 type FindingKind = Literal["merged-elsewhere", "closed", "retarget", "retargeted"]
 
 
-# --- pull requests, through the GitHub REST API ---
-
-
-class GhError(RuntimeError):
-    """`gh` isn't there, or it failed."""
-
-
-def gh(cwd: Path, args: Sequence[str], *, timeout: float = GH_TIMEOUT_S) -> str:
-    """Runs `gh <args>` in `cwd` and returns its stdout. Raises `GhError` if it can't."""
-    try:
-        result = subprocess.run(
-            ["gh", *args], cwd=cwd, capture_output=True, text=True, timeout=timeout, check=False
-        )
-    except FileNotFoundError:
-        raise GhError("`gh` is not installed") from None
-    except (OSError, subprocess.TimeoutExpired) as err:
-        raise GhError(f"couldn't run `gh`: {err}") from None
-    if result.returncode != 0:
-        lines = (result.stderr or result.stdout).strip().splitlines()
-        raise GhError(lines[-1] if lines else f"`gh` exited with {result.returncode}")
-    return result.stdout
-
-
-_PR_URL = re.compile(r"^https?://(?P<host>[^/]+)/(?P<owner>[^/]+)/(?P<repo>[^/]+)/pull/(?P<n>\d+)")
-
-
-@dataclass(frozen=True, slots=True)
-class PrRef:
-    host: str
-    owner: str
-    repo: str
-    number: int
-
-    @property
-    def api_path(self) -> str:
-        return f"repos/{self.owner}/{self.repo}/pulls/{self.number}"
-
-    @property
-    def host_args(self) -> list[str]:
-        return [] if self.host == "github.com" else ["--hostname", self.host]
-
-
-def parse_pr_url(url: str) -> PrRef | None:
-    """`https://github.com/o/r/pull/20` → host, owner, repo, number. None if it isn't one."""
-    match = _PR_URL.match(url.strip())
-    if match is None:
-        return None
-    return PrRef(match["host"], match["owner"], match["repo"], int(match["n"]))
-
-
-def pr_number(url: str) -> int | None:
-    ref = parse_pr_url(url)
-    return ref.number if ref else None
-
-
-@dataclass(frozen=True, slots=True)
-class PullRequest:
-    ref: PrRef
-    state: str
-    """`open` or `closed`, as GitHub says it."""
-    merged: bool
-    base: str
-    """The branch it targets (or targeted when it merged)."""
-    merge_commit: str | None
-
-    @property
-    def number(self) -> int:
-        return self.ref.number
-
-
-def read_pr(repo_dir: Path, url: str) -> PullRequest | None:
-    """The pull request at `url`, or None if it can't be read (not a GitHub PR URL, no `gh`, not
-    signed in, offline).
-    """
-    ref = parse_pr_url(url)
-    if ref is None:
-        return None
-    try:
-        data = json.loads(gh(repo_dir, ["api", *ref.host_args, ref.api_path]))
-        return PullRequest(
-            ref=ref,
-            state=str(data["state"]),
-            merged=bool(data.get("merged") or data.get("merged_at")),
-            base=str(data["base"]["ref"]),
-            merge_commit=data.get("merge_commit_sha") or None,
-        )
-    except GhError, ValueError, KeyError, TypeError:
-        return None
-
-
-def set_pr_base(repo_dir: Path, pr: PullRequest, base: str) -> None:
-    """Points `pr` at `base`. Raises `GhError` if GitHub refuses."""
-    gh(repo_dir, ["api", *pr.ref.host_args, "-X", "PATCH", pr.ref.api_path, "-f", f"base={base}"])
-
-
 # --- git ---
-
-
-def default_branch(repo_dir: Path) -> str | None:
-    """The remote's default branch if there is a remote, else a local `main` or `master`."""
-    try:
-        ref = git(repo_dir, ["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"])
-        if ref.strip():
-            return ref.strip()
-    except GitError:
-        pass
-    for name in ("origin/main", "origin/master", "main", "master"):
-        try:
-            if rev_parse(repo_dir, name) is not None:
-                return name
-        except GitError:
-            return None
-    return None
-
-
-def _tip(repo_dir: Path, branch: str) -> str | None:
-    for ref in (f"refs/remotes/origin/{branch}", f"refs/heads/{branch}"):
-        try:
-            if sha := rev_parse(repo_dir, ref):
-                return sha
-        except GitError:
-            continue
-    return None
-
-
-def _fetch(repo_dir: Path) -> None:
-    """`git fetch --prune origin`, if there is an `origin`. Best effort: offline is fine."""
-    try:
-        git(repo_dir, ["remote", "get-url", "origin"])
-    except GitError:
-        return
-    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
-    with contextlib.suppress(OSError, subprocess.TimeoutExpired):
-        subprocess.run(
-            ["git", "-C", str(repo_dir), "fetch", "--quiet", "--prune", "origin"],
-            capture_output=True,
-            timeout=FETCH_TIMEOUT_S,
-            check=False,
-            env=env,
-        )
 
 
 def _same_changes_on(repo_dir: Path, commits: Sequence[str], target: str) -> bool:
@@ -410,20 +276,3 @@ def _patch_id(repo_dir: Path, diff: str) -> str | None:
         return None
     out = git(repo_dir, ["patch-id", "--stable"], stdin=diff).split()
     return out[0] if out else None
-
-
-# --- notes ---
-
-
-def add_note(body: str, line: str) -> str:
-    """`body` with `line` added at the end of its `## Notes` section (created if missing)."""
-    lines = body.rstrip("\n").split("\n") if body.strip() else []
-    start = next((i for i, text in enumerate(lines) if text.strip() == "## Notes"), None)
-    if start is None:
-        return "\n".join([*lines, "", "## Notes", "", line]).lstrip("\n") + "\n"
-    end = next((i for i in range(start + 1, len(lines)) if lines[i].startswith("## ")), len(lines))
-    before, section, after = lines[: start + 1], lines[start + 1 : end], lines[end:]
-    while section and not section[-1].strip():
-        section.pop()
-    section = [*section, "", line] if any(s.strip() for s in section) else ["", line]
-    return "\n".join([*before, *section, *(["", *after] if after else [])]) + "\n"
