@@ -46,10 +46,13 @@ def test_commits_the_graph_and_bodies_with_trailers(project: Project) -> None:
         project, "create", apply, actor="agent:apm-decomposer", run="run-7", note="Why."
     )
 
+    # A got a child, so APM added its review step: listed in the commit, not among `created`.
+    step = result.graph.review_step(A)
+    assert step is not None
     assert result.sha == head(project)
-    assert result.nodes == (A, B)
+    assert result.nodes == tuple(sorted((A, B, step)))
     assert result.created == (A, B)
-    assert result.graph.children(A) == (B,)
+    assert result.graph.children(A) == tuple(sorted((B, step)))
     assert is_clean(project)
     assert load_graph(project).nodes == result.graph.nodes
     assert (project.apm_dir / "nodes" / f"{B}.md").read_text() == "## Intent\n\nShip it.\n"
@@ -59,13 +62,13 @@ def test_commits_the_graph_and_bodies_with_trailers(project: Project) -> None:
     assert entry.subject == "create 2 nodes"
     assert entry.trailers == {
         "APM-Op": "create",
-        "APM-Nodes": f"{A},{B}",
+        "APM-Nodes": ",".join(sorted((A, B, step))),
         "APM-Actor": "agent:apm-decomposer",
         "APM-Run": "run-7",
     }
     assert git(project.apm_dir, ["log", "-1", "--format=%b"]).startswith("Why.\n")
     changed = git(project.apm_dir, ["show", "--name-only", "--format=", "HEAD"]).split()
-    assert changed == ["graph.ndjson", f"nodes/{B}.md"]
+    assert changed == ["graph.ndjson", *sorted((f"nodes/{B}.md", f"nodes/{step}.md"))]
 
 
 def test_a_change_that_breaks_an_invariant_writes_nothing(project: Project) -> None:

@@ -20,7 +20,7 @@ from types import MappingProxyType
 import networkx as nx
 
 from apm.core.ids import handles, resolve_handle
-from apm.core.model import Node, NodeId, Status
+from apm.core.model import Kind, Node, NodeId, Status
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,12 +104,15 @@ class Graph:
     # --- structure ---
 
     def children(self, parent: NodeId | None) -> tuple[NodeId, ...]:
-        """Children of `parent` (None = top-level nodes), in id order, which is creation order."""
+        """Children of `parent` (None = top-level nodes), in id order, which is creation order,
+        except that a review step comes last: it is the feature's finishing step.
+        """
         if parent is None:
             return self._top
         if parent not in self.nodes:
             return ()
-        return tuple(sorted(self.tree.successors(parent)))
+        kids = self.tree.successors(parent)
+        return tuple(sorted(kids, key=lambda c: (self.nodes[c].kind is Kind.REVIEW, c)))
 
     def is_leaf(self, node_id: NodeId) -> bool:
         return self.tree.out_degree(self[node_id].id) == 0
@@ -134,9 +137,32 @@ class Graph:
         return ancestor in self.ancestors(node_id)
 
     def descendants(self, node_id: NodeId) -> list[NodeId]:
-        """All descendants, depth-first in id order, not including `node_id` itself."""
-        walk = nx.dfs_preorder_nodes(self.tree, self[node_id].id, sort_neighbors=sorted)
+        """All descendants, depth-first in `children` order, not including `node_id` itself."""
+
+        def order(kids: Iterable[NodeId]) -> list[NodeId]:
+            return sorted(kids, key=lambda c: (self.nodes[c].kind is Kind.REVIEW, c))
+
+        walk = nx.dfs_preorder_nodes(self.tree, self[node_id].id, sort_neighbors=order)
         return [n for n in walk if n != node_id]
+
+    def review_step(self, parent: NodeId) -> NodeId | None:
+        """The review step among `parent`'s children, if it has one."""
+        return next((c for c in self.children(parent) if self.nodes[c].kind is Kind.REVIEW), None)
+
+    def is_review(self, node_id: NodeId) -> bool:
+        return self[node_id].kind is Kind.REVIEW
+
+    def feature_of(self, node_id: NodeId) -> NodeId | None:
+        """The feature whose branch `node_id`'s work goes into: its parent if the parent has a
+        review step, else None (the default branch). A review step's own work, the feature
+        branch, goes one level up: into the grandparent's feature branch, or the default branch.
+        """
+        parent = self[node_id].parent
+        if parent is None or parent not in self.nodes:
+            return None
+        if self.is_review(node_id):
+            return self.feature_of(parent)
+        return parent if self.review_step(parent) is not None else None
 
     def leaves(self, node_id: NodeId) -> list[NodeId]:
         """The leaves of `node_id`'s subtree: itself if it has no children."""

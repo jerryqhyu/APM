@@ -1,7 +1,7 @@
 // The shapes the server returns (src/apm/core/views.py and src/apm/server/app.py).
 
 export type Status = "todo" | "in_progress" | "done" | "dropped";
-export type Kind = "work" | "decision";
+export type Kind = "work" | "decision" | "review";
 
 export interface Delivery {
   repo: string;
@@ -38,6 +38,10 @@ export interface NodeView {
   children: number;
   progress: { done: number; total: number };
   delivery: Delivery | null;
+  /** A feature's review step: the child that waits on all the others. Null for a leaf. */
+  review_step: string | null;
+  /** The feature's branch, once APM has made it. */
+  feature_branch: string | null;
 }
 
 export interface NodeRef {

@@ -38,6 +38,9 @@ on a clear request without asking for permission first.
 - Use `apm_merge_nodes` for nodes that are the same work, `apm_move_node` to regroup, and
   `apm_delete_node` only for what the person said to remove.
 - Never set a node to `done` unless they told you it is done.
+- Every node with children has a **review step** (kind `review`) that APM adds and keeps
+  depending on all its siblings. Don't create, link, move or delete one; to skip a review, set the
+  step to `dropped`. A feature is finished when its review step is done.
 - If a change is refused, the error says which rule it would break. Explain that plainly and
   suggest the nearest thing that works.
 

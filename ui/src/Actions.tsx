@@ -28,10 +28,12 @@ export function Actions({
   selected,
   running,
   handlers,
+  lookup,
 }: {
   selected: NodeView[];
   running: Set<string>;
   handlers: ActionHandlers;
+  lookup: (id: string) => NodeView | undefined;
 }) {
   const one = selected.length === 1 ? selected[0]! : null;
   const ids = selected.map((n) => n.id);
@@ -51,6 +53,23 @@ export function Actions({
           ? `This node is ${STATUS_LABEL[one.status].toLowerCase()}`
           : "Claude builds this in its own worktree and opens a pull request";
   const busy = one !== null && running.has(one.id);
+
+  // A feature is reviewed through its review step; the step itself shows the same button.
+  const isStep = one?.kind === "review";
+  const step = one ? (isStep ? one : one.review_step ? lookup(one.review_step) : undefined) : undefined;
+  const reviewWaiting = step ? step.waiting_on.filter((id) => !step.stacked_on.some((s) => s.id === id)) : [];
+  const canReview =
+    step !== undefined && reviewWaiting.length === 0 && (step.status === "todo" || step.status === "in_progress");
+  const reviewHint = !step
+    ? ""
+    : step.status === "done"
+      ? "Reviewed, and the feature has landed"
+      : step.status === "dropped"
+        ? "The review step is dropped"
+        : reviewWaiting.length
+          ? `Waits until every task is done (${reviewWaiting.length} to go)`
+          : "Claude checks the feature branch against the feature's description, criterion by criterion";
+  const reviewBusy = step !== undefined && running.has(step.id);
 
   return (
     <section className="actions" aria-label="Actions">
@@ -103,7 +122,16 @@ export function Actions({
           </div>
           <div className="action-row">
             <span className="row-label">Graph</span>
-            {one && (
+            {one && isStep && (
+              <>
+                <button onClick={() => handlers.add(one.parent)} title="Add a task to this feature: the review waits on it too">
+                  Add task
+                </button>
+                <button onClick={handlers.rename}>Rename</button>
+                <span className="row-hint">APM keeps a review step waiting on every task. Set it to Dropped to skip the review.</span>
+              </>
+            )}
+            {one && !isStep && (
               <>
                 <button onClick={() => handlers.open(one.id)} title="Show what is inside this node">
                   Open
@@ -124,38 +152,58 @@ export function Actions({
                 </button>
               </>
             )}
-            <button
-              onClick={() => handlers.merge(ids)}
-              disabled={selected.length < 2}
-              title={
-                selected.length < 2
-                  ? "Select two or more nodes first: shift-click, or ⌘/ctrl-click"
-                  : "Fold the selected nodes into one"
-              }
-            >
-              Merge
-            </button>
-            <button className="danger" onClick={() => handlers.remove(ids)}>
-              Delete
-            </button>
+            {!isStep && (
+              <>
+                <button
+                  onClick={() => handlers.merge(ids)}
+                  disabled={selected.length < 2}
+                  title={
+                    selected.length < 2
+                      ? "Select two or more nodes first: shift-click, or ⌘/ctrl-click"
+                      : "Fold the selected nodes into one"
+                  }
+                >
+                  Merge
+                </button>
+                <button className="danger" onClick={() => handlers.remove(ids)}>
+                  Delete
+                </button>
+              </>
+            )}
           </div>
           {one && (
             <div className="action-row">
               <span className="row-label">Claude</span>
-              <button
-                onClick={() => handlers.runAgent("apm-decomposer", one.id)}
-                disabled={busy}
-                title="Ask Claude to break this node into children. You review the proposal first."
-              >
-                Decompose
-              </button>
-              <button
-                onClick={() => handlers.runAgent("apm-implementer", one.id)}
-                disabled={!canImplement || busy}
-                title={implementHint}
-              >
-                Implement
-              </button>
+              {!isStep && (
+                <>
+                  <button
+                    onClick={() => handlers.runAgent("apm-decomposer", one.id)}
+                    disabled={busy}
+                    title="Ask Claude to break this node into children. You review the proposal first."
+                  >
+                    Decompose
+                  </button>
+                  {one.children === 0 && (
+                    <button
+                      onClick={() => handlers.runAgent("apm-implementer", one.id)}
+                      disabled={!canImplement || busy}
+                      title={implementHint}
+                    >
+                      Implement
+                    </button>
+                  )}
+                </>
+              )}
+              {step && (
+                <button
+                  className={cx(canReview && isStep && "primary")}
+                  onClick={() => handlers.runAgent("apm-feature-reviewer", step.id)}
+                  disabled={!canReview || reviewBusy}
+                  title={reviewHint}
+                >
+                  Review feature
+                </button>
+              )}
               <span className="row-hint">or just say what you want below</span>
             </div>
           )}

@@ -26,6 +26,7 @@ from apm.core.ops import (
 )
 from apm.core.project import Project, init_project, load_graph
 from apm.core.validate import InvariantError, validate
+from tests.conftest import tasks_of
 
 SHA_1, SHA_2 = "a1b2c3d", "e4f5a6b7"
 
@@ -110,17 +111,22 @@ def test_decompose_adds_children_and_names_the_parent(project: Project) -> None:
     )
     first, second = result.created
     graph = load_graph(project)
-    assert graph.children(parent) == (first, second)
+    assert tasks_of(graph, parent) == (first, second)
+    step = graph.review_step(parent)  # a decomposed node gets its review step
+    assert step is not None
+    assert graph[step].depends_on == (first, second)
     assert graph[second].depends_on == (first,)
-    assert result.nodes == (parent, first, second)
+    assert result.nodes == tuple(sorted((parent, first, second, step)))
     entry = log(project.apm_dir)[0]
     assert entry.subject == f"decompose {handle(parent)}: 2 children"
-    assert entry.trailers["APM-Nodes"] == f"{parent},{first},{second}"
+    assert entry.trailers["APM-Nodes"] == ",".join(sorted((parent, first, second, step)))
     assert entry.trailers["APM-Actor"] == "agent:apm-decomposer"
 
     # Additive: a second round keeps the first.
-    decompose(project, parent, [NewNode(title="Third")])
-    assert len(load_graph(project).children(parent)) == 3
+    third = decompose(project, parent, [NewNode(title="Third")]).created[0]
+    graph = load_graph(project)
+    assert len(tasks_of(graph, parent)) == 3
+    assert graph[step].depends_on == (first, second, third)  # the review step waits on it too
     assert subject(project) == f"decompose {handle(parent)}: 1 child"
 
 
@@ -205,9 +211,9 @@ def test_delete_needs_recursive_for_a_node_with_children(project: Project) -> No
     child = add(project, "Child", parent=parent)
     grandchild = add(project, "Grandchild", parent=child)
     outside = add(project, "Outside", deps=(grandchild,))
-    with pytest.raises(OpError, match="has 1 child: delete them first, or delete recursively"):
+    with pytest.raises(OpError, match="has 1 child and its review step: delete them first"):
         delete_node(project, parent)
-    assert len(load_graph(project)) == 4
+    assert len(load_graph(project)) == 6  # the four, and the review steps of Parent and Child
 
     commits = len(log(project.apm_dir))
     delete_node(project, parent, recursive=True)
@@ -286,7 +292,10 @@ def test_merge_folds_nodes_into_one(project: Project) -> None:
     assert body.endswith("---\n\n### Merged from: B\n\n## Intent\n\nThe B part.\n")
     assert not (project.apm_dir / "nodes" / f"{b}.md").exists()
     assert subject(project) == f"merge {handle(a)}: 2 nodes"
-    assert set(result.nodes) == {a, b, b_child, downstream}
+    step = graph.review_step(a)  # B's review step came along: A is a feature now
+    assert step is not None
+    assert graph[step].parent == a
+    assert set(result.nodes) == {a, b, b_child, downstream, step}
     assert log(project.apm_dir)[0].trailers["APM-Op"] == "merge"
 
 
@@ -361,7 +370,7 @@ def test_a_batch_can_nest_under_its_own_keys(project: Project) -> None:
     )
     feature, model, view, detail = result.created
     graph = load_graph(project)
-    assert graph.children(feature) == (model, view)
+    assert tasks_of(graph, feature) == (model, view)
     assert graph[detail].parent == model
     assert graph[view].depends_on == (model,)
     assert len(log(project.apm_dir)) == 2  # init + one commit for the whole subtree
@@ -395,7 +404,7 @@ def test_merge_refusals_change_nothing(project: Project) -> None:
     outside = add(project, "Outside", deps=(inner,))
     with pytest.raises(InvariantError, match="I3"):
         merge_nodes(project, parent, [outside])
-    assert len(load_graph(project)) == 5
+    assert len(load_graph(project)) == 6  # the five, and Parent's review step
 
 
 def test_a_merge_keeps_the_one_delivery(project: Project) -> None:

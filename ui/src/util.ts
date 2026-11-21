@@ -37,6 +37,7 @@ export const AGENT_LABEL: Record<string, string> = {
   "apm-decomposer": "Decompose",
   "apm-critic": "Review",
   "apm-implementer": "Implement",
+  "apm-feature-reviewer": "Review feature",
 };
 
 export function cx(...names: (string | false | null | undefined)[]): string {

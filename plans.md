@@ -1,6 +1,6 @@
 # APM — Design Plan
 
-**Status:** v9 · v1 is implemented except playback (M5) and the SQLite index; §11 has the state of each milestone · **Last updated:** 2026-11-19
+**Status:** v10 · v1 is implemented except playback (M5) and the SQLite index; §11 has the state of each milestone · **Last updated:** 2026-11-21
 
 APM is a local-first project manager built for working with AI agents. A project is a **nested graph of nodes**: you start with a big idea, then break it down with Claude agents, level by level, until each piece is small enough to ship as a commit or PR. The plan lives in its own git repo, so every change to it can be traced and **played back** from the project's first node onward.
 
@@ -28,6 +28,7 @@ v1 = a Python backend with a TypeScript web UI, one user on one machine, one cod
 | Stacked work | A node may start on top of a dependency that is delivered but not merged (§2.3); `done` still means merged into the default branch | A chain of steps can be built and reviewed as stacked PRs without marking anything done early |
 | Packaging | Agents + skills + MCP ship as one Claude Code plugin | The same plugin serves spawned runs and your own terminal sessions |
 | Sharing a project | One `.apm.zip` archive (`apm export` / `apm import`, §3.8): the plan files plus a git bundle of the plan repo; runs only if asked | A whole project, history included, moves as one file with no remote to set up. Machine-specific state stays behind, and runs stay out by default because transcripts can hold secrets |
+| Finishing a feature | Every node with children ends in a review step (kind `review`) that waits on its other children; tasks merge into a feature branch; the feature reviewer checks that branch against the feature's description before its PR goes on (§2.5, §7.6) | "All tasks merged" isn't "the feature works": a review against the spec catches the gaps between tasks. As a node in the graph, the review is ordered, visible and tracked like any work, and the feature branch keeps unreviewed work off `main` |
 | Scope | Single user, single machine, one code repo (config already shaped for many repos) | Fastest route to a working slice |
 
 ---
@@ -40,7 +41,7 @@ v1 = a Python backend with a TypeScript web UI, one user on one machine, one cod
 - A "level" is the set of children of one parent. You zoom into a node to see its children as their own DAG.
 - There is no special root node. You can add a node at any level, at any time.
 - Depth is computed, never stored.
-- `kind`: `work` (default) | `decision`.
+- `kind`: `work` (default) | `decision` | `review`. A `review` node is a feature's **review step** (§2.5): APM adds and manages it, nobody else.
 
 ### 2.2 Dependencies and lifting
 
@@ -78,8 +79,19 @@ Computed (never stored, so it can't go stale):
 | I5 | Lifted edges are acyclic at every level | **warning: "entanglement"**, usually a sign the breakdown needs rethinking |
 | I6 | A `done` parent has no unfinished children | warning |
 | I7 | Only leaves carry `delivery` | hard error |
+| I8 | A review step is a leaf inside a feature, and a feature has at most one | hard error |
+| I9 | A node with children has a review step | warning (plans from before review steps; APM adds it the next time the feature's children change) |
 
-`mutate()` runs I1–I4 and I7 before every commit. The UI and `apm check` report I5–I6.
+`mutate()` runs I1–I4, I7 and I8 before every commit. The UI and `apm check` report I5, I6 and I9.
+
+### 2.5 Features, review steps and feature branches
+
+A node with children is a **feature**, and every feature ends in a **review step**: one more child, of kind `review`, titled "Feature review", that depends on all the feature's other children. It becomes ready only once they are all done; then the feature reviewer (§7.6) checks the **feature branch** against the feature's description. The review step is how a feature is finished: the feature can't reach 100% until it is done.
+
+- **APM maintains it** (`apm.core.review_steps.maintain`, run by `mutate()` on every change before validation). A node that gets children, and isn't done or dropped, gets a review step. The step always depends on exactly its feature's other children that aren't dropped: tasks added later are added, removed or dropped ones removed. A step left alone (every task deleted) is removed, unless it has started. It is listed in the commit's `APM-Nodes` but isn't among the operation's `created` nodes.
+- **Only APM manages it.** It can't be deleted (drop it to skip the review), moved, merged, linked or unlinked, or have its kind changed; no node can be made one, and nothing can go inside one. Renaming it and setting its status are fine. Merging two features keeps one step: the target's, else one of theirs (a started one first).
+- **It comes last** among its siblings in every list and outline, whatever its id.
+- **Feature branches.** A feature's tasks go into its branch, `feature/<handle>-<slug>`, which APM creates from the default branch (or, for a feature inside a feature, from the outer feature's branch) the first time one of its tasks is implemented, pushes to `origin`, and records as the review step's delivery: the step is a leaf, so it can carry one (I7). A task's pull request targets the feature branch, and the task is done once it merges there (§7.5). The step's own pull request is the feature branch going on to its **home**: the enclosing feature's branch, or the default branch. When that merges, the step is done, and so is the feature.
 
 ---
 
@@ -493,7 +505,8 @@ The chat (`apm-assistant`) is the open-ended one: it has `project` scope, so wit
 - Scope `node:<id>`.
 - It works on branch `apm/<handle>-<slug>`. Commits carry `APM-Node:`. It opens the PR itself, with `gh pr create --base <base>`.
 - It calls `apm_set_status(in_progress)` when it starts and `apm_attach_delivery` when the work is pushed, and ticks the acceptance criteria it verified in the node's body.
-- **The base branch** is plain code (`apm.core.delivery.choose_base`), worked out when the run starts and written into its first message. The candidates are the delivery branches of what the node depends on (its own dependencies and its ancestors', and the leaves of a dependency that has children). `origin` is fetched first, and a candidate counts as *open* if its branch still exists and isn't merged (its PR isn't merged, and its tip isn't on the default branch).
+- **Never on a review step**: those run the feature reviewer (§7.6).
+- **The base branch** is plain code (`apm.core.delivery.choose_base`), worked out when the run starts and written into its first message. A task inside a feature targets the **feature branch** (§2.5), created on demand; otherwise the default branch. Stacking then works within that target. The candidates are the delivery branches of what the node depends on (its own dependencies and its ancestors', and the leaves of a dependency that has children). `origin` is fetched first, and a candidate counts as *open* if its branch still exists and isn't merged (its PR isn't merged, and its tip isn't on the default branch).
   - One open candidate: the agent starts from it and the PR targets it, so stacked PRs each show only their own node's changes.
   - None: the default branch.
   - Several, one built on the others (`Graph.stack_top`, the rule §2.3 uses for "ready, stacked"): that one.
@@ -506,7 +519,7 @@ The chat (`apm-assistant`) is the open-ended one: it has `project` scope, so wit
 
 ### 7.5 Reconciling
 
-`apm reconcile` marks an in-progress node `done` when its work is on the default branch. It also runs once when `apm serve` starts, and **Reconcile** in the UI runs it. It is plain code (`apm.core.reconcile`), and fetches `origin` first:
+`apm reconcile` marks an in-progress node `done` when its work is where it belongs, its **home**: its feature's branch for a task inside a feature, the enclosing feature's branch or the default branch for a review step (§2.5), else the default branch. Below, "the default branch" means that home. When a review step becomes done, its feature does too, once all its other children are done or dropped. It also runs once when `apm serve` starts, and **Reconcile** in the UI runs it. It is plain code (`apm.core.reconcile`), and fetches `origin` first:
 
 - **A node with a pull request** is done when the PR merged into the default branch, or into a branch whose merge commit has since reached the default branch. The PR is read through the REST API (`gh api repos/<o>/<r>/pulls/<n>`: `merged`, `base.ref`, `merge_commit_sha`, `state`), never `gh pr view`, whose GraphQL calls some environments refuse.
 - **A PR merged into another branch** (a stack: #21 merged into #20's branch) leaves the node in progress. Reconcile reports "PR #21 merged into apm/… (#20's branch), not yet on main" and writes it under the node's Notes once.
@@ -514,6 +527,25 @@ The chat (`apm-assistant`) is the open-ended one: it has `project` scope, so wit
 - **A PR closed without merging** is reported and left alone.
 - **Retargeting.** An open PR whose base is a branch that has landed (its tip is on the default branch, or the node that delivered it is done, or that node's PR merged into the default branch) is reported: "PR #21 still targets apm/… (#20's branch), which has landed: retarget it to main". `apm reconcile --retarget` (or `POST /api/reconcile?retarget=true`) points it at the default branch through `gh api -X PATCH`. Without the flag nothing on GitHub changes.
 - If nothing can be determined (no `gh`, offline, a commit this clone doesn't have), the node is left alone.
+
+### 7.6 Feature review
+
+The feature reviewer (`apm-feature-reviewer`, label **Review feature**) checks a finished feature against its description. It runs on a feature's review step (started on the feature, it goes to the step), and only once every other child of the feature is done or dropped. It is read-only (`--disallowedTools Write,Edit,NotebookEdit`, read scope), may run `git log/diff/show/grep`, and returns JSON (`FEATURE_REVIEW_SCHEMA`):
+
+```json
+{"verdict": "complete|incomplete", "summary": "…",
+ "criteria": [{"criterion": "…", "status": "met|partial|missing|unverified", "evidence": "file:line, test, command"}],
+ "issues": [{"severity": "blocker|major|minor", "problem": "…", "where": "…", "suggestion": "…"}],
+ "follow_ups": [ /* children, in the decomposer's shape */ ]}
+```
+
+The plain code around it (`apm.core.feature_review`):
+
+- **What it reviews**: the feature branch recorded on the step, at its current tip on `origin`. A branch can be named instead (`apm run feature-reviewer <node> --branch`, or the run dialog). For a feature without a step (an older plan) APM works the branch out from the tasks' deliveries: the branch their PRs merged into, the top of their stack, or the default branch.
+- **Where**: a detached checkout of that commit in `.claude/worktrees/apm-review-<handle>`, replaced by the next review of the feature, so the agent reads the code as built and your checkout is never touched. Its first message names the branch, the commit, and every task with whether its work is in that commit.
+- **The verdict** is held to its own evidence: "complete" with a missing or partial criterion, or a blocker or major issue, is recorded as incomplete.
+- **Recording**: the verdict, a table of the criteria and the issues go into the **review step's** description under `## Feature review` (the feature's description, the spec, is untouched). Follow-ups become a proposal on the **feature**, so accepting them adds tasks that the step then waits on. A later turn of the same conversation replaces its earlier pending proposal.
+- **After**: incomplete sends the step back to `todo`. Complete opens the feature branch's PR into its home (title: the feature's; body: the feature's description and the review) and leaves the step `in_progress` until reconcile sees it merge; if the reviewed branch already is the home, the step and feature are done at once.
 
 ---
 
@@ -528,6 +560,8 @@ src/apm/plugin/
     apm-critic.md         proposal → review: gaps, overlap, untestable criteria,
                           near-duplicates elsewhere in the graph, bad dependencies
     apm-implementer.md    ready leaf → worktree → commits → PR → attach delivery
+    apm-feature-reviewer.md  review step → checks the feature branch against the feature's
+                          description, criterion by criterion (read-only, json-schema)
   skills/
     apm-node-format/      node fields, body sections, handles, the rules, what follows from them
     apm-decompose/        what a good breakdown looks like: 3–7 children, no overlap,
@@ -572,7 +606,7 @@ apm node show <h> · set <h> [--title] [--kind] · status <h> <s> [--note]
 apm node mv <h> <parent|--top> · merge <target> <others...> [--title] · rm <h> [-r] · edit <h>
 apm link-dep <from> <to> · apm unlink-dep <from> <to>
 apm ready [--root h] · apm search <query>
-apm run <assistant|decomposer|implementer> [h] [-m "..."] [--mode m] [--no-critic]
+apm run <assistant|decomposer|implementer|feature-reviewer> [h] [-m "..."] [--mode m] [--no-critic] [--branch b]
 apm proposal ls [--all] · show <id> · accept <id> [--only key] · reject <id>
 apm reconcile [--retarget]       mark nodes done whose work is on the default branch; report
                                  (or retarget) stacked PRs whose base has landed
@@ -607,6 +641,7 @@ apm plugin-path                  where the Claude Code plugin is
 | **M6** | `apm-implementer` (worktrees, trailers, PR against the right base, APM's fallback) | A ready leaf becomes a PR that links back to its node, stacked on unmerged work it builds on | **Built**; verified with real runs up to the push (the PRs of the archive stack, #20–#24, were opened by hand from a container without `gh pr`, which is what the fallback now covers). Base selection and the fallback are tested against a local `origin` and a stand-in for `gh` |
 | **M7** | Reconciling, stack-aware | Work reaching the default branch moves its node to `done`, with no manual step and no early `done` for stacked PRs | **Built** as `apm reconcile` (§7.5), with "ready, stacked" (§2.3). Tested against local repos and a stand-in for `gh` |
 | **M8** | Archives: `apm export` / `apm import`, Export archive… in the UI (§3.8) | A project, with its history and optionally its runs, round-trips through one `.apm.zip` | **Built**; round trip, refusals and the download are tested |
+| **M9** | Review steps, feature branches and the feature reviewer (§2.5, §7.6) | A feature's tasks merge into its branch; its review step checks the branch against the description and opens the PR on | **Built**; tested with stand-ins for `claude` and `gh` |
 
 ---
 

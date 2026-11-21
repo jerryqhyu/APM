@@ -29,7 +29,7 @@ RUN_COUNTS = {"runs", "events", "proposals"}
 
 @pytest.fixture
 def plan(project: Project) -> Project:
-    """A project with three nodes, each in its own commit."""
+    """A project with three nodes, each in its own commit, and the parent's review step."""
     parent = create_nodes(project, [NewNode(title="Parent")]).created[0]
     create_nodes(project, [NewNode(title="Child", parent=parent)])
     create_nodes(project, [NewNode(title="Ünïcode", body="## Intent\n\nnaïve café\n")])
@@ -47,7 +47,7 @@ def test_the_archive_holds_the_plan_files_and_a_full_bundle(plan: Project, tmp_p
 
     files = entries(dest)
     node_files = sorted(p.name for p in (plan.apm_dir / "nodes").glob("*.md"))
-    assert len(node_files) == 3
+    assert len(node_files) == 4  # three, and the parent's review step
     assert set(files) == {
         MANIFEST_FILE,
         "apm.yaml",
@@ -78,7 +78,7 @@ def test_the_manifest_without_runs(plan: Project, tmp_path: Path) -> None:
     assert manifest["format_version"] == FORMAT_VERSION
     assert manifest["apm_version"] == __version__
     assert manifest["project"] == "my-app"
-    assert manifest["counts"] == {"nodes": 3, "commits": 4}
+    assert manifest["counts"] == {"nodes": 4, "commits": 4}
     assert "exported_at" in manifest
     assert not RUN_FIELDS & manifest.keys()
     assert not RUN_COUNTS & manifest["counts"].keys()
@@ -102,7 +102,7 @@ def test_with_runs_every_run_goes_in_with_its_events(plan: Project, tmp_path: Pa
 
     assert manifest["store_schema_version"] == SCHEMA_VERSION
     assert manifest["counts"] == {
-        "nodes": 3,
+        "nodes": 4,
         "commits": 4,
         "runs": 105,
         "events": 3,
@@ -145,7 +145,7 @@ def test_with_runs_and_no_database_yet(plan: Project, tmp_path: Path) -> None:
     assert not db.exists()
     manifest = export_archive(plan, tmp_path / "plan.apm.zip", with_runs=True)
     assert manifest["counts"] == {
-        "nodes": 3,
+        "nodes": 4,
         "commits": 4,
         "runs": 0,
         "events": 0,

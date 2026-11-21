@@ -14,6 +14,8 @@ def format_event(event: dict[str, Any]) -> list[str]:
     if kind == "result":
         cost = event.get("total_cost_usd")
         return [f"— finished{f' · ${cost:.2f}' if isinstance(cost, (int, float)) else ''}"]
+    if kind == "apm_notice" and (text := str(event.get("text", "")).strip()):
+        return [f"APM: {text}"]
     return []
 
 

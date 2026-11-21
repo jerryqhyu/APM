@@ -28,6 +28,16 @@ The goal: someone can pick up any child and finish it without reading its siblin
 - **Small leaves.** A child meant to be built directly should fit in one pull request. If it
   won't, it is not a leaf yet. Leave it as a parent to be broken down later.
 
+## The review step
+
+APM gives every node with children a **review step** of its own: one more child, of kind
+`review`, that depends on all the others. Once they are done, the feature reviewer checks the
+feature branch against the parent's description. So:
+
+- Never propose a "review", "check everything" or "final verification" child: APM adds it.
+- Write the parent's acceptance criteria so they can be checked against the finished code: the
+  review holds the feature to them.
+
 ## Dependencies
 
 - Add a dependency only where one child truly cannot start until another is done. Shared context

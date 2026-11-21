@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from apm.core.git import CommitMessage, add, commit, git
+from apm.core.graph import Graph
 from apm.core.project import Project, init_project
 from tests.fake_gh import FakeGh
 from tests.runner.fake import FakeClaude
@@ -59,6 +60,23 @@ def project(tmp_path: Path) -> Project:
     code_dir = tmp_path / "my-app"
     code_dir.mkdir()
     return init_project(code_dir)
+
+
+@pytest.fixture(scope="session")
+def _refusing_gh_bin(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    bin_dir = tmp_path_factory.mktemp("no-real-gh")
+    script = bin_dir / "gh"
+    script.write_text('#!/bin/sh\necho "gh: the real gh is off limits in tests" >&2\nexit 1\n')
+    script.chmod(0o755)
+    return bin_dir
+
+
+@pytest.fixture(autouse=True)
+def _no_real_gh(_refusing_gh_bin: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Tests never reach GitHub: `gh` refuses unless a test asks for `fake_gh`, which goes first
+    on PATH.
+    """
+    monkeypatch.setenv("PATH", f"{_refusing_gh_bin}{os.pathsep}{os.environ['PATH']}")
 
 
 @pytest.fixture
@@ -124,3 +142,8 @@ def code_repo(project: Project, tmp_path: Path) -> CodeRepo:
     )
     git(project.apm_dir, ["commit", "--quiet", "-am", "remote"])
     return repo
+
+
+def tasks_of(graph: Graph, node_id: str) -> tuple[str, ...]:
+    """`node_id`'s children without its review step: the ones a test made itself."""
+    return tuple(c for c in graph.children(node_id) if not graph.is_review(c))

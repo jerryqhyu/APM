@@ -108,7 +108,8 @@ def test_check_all_adds_entanglement_to_the_warnings() -> None:
     )
     report = check_all(graph)
     assert report.ok
-    assert [i.code for i in report.warnings] == ["I6", "I5"]
+    # I9: built by hand, the parents have no review steps (mutate would have added them).
+    assert [i.code for i in report.warnings] == ["I6", "I9", "I5"]
 
 
 def test_check_all_stops_at_errors() -> None:

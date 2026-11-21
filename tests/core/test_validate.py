@@ -4,9 +4,9 @@ from hypothesis import given
 from hypothesis import strategies as st
 
 from apm.core.graph import Graph
-from apm.core.model import Delivery, Node, Status
+from apm.core.model import Delivery, Kind, Node, Status
 from apm.core.validate import InvariantError, Issue, validate
-from tests.core.build import A, B, C, D, node
+from tests.core.build import A, B, C, D, E, F, G, node
 from tests.strategies import graphs
 
 DONE, DROPPED, IN_PROGRESS = Status.DONE, Status.DROPPED, Status.IN_PROGRESS
@@ -21,7 +21,8 @@ def warnings(*nodes: Node) -> list[tuple[str, tuple[str, ...]]]:
 
 
 def test_a_sound_graph_has_no_issues() -> None:
-    report = validate(Graph([node(A), node(B, A), node(C, A, deps=[B]), node(D, deps=[C])]))
+    review = node(E, A, deps=[B, C], kind=Kind.REVIEW)
+    report = validate(Graph([node(A), node(B, A), node(C, A, deps=[B]), node(D, deps=[C]), review]))
     assert report.ok
     assert report.errors == ()
     assert report.warnings == ()
@@ -74,8 +75,24 @@ def test_i6_warns_about_a_done_parent_with_unfinished_children() -> None:
     ]
     # Done and dropped children are finished; a parent that isn't done isn't checked.
     assert warnings(node(A, status=DONE), node(B, A, status=DONE), node(C, A, status=DROPPED)) == []
-    assert warnings(node(A), node(B, A)) == []
+    assert warnings(node(A), node(B, A), node(C, A, deps=[B], kind=Kind.REVIEW)) == []
     assert validate(Graph([node(A, status=DONE), node(B, A)])).ok
+
+
+def test_i8_a_review_step_is_a_leaf_inside_a_feature_and_one_per_feature() -> None:
+    review = Kind.REVIEW
+    assert errors(node(A, kind=review)) == [("I8", (A,))]  # not inside a feature
+    assert errors(node(A), node(B, A, kind=review), node(C, B)) == [("I8", (B,))]  # has a child
+    two = errors(node(A), node(B, A), node(C, A, kind=review), node(D, A, kind=review))
+    assert two == [("I8", (A, C, D))]
+    assert errors(node(A), node(B, A), node(C, A, deps=[B], kind=review)) == []
+
+
+def test_i9_warns_about_a_feature_without_a_review_step() -> None:
+    assert warnings(node(A), node(B, A)) == [("I9", (A,))]
+    # A done or dropped feature isn't asked for one: it's finished.
+    assert warnings(node(A, status=DONE), node(B, A, status=DONE)) == []
+    assert warnings(node(F, status=DROPPED), node(G, F)) == []
 
 
 def test_reports_every_problem_not_just_the_first() -> None:

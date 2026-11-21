@@ -10,9 +10,17 @@ description: How to deliver an APM leaf node as code, covering branch naming, th
 `apm/<handle>-<short-slug>`, for example `apm/1c0b9a44-stream-output`. One branch per node.
 
 Start it from the base your first message names: `git fetch origin <base>` and
-`git checkout -b <branch> origin/<base>`. APM picks the base: the default branch, or, when the
-node builds on another node's work that isn't merged yet, that node's branch, so the pull requests
-stack.
+`git checkout -b <branch> origin/<base>`. APM picks the base:
+
+- a task inside a feature (a node with children) goes into the **feature branch**, which APM
+  creates and names `feature/<handle>-<slug>`;
+- when the node builds on another node's work that isn't merged yet, that node's branch, so the
+  pull requests stack;
+- otherwise the default branch.
+
+A feature reaches the default branch through its **review step**, not through your pull request:
+once every task is merged into the feature branch, the feature reviewer checks it, and APM opens
+the feature branch's pull request. Never merge a feature branch yourself.
 
 ## Commits
 
@@ -48,7 +56,7 @@ That trailer is how code is linked back to the plan.
    Add anything the next person needs under **Notes**.
 
 Leave the status at `in_progress`. The node becomes `done` when a person marks it, or when the
-pull request is merged.
+pull request is merged into where it belongs (`apm reconcile`).
 
 ## Stay inside the node
 

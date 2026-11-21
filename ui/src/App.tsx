@@ -412,7 +412,7 @@ export function App() {
       </main>
 
       <aside className="side">
-        <Actions selected={selectedNodes} running={running} handlers={handlers} />
+        <Actions selected={selectedNodes} running={running} handlers={handlers} lookup={(id) => byId.get(id)} />
         <div className="tabs" role="tablist">
           <button role="tab" aria-selected={tab === "chat"} className={cx("tab", tab === "chat" && "active")} onClick={() => setTab("chat")}>
             Chat
@@ -486,10 +486,10 @@ export function App() {
           modes={project.modes}
           defaultMode={project.default_mode}
           onClose={() => setDialog(null)}
-          onStart={async (message, critic, mode) => {
+          onStart={async (message, critic, mode, branch) => {
             const run = await api<Run>("/api/runs", {
               method: "POST",
-              body: { agent: dialog.agent, node_id: dialog.node, message, critic, mode },
+              body: { agent: dialog.agent, node_id: dialog.node, message, critic, mode, branch: branch || null },
             });
             setDialog(null);
             setRoute({ ...route, selected: [dialog.node] });

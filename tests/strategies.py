@@ -29,7 +29,8 @@ def graphs(draw: st.DrawFn, *, max_nodes: int = 12) -> list[Node]:
     picks = st.tuples(
         st.integers(0, 2**16),
         st.lists(st.integers(0, 2**16), max_size=3),
-        st.sampled_from(Kind),
+        # Review steps have rules of their own (I8), and their own tests.
+        st.sampled_from([Kind.WORK, Kind.DECISION]),
         st.sampled_from(Status),
         st.booleans(),
     )

@@ -14,6 +14,7 @@ What it does is steered by FAKE_CLAUDE (a comma-separated set of words):
 - `ask-question`: ask the host a question, and report the answer.
 - `ask-multi`: ask a question that takes several options, and report the answer.
 - `other-control`: send a control request that isn't a permission prompt.
+- `review-gaps`: the feature reviewer finds the feature incomplete, with one follow-up task.
 
 Every call's arguments, working directory and prompt are appended to FAKE_CLAUDE_LOG as one JSON
 line.
@@ -48,6 +49,42 @@ DECOMPOSITION = {
         },
     ],
     "warnings": [],
+}
+
+FEATURE_REVIEW = {
+    "verdict": "complete",
+    "summary": "Everything the description asks for is there.",
+    "criteria": [{"criterion": "It works", "status": "met", "evidence": "app.py:1"}],
+    "issues": [],
+    "follow_ups": [],
+}
+
+GAPS = {
+    "verdict": "incomplete",
+    "summary": "Errors aren't handled.",
+    "criteria": [
+        {"criterion": "It works", "status": "met", "evidence": "app.py:1"},
+        {"criterion": "It handles errors", "status": "missing", "evidence": "nothing catches it"},
+    ],
+    "issues": [
+        {
+            "severity": "major",
+            "problem": "No error handling",
+            "where": "app.py",
+            "suggestion": "Catch it",
+        }
+    ],
+    "follow_ups": [
+        {
+            "key": "e",
+            "title": "Handle errors",
+            "kind": "work",
+            "intent": "Fail cleanly.",
+            "acceptance": ["A bad input gives a clear message"],
+            "depends_on_keys": [],
+            "depends_on_ids": [],
+        }
+    ],
 }
 
 QUESTION = {
@@ -139,7 +176,9 @@ def main() -> int:
 
     answer = None
     if "--json-schema" in argv and "no-answer" not in modes:
-        if agent == "apm-critic":
+        if agent == "apm-feature-reviewer":
+            answer = json.loads(json.dumps(GAPS if "review-gaps" in modes else FEATURE_REVIEW))
+        elif agent == "apm-critic":
             verdict = "revise" if "revise" in modes else "accept"
             issue = {"severity": "major", "child_key": "a", "problem": "Too big.", "suggestion": ""}
             answer = {

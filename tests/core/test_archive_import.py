@@ -230,7 +230,7 @@ def _a_run_too_many(path: Path) -> None:
         (_truncated, "truncated or corrupted"),
         (_corrupted_entry, "truncated or corrupted"),
         (_invalid_bundle, "not a valid git bundle"),
-        (_counts("nodes"), "counts 4 nodes, but the archive holds 3"),
+        (_counts("nodes"), "counts 5 nodes, but the archive holds 4"),
         (_counts("commits"), "counts 5 commits, but the archive holds 4"),
         (_counts("runs"), "counts 2 runs, but the archive holds 1"),
         (_counts("events"), "counts 2 events, but the archive holds 1"),

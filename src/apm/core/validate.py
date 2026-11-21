@@ -13,9 +13,9 @@ import networkx as nx
 from apm.core.errors import ApmError
 from apm.core.graph import Graph
 from apm.core.ids import handle
-from apm.core.model import NodeId, Status
+from apm.core.model import Kind, NodeId, Status
 
-type InvariantCode = Literal["I1", "I2", "I3", "I4", "I5", "I6", "I7"]
+type InvariantCode = Literal["I1", "I2", "I3", "I4", "I5", "I6", "I7", "I8", "I9"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,8 +51,9 @@ def validate(graph: Graph) -> Report:
         *_dependency_cycles(graph),
         *_dependency_targets(graph),
         *_delivery_on_leaves(graph),
+        *_review_steps(graph),
     ]
-    return Report(tuple(errors), tuple(_done_parents(graph)))
+    return Report(tuple(errors), (*_done_parents(graph), *_missing_review_steps(graph)))
 
 
 def _containment(graph: Graph) -> list[Issue]:
@@ -100,6 +101,45 @@ def _dependency_targets(graph: Graph) -> list[Issue]:
 def _related(node_id: NodeId, dep: NodeId, relation: str) -> Issue:
     message = f"{handle(node_id)} depends on its own {relation} {handle(dep)}"
     return Issue("I3", message, (node_id, dep))
+
+
+def _review_steps(graph: Graph) -> list[Issue]:
+    """I8: a review step is a leaf inside a feature, and a feature has at most one."""
+    issues = []
+    for node in graph.nodes.values():
+        if node.kind is not Kind.REVIEW:
+            continue
+        if node.parent is None:
+            message = f"{handle(node.id)} is a review step, so it must be inside a feature"
+            issues.append(Issue("I8", message, (node.id,)))
+        if not graph.is_leaf(node.id):
+            message = f"{handle(node.id)} is a review step, so it can't have children"
+            issues.append(Issue("I8", message, (node.id,)))
+    for parent in graph.nodes:
+        steps = [c for c in graph.children(parent) if graph[c].kind is Kind.REVIEW]
+        if len(steps) > 1:
+            names = ", ".join(handle(s) for s in steps)
+            message = f"{handle(parent)} has more than one review step ({names})"
+            issues.append(Issue("I8", message, (parent, *steps)))
+    return issues
+
+
+def _missing_review_steps(graph: Graph) -> list[Issue]:
+    """I9 (a warning): a feature with no review step. Plans from before review steps have these;
+    APM adds the step the next time the feature's children change.
+    """
+    return [
+        Issue(
+            "I9",
+            f"{handle(n.id)} has children but no review step: APM adds one the next time its"
+            " children change",
+            (n.id,),
+        )
+        for n in graph.nodes.values()
+        if not graph.is_leaf(n.id)
+        and graph.review_step(n.id) is None
+        and n.status not in (Status.DONE, Status.DROPPED)
+    ]
 
 
 def _delivery_on_leaves(graph: Graph) -> list[Issue]:

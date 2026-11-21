@@ -1,5 +1,6 @@
-"""Reconciling the plan with the code repo (plans.md §7.5): a node is done once its work is on the
-default branch.
+"""Reconciling the plan with the code repo (plans.md §7.5): a node is done once its work is where
+it belongs: its feature's branch for a task inside a feature, else the default branch (a review
+step's work, the feature branch, belongs one level up). That is its *home*.
 
 This is plain code, not an agent: the question "did it merge?" has a definite answer.
 
@@ -26,9 +27,11 @@ from apm.core.delivery import (
     GhError,
     PullRequest,
     add_note,
+    branch_ref,
     branch_tip,
     default_branch,
     fetch_origin,
+    home_branch,
     pr_number,
     read_pr,
     set_pr_base,
@@ -93,8 +96,24 @@ def reconcile(project: Project, *, actor: str = "user", retarget: bool = False) 
         if (reason := judge.done_reason()) is not None:
             set_status(project, node_id, Status.DONE, note=f"Reconciled: {reason}.", actor=actor)
             report.done.append(Reconciled(node_id, node.title, reason))
+            if graph.is_review(node_id) and (feature := node.parent) is not None:
+                _finish_feature(project, feature, actor, report)
         report.findings.extend(judge.findings)
     return report
+
+
+def _finish_feature(project: Project, feature: NodeId, actor: str, report: Report) -> None:
+    """A feature whose review step's pull request has landed is done, once every other child
+    is done or dropped too.
+    """
+    graph = load_graph(project)
+    node = graph[feature]
+    if node.status in (Status.DONE, Status.DROPPED):
+        return
+    if all(graph[c].status in (Status.DONE, Status.DROPPED) for c in graph.children(feature)):
+        reason = "its review passed and its branch landed"
+        set_status(project, feature, Status.DONE, note=f"Reconciled: {reason}.", actor=actor)
+        report.done.append(Reconciled(feature, node.title, reason))
 
 
 def describe(report: Report) -> list[str]:
@@ -119,7 +138,8 @@ class _Judge:
     ) -> None:
         self.project, self.graph, self.repo_dir, self.node_id = project, graph, repo_dir, node_id
         self.delivery, self.actor, self.retarget = delivery, actor, retarget
-        self.target = default_branch(repo_dir)
+        home = home_branch(graph, node_id)
+        self.target = (branch_ref(repo_dir, home) if home else None) or default_branch(repo_dir)
         self.findings: list[Finding] = []
 
     @property

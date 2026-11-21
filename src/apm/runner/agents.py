@@ -11,6 +11,7 @@ from typing import Any, Literal
 from apm.core.config import ApmConfig
 from apm.core.delivery import Base
 from apm.core.errors import ApmError
+from apm.core.feature_review import FEATURE_REVIEW_SCHEMA, Target
 from apm.core.graph import Graph
 from apm.core.ids import handle
 from apm.core.model import NodeId, Status
@@ -35,6 +36,7 @@ WRITE_MCP = (
     "apm_merge_nodes",
 )
 READ_TOOLS = ("Read", "Grep", "Glob")
+GIT_READ_TOOLS = ("Bash(git log *)", "Bash(git diff *)", "Bash(git show *)", "Bash(git grep *)")
 EDIT_TOOLS = ("Write", "Edit", "NotebookEdit")
 
 MODES: dict[str, str] = {
@@ -114,6 +116,17 @@ AGENTS: dict[str, AgentSpec] = {
             mcp_tools=(*READ_MCP, "apm_set_status", "apm_attach_delivery", "apm_update_node"),
             worktree=True,
         ),
+        AgentSpec(
+            name="apm-feature-reviewer",
+            label="Review feature",
+            summary="Check the feature branch against this node's description, once its tasks are"
+            " merged: is every acceptance criterion really met? Gaps become follow-up tasks.",
+            scope="read",
+            tools=(*READ_TOOLS, *GIT_READ_TOOLS),
+            mcp_tools=READ_MCP,
+            schema=FEATURE_REVIEW_SCHEMA,
+            read_only=True,
+        ),
     )
 }
 
@@ -129,6 +142,10 @@ def check_startable(spec: AgentSpec, graph: Graph, node_id: NodeId) -> None:
             raise RunRefused(f"{spec.label} works on a node: pick one first")
         return
     node = graph[node_id]
+    if graph.is_review(node_id) and spec.name in ("apm-implementer", "apm-decomposer"):
+        raise RunRefused(
+            "this is a feature's review step: run Review feature on it once its tasks are done"
+        )
     if spec.name != "apm-implementer":
         return
     if not graph.is_leaf(node_id):
@@ -180,6 +197,9 @@ def build_prompt(
             f"{base_instructions(graph, base)}"
         )
         return prompt + (f"\n\nGuidance from the user:\n{message}" if message else "")
+    if spec.name == "apm-feature-reviewer":
+        prompt = f"Review the feature in {where}: is it fully built?"
+        return prompt + (f"\n\nGuidance from the user:\n{message}" if message else "")
     if spec.name == "apm-assistant":
         question = message or "Summarise this node: what it is for, its state, and what's next."
         return f"The user is looking at {where}.\n\n{question}"
@@ -202,15 +222,60 @@ def base_instructions(graph: Graph, base: Base | None) -> str:
             f" stack on it: start from origin/{branch} and {target}. The pull request then shows"
             " only this node's changes."
         )
-    text = f"Start it from origin/{branch}, and {target}."
+    if base.feature is not None and base.feature in graph:
+        feature = graph[base.feature]
+        text = (
+            f'It is a task of feature {handle(base.feature)} ("{feature.title}"), whose branch is'
+            f" {branch}: start from origin/{branch}, and {target}. The feature goes on to the"
+            " default branch later, through its review step, once all its tasks are merged."
+        )
+    else:
+        text = f"Start it from origin/{branch}, and {target}."
     if base.unmerged:
         waits = ", ".join(f"{handle(node)} ({name})" for node, name in base.unmerged)
         text += (
             f" Work it depends on is not merged yet: {waits}. A branch can stack on only one of"
-            " them, so build on the default branch and say in the pull request that those must"
-            " be merged first."
+            f" them, so build on {branch} and say in the pull request that those must be merged"
+            " first."
         )
     return text
+
+
+def feature_review_prompt(graph: Graph, node_id: NodeId, target: Target, message: str = "") -> str:
+    """A feature reviewer's first message: the feature, the commit it reviews, and its tasks."""
+    feature = target.feature if target.feature in graph else node_id
+    lines = [
+        f'Review the feature in node {handle(feature)} ("{graph[feature].title}") of the APM'
+        f" plan, as built on branch {target.branch} at commit {target.sha} ({target.why}).",
+        "Your working directory is a checkout of that commit: read the code there.",
+    ]
+    if target.step is not None:
+        lines.append(
+            f"You are run on its review step, {handle(target.step)}: the feature's description"
+            " is the spec, not the step's."
+        )
+    if target.default and target.default != target.branch:
+        lines.append(
+            f"`git diff origin/{target.default}...HEAD` shows everything the feature changes."
+        )
+    lines += ["", "Its tasks:"]
+    for task in target.tasks:
+        where = {True: "in this commit", False: "NOT in this commit", None: "can't tell"}
+        delivered = task.pr or task.branch or "nothing delivered"
+        lines.append(
+            f'- {handle(task.node_id)} "{graph[task.node_id].title}": {task.status},'
+            f" {delivered}, {where[task.included]}"
+        )
+    missing = [t for t in target.tasks if t.included is False]
+    if missing:
+        lines += [
+            "",
+            "Some tasks' work is not in this commit. Judge the feature by what is in it, and say"
+            " what is missing.",
+        ]
+    lines += ["", "Return your review."]
+    text = "\n".join(lines)
+    return text + (f"\n\nGuidance from the user:\n{message.strip()}" if message.strip() else "")
 
 
 def critic_prompt(graph: Graph, node_id: NodeId, proposal: dict[str, Any]) -> str:

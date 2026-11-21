@@ -19,6 +19,7 @@ from apm.core.project import Project, load_graph
 from apm.core.store import Store
 from apm.server.app import archive_name, create_app
 from apm.server.security import host_is_loopback, origin_allowed
+from tests.conftest import tasks_of
 from tests.runner.fake import FakeClaude
 
 TOKEN = "t" * 43
@@ -143,11 +144,13 @@ def test_build_and_read_a_plan(client: TestClient, project: Project) -> None:
 
     info = client.get("/api/project").json()
     assert info["name"] == "my-app"
-    assert info["counts"] == {"nodes": 3, "ready": 1, "proposals": 0, "running": 0}
+    # The three, and Ship's review step.
+    assert info["counts"] == {"nodes": 4, "ready": 1, "proposals": 0, "running": 0}
     assert [(a["name"], a["label"], a["needs_node"]) for a in info["agents"]] == [
         ("apm-assistant", "Chat", False),
         ("apm-decomposer", "Decompose", True),
         ("apm-implementer", "Implement", True),
+        ("apm-feature-reviewer", "Review feature", True),
     ]
     assert info["default_mode"] == "auto"
     assert [m["name"] for m in info["modes"]] == [
@@ -159,22 +162,23 @@ def test_build_and_read_a_plan(client: TestClient, project: Project) -> None:
     ]
 
     tree = client.get("/api/tree").json()
-    assert [n["title"] for n in tree["nodes"]] == ["Ship v1", "Build", "Test"]
+    assert [n["title"] for n in tree["nodes"]] == ["Ship v1", "Build", "Test", "Feature review"]
     assert tree["errors"] == []
     assert tree["head"] == info["head"]
 
     top = client.get("/api/graph").json()
     assert top["root"] is None
     assert [n["title"] for n in top["nodes"]] == ["Ship v1"]
-    assert top["nodes"][0]["progress"] == {"done": 0, "total": 2}
+    assert top["nodes"][0]["progress"] == {"done": 0, "total": 3}  # with its review step
 
     level = client.get("/api/graph", params={"root": ship_id}).json()
     assert level["root"]["title"] == "Ship v1"
     assert [b["title"] for b in level["breadcrumb"]] == ["Ship v1"]
-    assert [n["title"] for n in level["nodes"]] == ["Build", "Test"]
-    assert [(e["src"], e["dst"], e["count"]) for e in level["edges"]] == [
-        (test["id"], build["id"], 1)
-    ]
+    assert [n["title"] for n in level["nodes"]] == ["Build", "Test", "Feature review"]
+    review = load_graph(project).review_step(ship_id)  # waits on both tasks
+    assert sorted((e["src"], e["dst"], e["count"]) for e in level["edges"]) == sorted(
+        [(test["id"], build["id"], 1), (review, build["id"], 1), (review, test["id"], 1)]
+    )
 
     assert [n["title"] for n in client.get("/api/ready").json()] == ["Build"]
     assert [h["title"] for h in client.get("/api/search", params={"q": "make"}).json()] == ["Build"]
@@ -223,9 +227,11 @@ def test_each_edit_is_one_commit(client: TestClient, project: Project) -> None:
     refused = client.delete(f"/api/nodes/{a}")
     assert refused.status_code == 422
     assert "has 1 child" in refused.json()["error"]
+    step = load_graph(project).review_step(a)  # B made A a feature, with a review step
+    assert step is not None
     assert sorted(
         client.delete(f"/api/nodes/{a}", params={"recursive": True}).json()["deleted"]
-    ) == sorted([a, b])
+    ) == sorted([a, b, step])
     assert len(load_graph(project)) == 0
 
 
@@ -280,7 +286,7 @@ def test_decompose_then_accept_an_edited_proposal(client: TestClient, project: P
     (child,) = accepted.json()["created"]
     graph = load_graph(project)
     assert graph[child].title == "Parse the file"
-    assert graph.children(node["id"]) == (child,)
+    assert tasks_of(graph, node["id"]) == (child,)
     assert commits(project) == before + 1
     entry = log(project.apm_dir)[0]
     assert entry.subject == f"decompose {node['handle']}: 1 child"

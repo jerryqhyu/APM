@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+from apm.core import review_steps
 from apm.core.errors import ApmError
 from apm.core.files import (
     GRAPH_FILE,
@@ -81,6 +82,8 @@ class Draft:
         self._bodies: dict[NodeId, str | None] = {}  # None = delete the file
         self._touched: set[NodeId] = set()
         self._created: list[NodeId] = []
+        self._left: set[NodeId] = set()
+        """Parents that lost a child: their review step may have to go."""
         self._graph: Graph | None = None
 
     @property
@@ -99,10 +102,18 @@ class Draft:
         except KeyError:
             raise OpError(f"unknown node {node_id}") from None
 
-    def put(self, node: Node) -> None:
-        """Adds a node, or replaces the one with the same id."""
+    @property
+    def touched(self) -> frozenset[NodeId]:
+        """Every node changed so far, and every parent that lost a child."""
+        return frozenset(self._touched | self._left)
+
+    def put(self, node: Node, *, auto: bool = False) -> None:
+        """Adds a node, or replaces the one with the same id. An `auto` node is one APM adds on
+        its own (a review step): it is listed in the commit, but not among `created`.
+        """
         if node.id not in self._nodes:
-            self._created.append(node.id)
+            if not auto:
+                self._created.append(node.id)
         elif self._nodes[node.id] == node:
             return
         self._nodes[node.id] = node
@@ -111,6 +122,8 @@ class Draft:
 
     def remove(self, node_id: NodeId) -> None:
         """Removes a node and its body. Edges pointing at it are the caller's to clean up."""
+        if (parent := self[node_id].parent) is not None:
+            self._left.add(parent)
         del self._nodes[self[node_id].id]
         self._bodies[node_id] = None
         self._touched.add(node_id)
@@ -154,6 +167,7 @@ def mutate(
         before = read_graph_file(apm_dir)
         draft = Draft(apm_dir, before)
         summary = fn(draft)
+        review_steps.maintain(draft)
 
         graph = draft.graph
         report = validate(graph)
