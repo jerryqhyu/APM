@@ -2,7 +2,7 @@ import pytest
 from hypothesis import Phase, find, given, settings
 
 from apm.core.graph import Graph, Progress
-from apm.core.model import Node, NodeId, Status
+from apm.core.model import Delivery, Node, NodeId, Status
 from tests.core.build import A, B, C, D, E, F, make_id, node
 from tests.strategies import graphs
 
@@ -196,6 +196,128 @@ def test_a_child_inherits_what_its_ancestors_wait_on() -> None:
     assert graph.ready_leaves() == [A]
 
 
+PUSHED = Delivery(repo="app", branch="apm/0000000a-first")
+
+
+def test_a_delivered_dependency_lets_work_stack_on_it() -> None:
+    # A is in progress with a pushed branch; B depends on it.
+    graph = Graph([node(A, status=IN_PROGRESS, delivery=PUSHED), node(B, deps=[A])])
+    state = graph.states[B]
+    assert state.ready
+    assert not state.blocked
+    assert state.waiting_on == (A,)
+    assert state.stacked_on == (A,)
+    assert state.stack_top == A
+    assert graph.ready_leaves() == [B]
+
+
+def test_a_pull_request_alone_is_enough_to_stack_on() -> None:
+    delivery = Delivery(repo="app", pr="https://github.com/o/r/pull/20")
+    graph = Graph([node(A, status=IN_PROGRESS, delivery=delivery), node(B, deps=[A])])
+    assert graph.states[B].stacked_on == (A,)
+
+
+def test_two_delivered_dependencies_on_separate_branches_block() -> None:
+    # A branch can stack on one branch, and A and B know nothing of each other.
+    graph = Graph(
+        [
+            node(A, status=IN_PROGRESS, delivery=PUSHED),
+            node(B, status=IN_PROGRESS, delivery=Delivery(repo="app", branch="apm/b")),
+            node(C, deps=[A, B]),
+        ]
+    )
+    state = graph.states[C]
+    assert state.blocked
+    assert not state.ready
+    assert state.stacked_on == (A, B)
+    assert state.stack_top is None
+
+
+def test_two_delivered_dependencies_in_a_chain_stack_on_the_later_one() -> None:
+    # B was built on A (it depends on it), so B's branch holds both: C stacks on B.
+    graph = Graph(
+        [
+            node(A, status=IN_PROGRESS, delivery=PUSHED),
+            node(B, deps=[A], status=IN_PROGRESS, delivery=Delivery(repo="app", branch="apm/b")),
+            node(C, deps=[A, B]),
+        ]
+    )
+    state = graph.states[C]
+    assert state.ready
+    assert state.stacked_on == (A, B)
+    assert state.stack_top == B
+
+
+def test_stack_top_needs_one_dependency_to_cover_the_rest() -> None:
+    graph = Graph([node(A), node(B, deps=[A]), node(C, deps=[B]), node(D)])
+    assert graph.stack_top([]) is None
+    assert graph.stack_top([A]) == A
+    assert graph.stack_top([A, C]) == C  # through B
+    assert graph.stack_top([A, B, C]) == C
+    assert graph.stack_top([A, D]) is None
+
+
+def test_in_progress_without_a_pushed_branch_still_blocks() -> None:
+    graph = Graph(
+        [
+            node(A, status=IN_PROGRESS),
+            node(B, status=IN_PROGRESS, delivery=Delivery(repo="app", commits=("abc",))),
+            node(C, deps=[A]),
+            node(D, deps=[B]),
+        ]
+    )
+    for blocked in (C, D):
+        assert graph.states[blocked].blocked
+        assert graph.states[blocked].stacked_on == ()
+    assert graph.ready_leaves() == []
+
+
+def test_one_undelivered_dependency_blocks_even_with_a_delivered_one() -> None:
+    graph = Graph([node(A, status=IN_PROGRESS, delivery=PUSHED), node(B), node(C, deps=[A, B])])
+    state = graph.states[C]
+    assert state.blocked
+    assert not state.ready
+    assert state.waiting_on == (A, B)
+    assert state.stacked_on == (A,)
+
+
+def test_stacking_is_inherited_from_ancestors_dependencies() -> None:
+    # B depends on A (delivered); C sits under B.
+    graph = Graph([node(A, status=IN_PROGRESS, delivery=PUSHED), node(B, deps=[A]), node(C, B)])
+    assert graph.states[C].ready
+    assert graph.states[C].stacked_on == (A,)
+
+
+def test_a_parent_in_progress_never_counts_as_delivered() -> None:
+    # A is a parent in progress (only leaves carry deliveries); C depends on it.
+    graph = Graph(
+        [
+            node(A, status=IN_PROGRESS),
+            node(B, A, status=IN_PROGRESS, delivery=PUSHED),
+            node(C, deps=[A]),
+        ]
+    )
+    assert graph.states[C].blocked
+    assert graph.states[C].stacked_on == ()
+
+
+def test_a_done_dependency_is_no_longer_stacked_on() -> None:
+    graph = Graph([node(A, status=DONE, delivery=PUSHED), node(B, deps=[A])])
+    assert graph.states[B].ready
+    assert graph.states[B].stacked_on == ()
+
+
+def test_a_dropped_dependency_still_blocks_stacked_work() -> None:
+    graph = Graph(
+        [
+            node(A, status=IN_PROGRESS, delivery=PUSHED),
+            node(B, status=DROPPED),
+            node(C, deps=[A, B]),
+        ]
+    )
+    assert graph.states[C].blocked
+
+
 def test_progress_counts_done_leaves_over_leaves_that_are_not_dropped() -> None:
     #  A ─ B (done), C ─ D (done), E (todo);  F (dropped) under A.
     graph = Graph(
@@ -243,7 +365,19 @@ def test_states_agree_with_the_definitions(nodes: list[Node]) -> None:
         lineage = [n, *(graph[a] for a in graph.ancestors(n.id))]
         waiting = {d for x in lineage for d in x.depends_on if graph[d].status is not DONE}
         assert set(state.waiting_on) == waiting
-        assert state.blocked == (n.status is Status.TODO and bool(waiting))
+        stacked = {
+            d
+            for d in waiting
+            if graph[d].status is IN_PROGRESS
+            and graph.is_leaf(d)
+            and (delivery := graph[d].delivery) is not None
+            and bool(delivery.branch or delivery.pr)
+        }
+        assert set(state.stacked_on) == stacked
+        top = graph.stack_top(stacked)
+        assert state.stack_top == top
+        blocking = (waiting - stacked) if (top or not stacked) else waiting
+        assert state.blocked == (n.status is Status.TODO and bool(blocking))
         assert not (state.blocked and state.ready)
         if state.ready:
             assert n.status is Status.TODO

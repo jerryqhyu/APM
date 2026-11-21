@@ -10,6 +10,14 @@ export interface Delivery {
   pr: string | null;
 }
 
+/** A dependency a node stacks on: delivered (a branch or a PR) but not merged yet. */
+export interface StackedOn {
+  id: string;
+  handle: string;
+  /** `#20`, or null if it has no pull request yet. */
+  pr: string | null;
+}
+
 export interface NodeView {
   id: string;
   handle: string;
@@ -20,6 +28,10 @@ export interface NodeView {
   blocked: boolean;
   ready: boolean;
   waiting_on: string[];
+  /** Ready because of these: start on top of their branch. Empty when everything it needs is done. */
+  stacked_on: StackedOn[];
+  /** Which of `stacked_on` to build on: its branch holds them all. Null if it can't stack. */
+  stack_top: string | null;
   dropped_deps: string[];
   depends_on: string[];
   dependents: string[];

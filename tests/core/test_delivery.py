@@ -1,4 +1,3 @@
-import os
 from pathlib import Path
 
 import pytest
@@ -66,19 +65,30 @@ def test_a_merged_or_deleted_dependency_branch_is_not_stacked_on(code_repo: Code
     assert choose_base(code_repo.project, third[0]) == Base("main")
 
 
-def test_a_merged_pull_request_counts_as_merged(
-    code_repo: CodeRepo, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    # A squash merge leaves the branch's own commits off main: only the PR says it merged.
+def test_a_merged_pull_request_counts_as_merged(code_repo: CodeRepo, fake_gh: FakeGh) -> None:
+    # A squash merge leaves the branch's own commits off main: only the PR says it merged. It is
+    # read through the REST API, so it works where `gh pr view` (GraphQL) is refused.
     first, second = chain(code_repo.project, "First", "Second")
     code_repo.push_branch("apm/first")
-    delivered(code_repo.project, first, "apm/first", pr="https://github.com/o/r/pull/1")
-    bin_dir = tmp_path / "pr-view"
-    bin_dir.mkdir()
-    (bin_dir / "gh").write_text('#!/bin/sh\necho \'{"state": "MERGED"}\'\n')
-    (bin_dir / "gh").chmod(0o755)
-    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+    url = fake_gh.add(1, state="closed", merged=True)
+    delivered(code_repo.project, first, "apm/first", pr=url)
     assert choose_base(code_repo.project, second) == Base("main")
+    assert ["api", "repos/o/r/pulls/1"] in fake_gh.calls
+    assert not any(call[0] == "pr" for call in fake_gh.calls)
+
+
+def test_a_dependency_built_on_the_others_is_the_one_to_stack_on(code_repo: CodeRepo) -> None:
+    # Second was built on First (it depends on it); Third needs both: Second's branch has both.
+    project = code_repo.project
+    first, second = chain(project, "First", "Second")
+    (third,) = create_nodes(project, [NewNode(title="Third", depends_on=[first, second])]).created
+    code_repo.push_branch("apm/first")
+    code_repo.push_branch("apm/second", base="apm/first")
+    for node, branch in ((first, "apm/first"), (second, "apm/second")):
+        set_status(project, node, Status.IN_PROGRESS)  # delivered, not merged
+        attach_delivery(project, node, branch=branch)
+    assert choose_base(project, third) == Base("apm/second", stacked_on=second)
+    assert load_graph(project).states[third].stack_top == second
 
 
 def test_several_unmerged_dependencies_mean_the_default_branch(code_repo: CodeRepo) -> None:
