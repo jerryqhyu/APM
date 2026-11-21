@@ -33,12 +33,14 @@ from apm.core.feature_review import (
     review_subject,
 )
 from apm.core.feature_review import parse_review as parse_feature_review
+from apm.core.files import read_body
 from apm.core.lock import CACHE_DIR, pid_alive
 from apm.core.model import NodeId, Status
 from apm.core.ops import set_status
 from apm.core.project import Project, load_graph
 from apm.core.proposals import ProposalError, parse_decomposition, parse_review
-from apm.core.store import PROJECT, Proposal, Run, RunStatus, Store
+from apm.core.store import PROJECT, Proposal, Run, RunStatus, Store, TaskReview, content_fingerprint
+from apm.core.task_verdict import TaskVerdict, VerdictRefused, parse_task_verdict
 from apm.runner.agents import (
     AGENTS,
     AgentSpec,
@@ -55,6 +57,7 @@ from apm.runner.agents import (
 )
 
 FEATURE_REVIEWER = "apm-feature-reviewer"
+TASK_REVIEWER = "apm-task-reviewer"
 
 # Kept from the stream: what a transcript needs. Token deltas, rate-limit notices and the like
 # are dropped.
@@ -309,6 +312,9 @@ class Runner:
             if prepared is None:
                 return
             run, cwd = prepared
+        if spec.name == TASK_REVIEWER:
+            await self._review_task(spec, config, run, resume=resume)
+            return
         answer = await self._execute(spec, config, run, resume=resume, worktree=worktree, cwd=cwd)
         if implementer and answer is not None:
             await self._ensure_pr(run)
@@ -553,6 +559,39 @@ class Runner:
                 )
             self._notice(run.id, "warning", text)
 
+    # --- a task review ---
+
+    async def _review_task(self, spec: AgentSpec, config: ApmConfig, run: Run, **kw: Any) -> None:
+        """Runs the task reviewer and saves its verdict for the content it was shown: the
+        fingerprint is taken before it starts, so an edit made meanwhile gets a review of its own.
+        A `too_big` split becomes a proposal, accepted like a decomposer's.
+        """
+        node = load_graph(self.project)[run.node_id]
+        fingerprint = content_fingerprint(node, read_body(self.project.apm_dir, run.node_id))
+        answer = await self._execute(spec, config, run, **kw)
+        try:
+            if answer is None:
+                raise VerdictRefused(self.store.get_run(run.id).error or "the run failed")
+            verdict = parse_task_verdict(answer)
+        except VerdictRefused as err:
+            self.store.add_task_review(
+                TaskReview(run.node_id, fingerprint, "error", {"error": str(err)}, run.id)
+            )
+            if answer is not None:
+                self.store.finish_run(run.id, "failed", error=str(err))
+                self._emit({"type": "run.finished", "run": asdict(self.store.get_run(run.id))})
+            self._notice(run.id, "warning", f"APM couldn't record a task verdict: {err}")
+            return
+        data = verdict.model_dump(mode="json")
+        self.store.add_task_review(
+            TaskReview(run.node_id, fingerprint, verdict.verdict, data, run.id)
+        )
+        if verdict.verdict == "too_big":
+            split = {"rationale": verdict.summary, "children": data["children"], "warnings": []}
+            proposal = self.store.create_proposal(node_id=run.node_id, data=split, run_id=run.id)
+            self._emit({"type": "proposal.created", "proposal": proposal_dict(proposal)})
+        self._notice(run.id, "warning" if verdict.verdict != "pass" else "info", _said(verdict))
+
     def _notice(self, run_id: str, level: str, text: str) -> None:
         """A line from APM itself in a run's conversation."""
         self._record(run_id, {"type": "apm_notice", "level": level, "text": text})
@@ -789,6 +828,19 @@ class Runner:
 
 def proposal_dict(proposal: Proposal) -> dict[str, Any]:
     return asdict(proposal)
+
+
+def _said(verdict: TaskVerdict) -> str:
+    """What a task verdict means, for the run's conversation."""
+    if verdict.verdict == "pass":
+        return f"**Pass**: the task is small enough to build. {verdict.summary}".strip()
+    if verdict.verdict == "too_big":
+        count = len(verdict.children)
+        return (
+            f"**Too big**: {verdict.summary} A split into {count} tasks waits under Proposals:"
+            " accepting it turns this task into a feature."
+        )
+    return f"**Unclear**: {verdict.summary} Missing: " + "; ".join(verdict.missing)
 
 
 def _user_message(text: str) -> dict[str, Any]:

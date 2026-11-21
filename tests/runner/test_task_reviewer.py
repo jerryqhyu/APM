@@ -5,9 +5,13 @@ from pathlib import Path
 import pytest
 
 from apm.core.config import read_config
+from apm.core.files import read_body
 from apm.core.ids import handle
-from apm.core.ops import NewNode, create_nodes
+from apm.core.model import NodeId
+from apm.core.ops import NewNode, create_nodes, edit_body
 from apm.core.project import Project, load_graph
+from apm.core.proposals import accept_proposal
+from apm.core.store import content_fingerprint
 from apm.core.task_verdict import TASK_VERDICT_SCHEMA
 from apm.runner.agents import AGENTS, EDIT_TOOLS, RunRefused, build_command, build_prompt
 from tests.core.test_feature_review import feature
@@ -60,3 +64,110 @@ async def test_it_is_refused_on_a_review_step_or_a_parent(project: Project) -> N
     with pytest.raises(RunRefused, match="only a task can be reviewed: this node has children"):
         harness.runner.start("apm-task-reviewer", node)
     assert harness.store.list_runs() == []
+
+
+def fingerprint(project: Project, task: NodeId) -> str:
+    return content_fingerprint(load_graph(project)[task], read_body(project.apm_dir, task))
+
+
+def notices(harness: Harness, run_id: str) -> list[tuple[str, str]]:
+    events = [e.data for e in harness.store.list_events(run_id)]
+    return [(e["level"], e["text"]) for e in events if e["type"] == "apm_notice"]
+
+
+async def review(
+    project: Project, fake_claude: FakeClaude, *modes: str
+) -> tuple[Harness, NodeId, str]:
+    fake_claude.mode(*modes)
+    harness = Harness(project)
+    task = create_nodes(project, [NewNode(title="Parse lines")]).created[0]
+    run = harness.runner.start("apm-task-reviewer", task)
+    await harness.runner.wait(run.id)
+    return harness, task, run.id
+
+
+async def test_a_pass_is_stored_for_the_content_it_reviewed(
+    project: Project, fake_claude: FakeClaude
+) -> None:
+    harness, task, run_id = await review(project, fake_claude)
+    stored = harness.store.latest_task_review(task)
+    assert stored is not None
+    assert (stored.verdict, stored.run_id) == ("pass", run_id)
+    assert stored.fingerprint == fingerprint(project, task)
+    assert stored.data["summary"] == "About 20 lines."
+    assert notices(harness, run_id) == [
+        ("info", "**Pass**: the task is small enough to build. About 20 lines.")
+    ]
+    assert harness.store.list_proposals() == []
+
+
+async def test_the_fingerprint_is_taken_when_the_run_starts(
+    project: Project, fake_claude: FakeClaude
+) -> None:
+    fake_claude.mode("ask-permission")
+    harness = Harness(project)
+    task = create_nodes(project, [NewNode(title="Parse lines")]).created[0]
+    before = fingerprint(project, task)
+    run = harness.runner.start("apm-task-reviewer", task)
+    request = await harness.next_request()
+    edit_body(project, task, "## Intent\n\nSomething else entirely.\n")
+    await harness.runner.answer(request["id"], allow=True)
+    await harness.runner.wait(run.id)
+    stored = harness.store.latest_task_review(task)
+    assert stored is not None
+    assert stored.fingerprint == before != fingerprint(project, task)
+
+
+async def test_too_big_proposes_a_split_that_turns_the_task_into_a_feature(
+    project: Project, fake_claude: FakeClaude
+) -> None:
+    harness, task, run_id = await review(project, fake_claude, "too-big")
+    stored = harness.store.latest_task_review(task)
+    assert stored is not None
+    assert stored.verdict == "too_big"
+    (proposal,) = harness.store.list_proposals()
+    assert (proposal.node_id, proposal.status, proposal.run_id) == (task, "pending", run_id)
+    assert "proposal.created" in harness.types()
+    ((level, text),) = notices(harness, run_id)
+    assert level == "warning"
+    assert "A split into 2 tasks waits under Proposals" in text
+
+    accept_proposal(project, harness.store, proposal.id)
+    graph = load_graph(project)
+    children = graph.children(task)
+    assert sorted(graph[c].title for c in children) == ["Feature review", "Parse", "Write"]
+    step = graph.review_step(task)
+    assert step is not None
+    assert set(graph[step].depends_on) == set(children) - {step}
+
+
+async def test_unclear_says_what_is_missing(project: Project, fake_claude: FakeClaude) -> None:
+    harness, task, run_id = await review(project, fake_claude, "unclear")
+    stored = harness.store.latest_task_review(task)
+    assert stored is not None
+    assert (stored.verdict, stored.data["missing"]) == ("unclear", ["the format"])
+    assert notices(harness, run_id) == [("warning", "**Unclear**: Too vague. Missing: the format")]
+    assert harness.store.list_proposals() == []
+
+
+@pytest.mark.parametrize(
+    ("mode", "reason"),
+    [
+        ("bad-verdict", "too_big needs at least two proposed child tasks"),
+        ("fail", "boom: something broke"),
+        ("no-answer", "no structured answer"),
+    ],
+)
+async def test_malformed_output_or_a_failed_run_is_stored_as_an_error(
+    project: Project, fake_claude: FakeClaude, mode: str, reason: str
+) -> None:
+    harness, task, run_id = await review(project, fake_claude, mode)
+    stored = harness.store.latest_task_review(task)
+    assert stored is not None
+    assert (stored.verdict, stored.fingerprint) == ("error", fingerprint(project, task))
+    assert reason in stored.data["error"]
+    assert harness.store.get_run(run_id).status == "failed"
+    ((level, text),) = notices(harness, run_id)
+    assert level == "warning"
+    assert reason in text
+    assert harness.store.list_proposals() == []
