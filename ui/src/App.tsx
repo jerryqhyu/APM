@@ -1,17 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { type ActionHandlers, Actions } from "./Actions";
-import { ApiError, api, query } from "./api";
+import { ApiError, api, download, query } from "./api";
 import { Canvas } from "./Canvas";
 import { Chat } from "./Chat";
 import { type DetailActions, NodeDetails, PlanSummary } from "./Details";
-import { AddNodeDialog, DeleteDialog, MergeDialog, PickNodeDialog, RunAgentDialog } from "./Dialogs";
+import { AddNodeDialog, DeleteDialog, ExportDialog, MergeDialog, PickNodeDialog, RunAgentDialog } from "./Dialogs";
 import { useLiveConnection, useLiveEvents } from "./live";
 import { Outline } from "./Outline";
 import { ProposalReview } from "./ProposalReview";
 import { type Theme, useTheme } from "./theme";
 import type { AgentRequest, Level, NodeDetail, NodeView, Project, Proposal, Run, Status, Tree } from "./types";
 import { Spinner } from "./ui";
-import { cx, errorText } from "./util";
+import { cx, errorText, stackedName } from "./util";
 
 interface Route {
   /** The node whose inside the graph shows; null = the top level. */
@@ -27,7 +27,8 @@ type Dialog =
   | { kind: "link"; node: string }
   | { kind: "merge"; nodes: string[] }
   | { kind: "delete"; nodes: string[] }
-  | { kind: "review"; proposal: Proposal };
+  | { kind: "review"; proposal: Proposal }
+  | { kind: "export" };
 
 type Tab = "chat" | "details";
 
@@ -137,13 +138,39 @@ export function App() {
     }
   }, []);
 
-  const refresh = useCallback(async () => {
+  // Reloading is coalesced: a change usually asks twice (after the request, and again when the
+  // live "plan changed" event arrives). While one reload runs, any number of further requests
+  // become a single reload after it.
+  const reload = useCallback(async () => {
     await Promise.all([loadPlan(), loadLevel(route.root), loadDetail(primary)]);
   }, [loadPlan, loadLevel, loadDetail, route.root, primary]);
+  const reloadRef = useRef(reload);
+  reloadRef.current = reload;
+  const inFlight = useRef<Promise<void> | null>(null);
+  const queued = useRef<Promise<void> | null>(null);
+  const refresh = useCallback((): Promise<void> => {
+    if (!inFlight.current) {
+      inFlight.current = reloadRef.current().finally(() => {
+        inFlight.current = null;
+      });
+      return inFlight.current;
+    }
+    if (!queued.current) {
+      queued.current = inFlight.current
+        .catch(() => {})
+        .then(() => {
+          queued.current = null;
+          return refresh();
+        });
+    }
+    return queued.current;
+    // reloadRef always holds the latest reload, so this function never needs to change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
-    refresh().catch(fail);
-  }, [refresh, fail]);
+    reload().catch(fail);
+  }, [reload, fail]);
 
   useLiveEvents((event) => {
     if (event.type === "run.event") return; // the conversation handles these itself
@@ -239,14 +266,16 @@ export function App() {
       }),
     reconcile: () =>
       quietly(async () => {
-        const result = await api<{ done: string[] }>("/api/reconcile", { method: "POST" });
-        toast(result.done.length ? result.done.join(" · ") : "Nothing has merged since last time.");
+        const result = await api<{ done: string[]; findings: string[] }>("/api/reconcile", { method: "POST" });
+        const lines = [...result.done, ...result.findings];
+        toast(lines.length ? lines.join(" · ") : "Nothing has reached the default branch since last time.");
       }),
     commitEdits: () =>
       quietly(async () => {
         const result = await api<{ sha: string | null; nodes: string[] }>("/api/commit", { method: "POST" });
         toast(result.sha ? `Committed your edits to ${result.nodes.length} node(s).` : "No hand edits to commit.");
       }),
+    exportArchive: () => setDialog({ kind: "export" }),
     clear: () => select(null, false),
   };
 
@@ -310,8 +339,9 @@ export function App() {
             {readyNodes.length ? (
               readyNodes.map((n) => (
                 <button key={n.id} className="menu-item" onClick={() => goTo(n.id)}>
-                  <span className="dot state-ready" />
+                  <span className={cx("dot", n.stack_top ? "state-stacked" : "state-ready")} />
                   {n.title}
+                  {n.stack_top && <span className="menu-note">stacked on {stackedName(n)}</span>}
                 </button>
               ))
             ) : (
@@ -544,6 +574,17 @@ export function App() {
             await api(`/api/proposals/${dialog.proposal.id}/reject`, { method: "POST" });
             setDialog(null);
             await refresh();
+          }}
+        />
+      )}
+      {dialog?.kind === "export" && (
+        <ExportDialog
+          projectName={project.name}
+          onClose={() => setDialog(null)}
+          onExport={async (withRuns) => {
+            const name = await download(`/api/export${query({ with_runs: withRuns })}`, `${project.name}.apm.zip`);
+            setDialog(null);
+            toast(`Saved ${name}.`);
           }}
         />
       )}

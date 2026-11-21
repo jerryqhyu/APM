@@ -1,6 +1,7 @@
 """The `apm` command (plans.md §10)."""
 
 import asyncio
+import contextlib
 import functools
 import json
 import os
@@ -9,6 +10,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import textwrap
 import threading
 import time
 import webbrowser
@@ -35,7 +37,12 @@ from apm.core.project import (
     init_project,
     load_graph,
 )
-from apm.core.proposals import accept_proposal, parse_decomposition, reject_proposal
+from apm.core.proposals import (
+    accept_proposal,
+    close_orphaned,
+    parse_decomposition,
+    reject_proposal,
+)
 from apm.core.reconcile import describe, reconcile
 from apm.core.store import Proposal, Store
 from apm.core.views import all_nodes_view, node_line, node_text, node_view, outline, search
@@ -147,9 +154,16 @@ def commit() -> None:
 
 @app.command("reconcile")
 @command
-def reconcile_() -> None:
-    """Mark in-progress nodes done when their pull request or commits have merged."""
-    lines = describe(reconcile(find_project()))
+def reconcile_(
+    retarget: Annotated[
+        bool,
+        typer.Option(
+            "--retarget", help="Point open PRs whose base has landed at the default branch."
+        ),
+    ] = False,
+) -> None:
+    """Mark in-progress nodes done once their work is on the default branch."""
+    lines = describe(reconcile(find_project(), retarget=retarget))
     for line in lines:
         typer.echo(line)
     if not lines:
@@ -162,7 +176,7 @@ def ready(
     root_: Annotated[str | None, typer.Option("--root", help="Only under this node.")] = None,
     as_json: Json = False,
 ) -> None:
-    """List what can be worked on now: ready leaves."""
+    """List what can be worked on now: ready leaves, stacked ones marked."""
     _, graph = plan()
     ids = graph.ready_leaves(graph.resolve(root_) if root_ else None)
     if as_json:
@@ -223,6 +237,8 @@ def plugin_path() -> None:
 @command
 def link(remote: Annotated[str, typer.Option(help="URL of the plan repo's remote.")]) -> None:
     """Set the plan repo's remote and record it in .apm-link."""
+    if not remote.strip():
+        raise OpError("the remote can't be empty")
     project = find_project()
     remotes = git(project.apm_dir, ["remote"]).split()
     action = ["set-url"] if "origin" in remotes else ["add"]
@@ -263,6 +279,53 @@ def push() -> None:
 def pull() -> None:
     """Pull the plan repo (fast-forward only)."""
     typer.echo(git(find_project().apm_dir, ["pull", "--quiet", "--ff-only"]) or "up to date")
+
+
+# --- archives -----------------------------------------------------------------------------------
+
+RUNS_WARNING = (
+    "warning: {file} holds run transcripts, which can include tool output and secrets"
+    " (file contents, tokens, keys). Check it before you share it."
+)
+
+
+@app.command("export")
+@command
+def export(
+    file: Annotated[Path, typer.Argument(help="Where to write the archive, e.g. plan.apm.zip.")],
+    with_runs: Annotated[
+        bool,
+        typer.Option("--with-runs", help="Also include runs, their transcripts, and proposals."),
+    ] = False,
+) -> None:
+    """Save the project and its history as one .apm.zip file."""
+    from apm.core.archive import export_archive
+
+    manifest = export_archive(find_project(), file, with_runs=with_runs)
+    typer.echo(f"exported {manifest['project']} to {file}: {_counts(manifest['counts'])}")
+    if with_runs:
+        typer.echo(RUNS_WARNING.format(file=file), err=True)
+
+
+@app.command("import")
+@command
+def import_(
+    file: Annotated[Path, typer.Argument(help="The .apm.zip archive to restore.")],
+) -> None:
+    """Restore a project from an .apm.zip file into this folder."""
+    from apm.core.archive import import_archive
+
+    imported = import_archive(file, Path.cwd())
+    manifest = imported.manifest
+    typer.echo(
+        f"imported {manifest['project']} into {imported.project.apm_dir}:"
+        f" {_counts(manifest['counts'])}"
+    )
+    typer.echo("next: apm check, or apm serve")
+
+
+def _counts(counts: dict[str, Any]) -> str:
+    return ", ".join(f"{value} {key}" for key, value in counts.items())
 
 
 # --- nodes --------------------------------------------------------------------------------------
@@ -334,7 +397,7 @@ def node_set(
 @command
 def node_status(
     handle: str,
-    status: Status,
+    status: Annotated[Status, typer.Argument(case_sensitive=False)],
     note: Annotated[str, typer.Option(help="Why: goes in the commit message.")] = "",
 ) -> None:
     """Set a node's status: todo, in_progress, done or dropped."""
@@ -492,6 +555,7 @@ def run(
     ] = None,
 ) -> None:
     """Run an agent and follow it here. It asks you in the terminal when it needs an answer."""
+    from apm.runner.agents import RunRefused
     from apm.runner.runner import Runner
     from apm.runner.transcript import format_event
 
@@ -524,8 +588,18 @@ def run(
         async def answer_requests() -> None:
             while True:
                 request = await waiting.get()
-                allow, answers = await asyncio.to_thread(ask_in_terminal, request)
-                await runner.answer(request["id"], allow=allow, answers=answers)
+                try:
+                    allow, answers = await asyncio.to_thread(ask_in_terminal, request)
+                    message = ""
+                except Exception, KeyboardInterrupt:
+                    # Nobody is at the terminal, or input ran out (typer.Abort, EOFError): say no.
+                    # The run would otherwise wait for an answer that never comes.
+                    allow, answers, message = False, None, "Nobody answered at the terminal."
+                    typer.echo("  (no answer: refused)")
+                with contextlib.suppress(RunRefused):  # the run ended meanwhile
+                    await runner.answer(
+                        request["id"], allow=allow, answers=answers, message=message
+                    )
 
         asker = asyncio.create_task(answer_requests())
         try:
@@ -542,8 +616,18 @@ def run(
 
 def ask_in_terminal(request: dict[str, Any]) -> tuple[bool, dict[str, str] | None]:
     """Puts an agent's question or permission prompt to the person at the terminal."""
+    tool_input = request["input"]
+    if request["kind"] == "plan":
+        typer.echo("? Claude has a plan and waits for your go-ahead:\n")
+        typer.echo(textwrap.indent(str(tool_input.get("plan", "")).strip(), "    "))
+        return typer.confirm("\n  go ahead?", default=False), None
     if request["kind"] != "question":
-        what = request["input"].get("command") or json.dumps(request["input"], ensure_ascii=False)
+        what = (
+            tool_input.get("command")
+            or tool_input.get("file_path")
+            or tool_input.get("url")
+            or json.dumps(tool_input, ensure_ascii=False)[:300]
+        )
         why = f"  ({request['description']})" if request["description"] else ""
         typer.echo(f"? {request['tool']}: {what}{why}")
         return typer.confirm("  allow?", default=False), None
@@ -553,9 +637,15 @@ def ask_in_terminal(request: dict[str, Any]) -> tuple[bool, dict[str, str] | Non
         typer.echo(f"? {question['question']}")
         for number, option in enumerate(options, start=1):
             typer.echo(f"  {number}. {option['label']}")
-        choice = typer.prompt("  your choice (a number, or your own words)", default="1")
-        picked = int(choice) - 1 if choice.isdigit() and 0 < int(choice) <= len(options) else None
-        answers[question["question"]] = options[picked]["label"] if picked is not None else choice
+        many = bool(question.get("multiSelect"))
+        hint = "numbers separated by commas" if many else "a number"
+        choice = typer.prompt(f"  your choice ({hint}, or your own words)", default="1")
+        numbers = [part.strip() for part in choice.split(",")] if many else [choice.strip()]
+        picked = [int(n) - 1 for n in numbers if n.isdigit() and 0 < int(n) <= len(options)]
+        if picked and len(picked) == len(numbers):
+            answers[question["question"]] = ", ".join(options[i]["label"] for i in picked)
+        else:
+            answers[question["question"]] = choice
     return True, answers
 
 
@@ -569,7 +659,9 @@ def proposal_ls(
 ) -> None:
     """List proposals waiting for your decision."""
     project, graph = plan()
-    proposals = Store(project.apm_dir).list_proposals(status=None if everything else "pending")
+    store = Store(project.apm_dir)
+    close_orphaned(store, graph)
+    proposals = store.list_proposals(status=None if everything else "pending")
     for p in proposals:
         target = graph.handles.get(p.node_id, "(deleted)")
         typer.echo(f"{p.id} [{p.status}] {len(p.data.get('children', []))} children for {target}")

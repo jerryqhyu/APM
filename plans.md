@@ -1,6 +1,6 @@
 # APM — Design Plan
 
-**Status:** v8 · v1 is implemented except playback (M5) and the SQLite index; §11 has the state of each milestone · **Last updated:** 2026-11-17
+**Status:** v9 · v1 is implemented except playback (M5) and the SQLite index; §11 has the state of each milestone · **Last updated:** 2026-11-19
 
 APM is a local-first project manager built for working with AI agents. A project is a **nested graph of nodes**: you start with a big idea, then break it down with Claude agents, level by level, until each piece is small enough to ship as a commit or PR. The plan lives in its own git repo, so every change to it can be traced and **played back** from the project's first node onward.
 
@@ -24,8 +24,10 @@ v1 = a Python backend with a TypeScript web UI, one user on one machine, one cod
 | Agents | Server spawns `claude` CLI; agents call back through the APM MCP | The server controls runs; the MCP is how agents read and write data |
 | Planning writes | Two ways, both yours to choose. **Decompose** returns a **proposal** (`--json-schema`); nothing is committed until you accept. The **chat** changes the plan directly, as you ask it to | A proposal keeps rejected ideas out of the history. The chat is a conversation you are in: each change is a commit with the agent's name on it, so it is visible and reversible |
 | Asking the user | Agents run with Claude Code's two-way stream: permission prompts and questions come to the host and wait for an answer | A run can stop and ask instead of guessing or being refused; the permission mode is yours to pick per run (default `auto`) |
-| Reconciling | Plain code (`apm reconcile`), not an agent | "Did it merge?" has a definite answer: the PR's state, or whether the commits are on the default branch |
+| Reconciling | Plain code (`apm reconcile`), not an agent | "Did it reach the default branch?" has a definite answer: where the PR merged, or whether the commits (or the same changes) are there |
+| Stacked work | A node may start on top of a dependency that is delivered but not merged (§2.3); `done` still means merged into the default branch | A chain of steps can be built and reviewed as stacked PRs without marking anything done early |
 | Packaging | Agents + skills + MCP ship as one Claude Code plugin | The same plugin serves spawned runs and your own terminal sessions |
+| Sharing a project | One `.apm.zip` archive (`apm export` / `apm import`, §3.8): the plan files plus a git bundle of the plan repo; runs only if asked | A whole project, history included, moves as one file with no remote to set up. Machine-specific state stays behind, and runs stay out by default because transcripts can hold secrets |
 | Scope | Single user, single machine, one code repo (config already shaped for many repos) | Fastest route to a working slice |
 
 ---
@@ -57,8 +59,11 @@ Stored: `todo | in_progress | done | dropped`.
 
 Computed (never stored, so it can't go stale):
 
-- **blocked**: `todo` and at least one dependency is not `done`. Dependencies are inherited: a node also waits on whatever its ancestors wait on, so the children of a blocked parent are blocked too.
-- **ready**: `todo`, not blocked, and not under a `dropped` ancestor.
+- **waiting on**: the dependencies that aren't `done`. Dependencies are inherited: a node also waits on whatever its ancestors wait on, so the children of a blocked parent are blocked too.
+- **stacked on**: the part of *waiting on* that is *delivered*: an `in_progress` leaf whose delivery has a branch or a PR, so its work is pushed but not merged.
+- **stack top**: the one of *stacked on* that new work builds on: the only one, or the one that depends (directly or not) on all the others, so its branch was built on theirs. None if they sit on separate branches. `apm.core.delivery.choose_base` uses the same rule (§7.4).
+- **blocked**: `todo`, and waiting on something it can't stack on: a dependency that isn't delivered (including an `in_progress` parent, or a leaf with nothing pushed), or delivered dependencies on separate branches.
+- **ready**: `todo`, not blocked, and not under a `dropped` ancestor. A ready node with a stack top is **ready, stacked**: shown as `todo·ready·stacked … · stacked on 7d2e0f11 (#20)` in text and "Ready · stacked on #20" in the UI. It can be implemented now; it becomes plainly ready once that work is `done`.
 - **progress** (parents): done leaves ÷ leaves that aren't dropped, across the whole subtree. A leaf under a `dropped` ancestor counts as dropped.
 - A node that depends on a `dropped` node is flagged. It is **not** treated as unblocked.
 
@@ -181,6 +186,36 @@ Every delivery commit in the code repo carries `APM-Node: <full-uuid>`. This is 
 - Those 8 chars are 32 random bits, so two nodes can share them (about a 1% chance somewhere in a 10,000-node project). Where that happens, both are displayed with as many extra chars as it takes to tell them apart.
 - ⚠ Do **not** use the leading characters. In UUIDv7 those are the timestamp, so nodes created within about a minute of each other share their first 8 characters.
 
+### 3.8 Archives (`.apm.zip`)
+
+`apm export` (and `GET /api/export`) write the whole project as one zip file. Format version 1:
+
+```
+manifest.json        what wrote it and what is in it (below)
+apm.yaml             the plan files, exactly as committed at HEAD
+graph.ndjson
+nodes/<uuid>.md
+plan.bundle          git bundle of every ref in the plan repo: the full history
+runs.ndjson          with --with-runs only: one run per line, with all its events
+proposals.ndjson     with --with-runs only: one proposal per line
+```
+
+```json
+{"format": "apm-archive", "format_version": 1, "apm_version": "…", "exported_at": "…",
+ "project": "my-app", "store_schema_version": 2,
+ "counts": {"nodes": 42, "commits": 310, "runs": 12, "events": 4096, "proposals": 3}}
+```
+
+`store_schema_version` and the run counts are present only when runs are included; their presence is what says so.
+
+Rules:
+
+- **Committed state only.** Plan files come from HEAD, not the working tree, so they agree with the bundle; uncommitted hand edits are left out. Export holds the write lock throughout and writes to a temporary file renamed into place, so a failed export leaves nothing behind.
+- **What stays behind:** the code repo's `.apm-link` (and so any remote), and everything under `.apm/.cache/`: the server token, the write lock, the database file itself.
+- **Runs are opt-in** (`--with-runs`), and both the CLI and the UI warn that transcripts can hold tool output and secrets.
+- **Import is all or nothing.** It refuses a folder that already has `.apm/` or `.apm-link`; a `format_version` or `store_schema_version` newer than this APM knows; and a damaged file (not a zip, truncated, missing entries, counts that don't match, plan files that differ from the bundle's HEAD). It builds the plan repo and database in a temporary folder that becomes `.apm/` only when complete, then links it as `apm init` does. It reads only the file and never contacts a remote.
+- **Imported runs are history.** They keep their ids, times and sequence numbers; runs from an older store schema are filled in with defaults. A run that was `running` at export is stored as `cancelled` (shown as *Stopped*), and nothing is started or resumed.
+
 ---
 
 ## 4. Local database (SQLite)
@@ -195,7 +230,7 @@ run_events(run_id, seq, ts, json)             -- the stream-json events a transc
 proposals(id PK, node_id, run_id, json, review, status, created, resolved)
 ```
 
-Deleting `.cache/` loses run logs and pending proposals, never anything about the project itself.
+Deleting `.cache/` loses run logs and pending proposals, never anything about the project itself. They leave the machine only in an archive made with `--with-runs` (§3.8).
 
 **No index of the plan yet.** Reads parse `graph.ndjson` into the in-memory graph each time, and search scans titles and bodies directly. At the size of a real plan (hundreds of nodes) that is instant, and there is nothing to keep in sync. The tables below are the design for when it stops being enough, and for playback (§5):
 
@@ -311,10 +346,11 @@ GET    /api/tree                            every node with its computed state; 
 GET    /api/graph?root=<id>                 one level: nodes, lifted edges, ports, entanglement
 GET    /api/nodes/:id                       node + body + links + history + proposals
 GET    /api/ready?root= · /api/search?q=
+GET    /api/export?with_runs=               the project as an .apm.zip download (§3.8)
 POST   /api/nodes · PATCH /api/nodes/:id · POST /api/nodes/:id/move · DELETE /api/nodes/:id
 POST   /api/merge           { target, others[], title? }
 POST   /api/edges · DELETE /api/edges
-POST   /api/reconcile · POST /api/commit    mark merged work done · commit hand edits
+POST   /api/reconcile?retarget= · POST /api/commit    mark merged work done, report stacks · commit hand edits
 GET    /api/runs?node_id=&scope=project&status= · GET /api/runs/:id?after=<seq>
 POST   /api/runs            { agent, node_id?, message?, critic?, mode? }   no node_id = the project
 POST   /api/runs/:id/continue   { message, mode? }    the next turn of a conversation
@@ -339,9 +375,9 @@ Calls core directly (no HTTP), so it works even when the server isn't running. E
 | `apm_get_graph(root?, depth?)` | The **compact outline**: `1c0b9a44 [work/todo·ready] Stream agent output → 7d2e0f11` |
 | `apm_get_node(node?)` | State, links, delivery and body. Without `node`: the node the run was started on |
 | `apm_search(query)` | Titles and bodies |
-| `apm_ready(root?)` | Ready leaves: "what can be worked on now" |
+| `apm_ready(root?)` | Ready leaves: "what can be worked on now". Stacked ones are marked `·stacked` and name the branch to build on |
 | `apm_check()` | Invariant errors and warnings |
-| `apm_create_nodes(nodes[])` | Batch; one commit. Nodes in the batch can depend on each other by `key` |
+| `apm_create_nodes(nodes[])` | Batch; one commit. Nodes in the batch can depend on each other by `key`, and nest under each other with `parent_key`, so a whole subtree is one call |
 | `apm_update_node(node, title?, kind?, body?)` | |
 | `apm_move_node(node, parent?)` | |
 | `apm_link / apm_unlink(node, depends_on)` | |
@@ -411,7 +447,7 @@ Limits: `max_concurrent` pipelines in total. One conversation takes one turn at 
 | `apm-assistant` (the chat) | `project` | Read, Grep, Glob, every plan tool | can be about one node or the whole project |
 | `apm-decomposer` | `read` | Read, Grep, Glob, the read tools | returns a decomposition (JSON schema); file-editing tools are disallowed |
 | `apm-critic` | `read` | Read, Grep, Glob, the read tools | returns a review (JSON schema); only started by the pipeline; `dontAsk` |
-| `apm-implementer` | `node:<id>` | Read, Grep, Glob, Edit, Write, `Bash(git *)`, `Bash(gh pr *)`, its node's tools | `--worktree` |
+| `apm-implementer` | `node:<id>` | Read, Grep, Glob, Edit, Write, `Bash(git *)`, `Bash(gh pr *)`, its node's tools | `--worktree`; its first message names the base branch (§7.4) |
 
 Give the implementer the commands that run your tests, e.g. `allowed_tools: ["Bash(uv run *)"]` under `runner.agents.apm-implementer`, or it has to ask (or, in `dontAsk`, cannot run them).
 
@@ -452,19 +488,32 @@ The chat (`apm-assistant`) is the open-ended one: it has `project` scope, so wit
 
 ### 7.4 Implementer
 
-- **Only offered for a leaf that can start:** ready (every dependency done), or already in progress.
+- **Only offered for a leaf that can start:** ready (every dependency done, or ready, stacked: §2.3), or already in progress.
 - Spawned with `--worktree apm-<handle>-<slug>`, so it works in its own worktree under `.claude/worktrees/` and your checkout is never touched. `apm init` ignores that folder.
 - Scope `node:<id>`.
-- It works on branch `apm/<handle>-<slug>`. Commits carry `APM-Node:`. It opens a PR if `gh` is available.
+- It works on branch `apm/<handle>-<slug>`. Commits carry `APM-Node:`. It opens the PR itself, with `gh pr create --base <base>`.
 - It calls `apm_set_status(in_progress)` when it starts and `apm_attach_delivery` when the work is pushed, and ticks the acceptance criteria it verified in the node's body.
+- **The base branch** is plain code (`apm.core.delivery.choose_base`), worked out when the run starts and written into its first message. The candidates are the delivery branches of what the node depends on (its own dependencies and its ancestors', and the leaves of a dependency that has children). `origin` is fetched first, and a candidate counts as *open* if its branch still exists and isn't merged (its PR isn't merged, and its tip isn't on the default branch).
+  - One open candidate: the agent starts from it and the PR targets it, so stacked PRs each show only their own node's changes.
+  - None: the default branch.
+  - Several, one built on the others (`Graph.stack_top`, the rule §2.3 uses for "ready, stacked"): that one.
+  - Several on separate branches: the default branch, and the first message names the unmerged ones so the PR can say what must merge first. A branch can only stack on one, and the node shows as blocked.
+- A candidate's PR is read through the REST API (`read_pr`: `gh api repos/<o>/<r>/pulls/<n>`), so a squash-merged dependency counts as merged even where `gh pr` is refused.
+- **The PR is the agent's job, with a fallback.** After a successful implementer turn, APM checks the node's delivery (`ensure_pull_request`):
+  - A PR is recorded: nothing to do.
+  - A branch but no PR: APM looks for an open PR from that branch and records it, or opens one through the GitHub REST API (`gh api repos/<owner>/<repo>/pulls`, which works where `gh pr`'s GraphQL calls are refused). The title is the node's title; the body is the node's body and its `APM-Node:` line; the base comes from `choose_base`; owner and repo come from the repo's `remote` in apm.yaml, else its `origin`.
+  - If no PR can be opened, that is unfinished work, never something to mark done. The conversation gets a line from APM saying why, and, when a branch is waiting, the node's Notes say so too ("No pull request yet"). Details shows "Pull request: None yet". A turn that recorded no branch at all only gets the line in the conversation, since the agent may simply have stopped to ask something.
 
 ### 7.5 Reconciling
 
-`apm reconcile` marks an in-progress node `done` when its work has merged. It also runs once when `apm serve` starts. It is plain code:
+`apm reconcile` marks an in-progress node `done` when its work is on the default branch. It also runs once when `apm serve` starts, and **Reconcile** in the UI runs it. It is plain code (`apm.core.reconcile`), and fetches `origin` first:
 
-- A node with a pull request is merged when `gh pr view` says the PR is. That covers squash merges.
-- Otherwise it is merged when every delivery commit is on the code repo's default branch.
-- If neither can be determined (no `gh`, offline, a commit this clone doesn't have), the node is left alone.
+- **A node with a pull request** is done when the PR merged into the default branch, or into a branch whose merge commit has since reached the default branch. The PR is read through the REST API (`gh api repos/<o>/<r>/pulls/<n>`: `merged`, `base.ref`, `merge_commit_sha`, `state`), never `gh pr view`, whose GraphQL calls some environments refuse.
+- **A PR merged into another branch** (a stack: #21 merged into #20's branch) leaves the node in progress. Reconcile reports "PR #21 merged into apm/… (#20's branch), not yet on main" and writes it under the node's Notes once.
+- **Without a PR** (or when `gh` can't tell), the node is done when every delivery commit is on the default branch, or when the same changes are: each commit rebased (`git cherry`), or all of them squashed into one commit (the patch id of their combined diff matches one of the default branch's last 500 commits).
+- **A PR closed without merging** is reported and left alone.
+- **Retargeting.** An open PR whose base is a branch that has landed (its tip is on the default branch, or the node that delivered it is done, or that node's PR merged into the default branch) is reported: "PR #21 still targets apm/… (#20's branch), which has landed: retarget it to main". `apm reconcile --retarget` (or `POST /api/reconcile?retarget=true`) points it at the default branch through `gh api -X PATCH`. Without the flag nothing on GitHub changes.
+- If nothing can be determined (no `gh`, offline, a commit this clone doesn't have), the node is left alone.
 
 ---
 
@@ -502,7 +551,7 @@ The conversation is the main interface; the graph is what it is about. The [user
   - **Edges:** lifted edges show a count badge. Edges that leave the level show as dashed stubs naming the outside node. Entangled nodes are outlined under a banner.
   - **Proposals** show as dashed ghost nodes and edges on the level they would land in.
 - **Right panel**, always there: an action bar on top, then two tabs, Chat and Details:
-  - **Actions:** every operation as a button, for what is selected. One node: status, open, add child, add sibling, rename, switch kind, move, link, delete, Decompose, Implement. Several nodes: status, **merge**, delete. Nothing selected: add node, check plan, reconcile, commit hand edits.
+  - **Actions:** every operation as a button, for what is selected. One node: status, open, add child, add sibling, rename, switch kind, move, link, delete, Decompose, Implement. Several nodes: status, **merge**, delete. Nothing selected: add node, check plan, reconcile, commit hand edits, **export archive** (a download; including runs shows the secrets warning first).
   - **Chat:** the conversation with Claude, about the selected node or the whole plan, turn by turn. Past conversations are tabs. Every agent run appears here, so it is also where a decomposition or an implementation is followed. A question or permission prompt shows as a card with its options, or Allow and Deny (with a reason). The permission mode is picked under the message box.
   - **Details:** title (edited in place), state, description (markdown, with an editor), what it waits on, depends on (add and remove), is needed by and contains, delivery, and history. With nothing selected, a summary of the plan: progress, what is in progress, what is ready, problems.
 - **Proposal review:** the rationale, the critic's review and the agent's warnings; you can edit any child, leave children out, and accept or reject.
@@ -525,12 +574,15 @@ apm link-dep <from> <to> · apm unlink-dep <from> <to>
 apm ready [--root h] · apm search <query>
 apm run <assistant|decomposer|implementer> [h] [-m "..."] [--mode m] [--no-critic]
 apm proposal ls [--all] · show <id> · accept <id> [--only key] · reject <id>
-apm reconcile                    mark nodes done whose PR or commits have merged
+apm reconcile [--retarget]       mark nodes done whose work is on the default branch; report
+                                 (or retarget) stacked PRs whose base has landed
 apm check                        validate invariants, report warnings (exit code 1 on errors)
 apm commit                       validate and commit edits made by hand in .apm/
 apm link --remote <url>          set the plan repo remote and record it in .apm-link
 apm clone                        clone the plan repo named in .apm-link (for a fresh checkout)
 apm push · apm pull              git push/pull for .apm
+apm export <file> [--with-runs]  the whole project (plan + history, runs if asked) as one .apm.zip
+apm import <file>                restore an .apm.zip into this folder, which must have no plan
 apm mcp                          stdio MCP server (Claude Code starts it)
 apm plugin-path                  where the Claude Code plugin is
 ```
@@ -552,8 +604,9 @@ apm plugin-path                  where the Claude Code plugin is
 | **M3** | `apm serve`: runner, decomposer + critic, proposals, SQLite runs; two-way runs with questions, permission prompts and modes; the chat | `apm run decomposer <h>` → proposal → `apm proposal accept` → one commit; the CLI checks in §7.1 are answered | **Built**; verified with real runs |
 | **M4** | UI: level view, drill-down, actions, conversation, details, proposal review | Planning a feature entirely in the UI, start to finish | **Built**; verified in a browser with real runs |
 | **M5** | Indexer frames + playback scrubber + delivery overlay | Replaying the APM plan from its first commit | Not built |
-| **M6** | `apm-implementer` (worktrees, trailers, `gh` PR) | A ready leaf becomes a PR that links back to its node | **Built**; verified with a real run up to the commit. Opening a PR is untested (the test repo had no remote) |
-| **M7** | Reconciling | A merged PR moves its node to `done` with no manual step | **Built** as `apm reconcile` (§7.5); the PR path is tested against a stand-in for `gh` |
+| **M6** | `apm-implementer` (worktrees, trailers, PR against the right base, APM's fallback) | A ready leaf becomes a PR that links back to its node, stacked on unmerged work it builds on | **Built**; verified with real runs up to the push (the PRs of the archive stack, #20–#24, were opened by hand from a container without `gh pr`, which is what the fallback now covers). Base selection and the fallback are tested against a local `origin` and a stand-in for `gh` |
+| **M7** | Reconciling, stack-aware | Work reaching the default branch moves its node to `done`, with no manual step and no early `done` for stacked PRs | **Built** as `apm reconcile` (§7.5), with "ready, stacked" (§2.3). Tested against local repos and a stand-in for `gh` |
+| **M8** | Archives: `apm export` / `apm import`, Export archive… in the UI (§3.8) | A project, with its history and optionally its runs, round-trips through one `.apm.zip` | **Built**; round trip, refusals and the download are tested |
 
 ---
 
@@ -576,5 +629,5 @@ apm plugin-path                  where the Claude Code plugin is
 3. **Auto-committing hand edits.** v1 requires an explicit `apm commit`. Is a server-side file watcher with a debounce worth it?
 4. **Package name.** `apm` is taken on both PyPI and npm (Atom's old package manager). Choose a new distribution name before publishing; the command can stay `apm`.
 5. **Deleting a node with children.** Refuse it, or require `--recursive`? Proposed: refuse unless recursive; a recursive delete is one commit. The core implements the proposal for now.
-6. **Reconciler split.** Decided: reconciling is plain code (`apm reconcile`, §7.5), with no agent. Still open: whether ambiguous cases (a PR closed without merging, a branch deleted) deserve an agent, or a flag for you to resolve.
+6. **Reconciler split.** Decided: reconciling is plain code (`apm reconcile`, §7.5), with no agent. A PR closed without merging is now reported; it stays open whether that, or a deleted branch, deserves more (an agent, or a flag on the node).
 7. **Cleaning up worktrees.** An implementer's worktree stays under `.claude/worktrees/` after its run. Should `apm reconcile` remove it once the node is done?

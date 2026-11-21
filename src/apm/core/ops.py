@@ -29,6 +29,8 @@ class NewNode:
     """
     depends_on_keys: Sequence[str] = ()
     """Other nodes in the same batch, by `key`."""
+    parent_key: str | None = None
+    """The parent, when it is another node in the same batch: by its `key`. Overrides `parent`."""
     body: str | None = None
     """The whole body text. Default: the empty Intent / Acceptance criteria / Notes template."""
 
@@ -78,14 +80,17 @@ def _create(draft: Draft, nodes: Sequence[NewNode]) -> list[NodeId]:
                 raise OpError(f'duplicate key "{new.key}"')
             by_key[new.key] = node_id
     for node_id, new in zip(ids, nodes, strict=True):
+        title = clean_title(new.title)
         if unknown := [key for key in new.depends_on_keys if key not in by_key]:
-            raise OpError(f'"{new.title}" depends on unknown key "{unknown[0]}"')
+            raise OpError(f'"{title}" depends on unknown key "{unknown[0]}"')
+        if new.parent_key is not None and new.parent_key not in by_key:
+            raise OpError(f'"{title}" has unknown parent key "{new.parent_key}"')
         deps = [*new.depends_on, *(by_key[key] for key in new.depends_on_keys)]
         draft.put(
             Node(
                 id=node_id,
-                title=new.title,
-                parent=new.parent,
+                title=title,
+                parent=by_key[new.parent_key] if new.parent_key is not None else new.parent,
                 kind=new.kind,
                 depends_on=canonical_ids(deps),
             )
@@ -103,14 +108,16 @@ def update_node(
     actor: str = "user",
     run: str | None = None,
 ) -> Mutation:
+    new_title = None if title is None else clean_title(title)
+
     def apply(draft: Draft) -> str:
         node = draft[node_id]
         changed = [
             name
-            for name, value in (("title", title), ("kind", kind))
+            for name, value in (("title", new_title), ("kind", kind))
             if value is not None and value != getattr(node, name)
         ]
-        draft.put(replace(node, title=title or node.title, kind=kind or node.kind))
+        draft.put(replace(node, title=new_title or node.title, kind=kind or node.kind))
         return f"{handle(node_id)}: {', '.join(changed)}"
 
     return mutate(project, "update", apply, actor=actor, run=run)
@@ -223,10 +230,13 @@ def merge_nodes(
         if len(deliveries) > 1:
             raise OpError("more than one of these nodes has a delivery: those can't be merged")
 
-        # If the target sits inside a node being merged away, it moves up to take its place.
+        # If the target sits inside a node being merged away, it takes the place of the highest
+        # such ancestor. The nodes in between then sit inside the target, through the re-parenting
+        # below, so nothing ends up inside itself.
         parent = keep.parent
-        while parent in group:
-            parent = draft[parent].parent
+        for ancestor in draft.graph.ancestors(target):
+            if ancestor in group:
+                parent = draft[ancestor].parent
 
         body = draft.body(target).rstrip()
         for node in merged:
@@ -246,7 +256,7 @@ def merge_nodes(
         draft.put(
             replace(
                 keep,
-                title=title or keep.title,
+                title=clean_title(title) if title is not None else keep.title,
                 parent=parent,
                 depends_on=canonical_ids(deps),
                 delivery=deliveries[0] if deliveries else None,
@@ -327,6 +337,16 @@ def attach_delivery(
         return f"{handle(node_id)}: {detail}" if detail else handle(node_id)
 
     return mutate(project, "deliver", apply, actor=actor, run=run)
+
+
+def clean_title(title: str) -> str:
+    """A title as stored: one line, trimmed. Raises `OpError` for a blank one."""
+    cleaned = title.strip()
+    if not cleaned:
+        raise OpError("a title can't be blank")
+    if "\n" in cleaned or "\r" in cleaned:
+        raise OpError("a title must be a single line")
+    return cleaned
 
 
 def _count(n: int, one: str, many: str) -> str:

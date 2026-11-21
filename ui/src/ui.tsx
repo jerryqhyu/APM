@@ -4,7 +4,7 @@ import { type ReactNode, useEffect, useRef } from "react";
 import type { NodeView } from "./types";
 import { cx, stateOf } from "./util";
 
-export function StatePill({ node }: { node: Pick<NodeView, "status" | "ready" | "blocked"> }) {
+export function StatePill({ node }: { node: Pick<NodeView, "status" | "ready" | "blocked" | "stacked_on" | "stack_top"> }) {
   const state = stateOf(node);
   return (
     <span className={cx("pill", `state-${state.key}`)}>

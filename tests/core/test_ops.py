@@ -91,8 +91,10 @@ def test_create_refuses_a_missing_parent_or_a_blank_title(project: Project) -> N
     missing = "01930000-0000-7000-8000-000000000001"
     with pytest.raises(InvariantError, match="I1"):
         create_nodes(project, [NewNode(title="orphan", parent=missing)])
-    with pytest.raises(ValueError, match="must not be blank"):
+    with pytest.raises(OpError, match="a title can't be blank"):
         create_nodes(project, [NewNode(title="  ")])
+    with pytest.raises(OpError, match="a title must be a single line"):
+        create_nodes(project, [NewNode(title="two\nlines")])
     assert len(load_graph(project)) == 0
     assert git(project.apm_dir, ["status", "--porcelain"]) == ""
 
@@ -314,6 +316,65 @@ def test_merging_a_child_into_its_parent_or_the_other_way_round(project: Project
     assert graph[child].parent == top
     assert graph[sibling].parent == child
     assert parent not in graph
+
+
+def test_merging_an_ancestor_into_its_own_descendant(project: Project) -> None:
+    #  Top ─ Mid ─ Low (the target) ─ Leaf;  Mid also holds Side.
+    top = add(project, "Top")
+    mid = add(project, "Mid", parent=top)
+    low = add(project, "Low", parent=mid)
+    leaf = add(project, "Leaf", parent=low)
+    side = add(project, "Side", parent=mid)
+
+    merge_nodes(project, low, [top])
+
+    graph = load_graph(project)
+    assert top not in graph
+    assert graph[low].parent is None  # takes Top's place
+    assert graph[mid].parent == low  # what was inside Top is inside it now
+    assert graph[leaf].parent == low
+    assert graph[side].parent == mid
+    assert validate(graph).errors == ()
+
+
+def test_titles_are_trimmed_and_a_blank_rename_is_refused(project: Project) -> None:
+    (node,) = create_nodes(project, [NewNode(title="   padded   ")]).created
+    assert load_graph(project)[node].title == "padded"
+    update_node(project, node, title="  New name  ")
+    assert load_graph(project)[node].title == "New name"
+    with pytest.raises(OpError, match="a title can't be blank"):
+        update_node(project, node, title="   ")
+    with pytest.raises(OpError, match="a title can't be blank"):
+        merge_nodes(project, node, [add(project, "Other")], title=" ")
+    assert load_graph(project)[node].title == "New name"
+
+
+def test_a_batch_can_nest_under_its_own_keys(project: Project) -> None:
+    result = create_nodes(
+        project,
+        [
+            NewNode(title="Feature", key="f"),
+            NewNode(title="Model", key="m", parent_key="f"),
+            NewNode(title="View", parent_key="f", depends_on_keys=["m"]),
+            NewNode(title="Detail", parent_key="m"),
+        ],
+    )
+    feature, model, view, detail = result.created
+    graph = load_graph(project)
+    assert graph.children(feature) == (model, view)
+    assert graph[detail].parent == model
+    assert graph[view].depends_on == (model,)
+    assert len(log(project.apm_dir)) == 2  # init + one commit for the whole subtree
+    with pytest.raises(OpError, match='unknown parent key "nope"'):
+        create_nodes(project, [NewNode(title="X", parent_key="nope")])
+    with pytest.raises(InvariantError, match="I1"):
+        create_nodes(
+            project,
+            [
+                NewNode(title="A", key="a", parent_key="b"),
+                NewNode(title="B", key="b", parent_key="a"),
+            ],
+        )
 
 
 def test_merge_refusals_change_nothing(project: Project) -> None:

@@ -9,7 +9,7 @@ from pathlib import Path
 
 from apm.core.ids import is_node_id
 from apm.core.model import Node, NodeId
-from apm.core.ndjson import parse_graph, serialize_graph
+from apm.core.ndjson import GraphParseError, ParseIssue, parse_graph, serialize_graph
 
 GRAPH_FILE = "graph.ndjson"
 NODES_DIR = "nodes"
@@ -32,7 +32,17 @@ def body_path(apm_dir: Path, node_id: NodeId) -> Path:
 
 
 def read_graph_file(apm_dir: Path) -> list[Node]:
-    return parse_graph(graph_path(apm_dir).read_text(encoding="utf-8", newline=""), GRAPH_FILE)
+    try:
+        text = graph_path(apm_dir).read_text(encoding="utf-8", newline="")
+    except FileNotFoundError:
+        raise GraphParseError(
+            [
+                ParseIssue(
+                    0, "the file is missing: restore it with `git -C .apm checkout graph.ndjson`"
+                )
+            ]
+        ) from None
+    return parse_graph(text, GRAPH_FILE)
 
 
 def write_graph_file(apm_dir: Path, nodes: Iterable[Node]) -> None:

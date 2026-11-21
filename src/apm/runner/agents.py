@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from apm.core.config import ApmConfig
+from apm.core.delivery import Base
 from apm.core.errors import ApmError
 from apm.core.graph import Graph
 from apm.core.ids import handle
@@ -134,7 +135,8 @@ def check_startable(spec: AgentSpec, graph: Graph, node_id: NodeId) -> None:
         raise RunRefused("only a leaf can be implemented: this node has children")
     state = graph.states[node_id]
     if node.status is Status.TODO and not state.ready:
-        waiting = ", ".join(handle(n) for n in state.waiting_on) or "a dropped ancestor"
+        blocking = [n for n in state.waiting_on if n not in state.stacked_on]
+        waiting = ", ".join(handle(n) for n in blocking) or "a dropped ancestor"
         raise RunRefused(f"not ready: waiting on {waiting}")
     if node.status in (Status.DONE, Status.DROPPED):
         raise RunRefused(f"this node is {node.status}")
@@ -157,8 +159,12 @@ def worktree_name(graph: Graph, node_id: NodeId) -> str:
     return f"apm-{handle(node_id)}-{slug(graph[node_id].title)}"
 
 
-def build_prompt(spec: AgentSpec, graph: Graph, node_id: NodeId, message: str) -> str:
-    """The first message of a run: what the user typed, with where they are looking."""
+def build_prompt(
+    spec: AgentSpec, graph: Graph, node_id: NodeId, message: str, *, base: Base | None = None
+) -> str:
+    """The first message of a run: what the user typed, with where they are looking. An
+    implementer's also says which branch to start from and open its pull request against.
+    """
     message = message.strip()
     if node_id == PROJECT:
         return message or "Give me a short overview of the plan: where it stands and what's next."
@@ -170,13 +176,41 @@ def build_prompt(spec: AgentSpec, graph: Graph, node_id: NodeId, message: str) -
     if spec.name == "apm-implementer":
         prompt = (
             f"Implement {where}. Its full id is {node_id}; use it in the APM-Node trailer.\n"
-            f"Work on branch apm/{handle(node_id)}-{slug(node.title)}."
+            f"Work on branch apm/{handle(node_id)}-{slug(node.title)}.\n"
+            f"{base_instructions(graph, base)}"
         )
         return prompt + (f"\n\nGuidance from the user:\n{message}" if message else "")
     if spec.name == "apm-assistant":
         question = message or "Summarise this node: what it is for, its state, and what's next."
         return f"The user is looking at {where}.\n\n{question}"
     raise RunRefused(f"{spec.name} can't be started directly")
+
+
+def base_instructions(graph: Graph, base: Base | None) -> str:
+    """Where an implementer starts, and what its pull request targets (see `choose_base`)."""
+    if base is None or base.branch is None:
+        return (
+            "Start it from the repository's default branch, and open the pull request against it."
+        )
+    branch = base.branch
+    target = f"open the pull request against {branch} (`gh pr create --base {branch}`)"
+    if base.stacked_on is not None:
+        dep = base.stacked_on
+        title = graph[dep].title if dep in graph else "a dependency"
+        return (
+            f'It builds on {handle(dep)} ("{title}"), whose branch {branch} is not merged yet, so'
+            f" stack on it: start from origin/{branch} and {target}. The pull request then shows"
+            " only this node's changes."
+        )
+    text = f"Start it from origin/{branch}, and {target}."
+    if base.unmerged:
+        waits = ", ".join(f"{handle(node)} ({name})" for node, name in base.unmerged)
+        text += (
+            f" Work it depends on is not merged yet: {waits}. A branch can stack on only one of"
+            " them, so build on the default branch and say in the pull request that those must"
+            " be merged first."
+        )
+    return text
 
 
 def critic_prompt(graph: Graph, node_id: NodeId, proposal: dict[str, Any]) -> str:

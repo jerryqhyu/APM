@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from apm.core.config import ApmConfig, read_config
+from apm.core.delivery import Base, choose_base, ensure_pull_request, note_missing_pr
 from apm.core.lock import CACHE_DIR, pid_alive
 from apm.core.model import NodeId
 from apm.core.project import Project, load_graph
@@ -113,7 +114,10 @@ class Runner:
         prompt = build_prompt(spec, graph, node_id, message)
         run = self._create_run(spec, node_id, prompt, mode=mode, config=config)
         worktree = worktree_name(graph, node_id) if spec.worktree else None
-        self._schedule(run, self._pipeline(spec, config, run, critic=critic, worktree=worktree))
+        pipeline = self._pipeline(
+            spec, config, run, critic=critic, worktree=worktree, message=message
+        )
+        self._schedule(run, pipeline)
         return run
 
     def continue_run(self, run_id: str, message: str, *, mode: str | None = None) -> Run:
@@ -122,31 +126,74 @@ class Runner:
         """
         previous = self.store.get_run(run_id)
         spec = AGENTS[previous.agent]
+        if not spec.user_startable:
+            raise RunRefused(f"{spec.label} runs on its own: reply in the conversation it reviewed")
         if not message.strip():
             raise RunRefused("the message is empty")
         config = read_config(self.project.apm_dir)
         mode = check_mode(mode or previous.mode or None, config)
+        # A conversation whose turns all failed before Claude started (no `claude`, a usage
+        # limit) has no session to resume: this message starts it.
+        started = self._session_started(run_id)
+        typed = message
+        if not started:
+            graph = load_graph(self.project)
+            if previous.node_id and previous.node_id not in graph:
+                raise RunRefused("the node this conversation was about no longer exists")
+            message = build_prompt(spec, graph, previous.node_id, message)
         run = self._create_run(
             spec,
             previous.node_id,
             message,
             mode=mode,
             config=config,
-            session_id=previous.session_id,
+            # A fresh session gets a fresh id: one that was cut off just as it started may exist.
+            session_id=previous.session_id if started else None,
             parent_run=run_id,
         )
         cwd = self._session_cwd(run_id)
-        self._schedule(run, self._pipeline(spec, config, run, resume=True, critic=False, cwd=cwd))
+        worktree = None
+        if not started and spec.worktree:
+            worktree = worktree_name(load_graph(self.project), previous.node_id)
+        pipeline = self._pipeline(
+            spec,
+            config,
+            run,
+            resume=started,
+            critic=False,
+            cwd=cwd,
+            worktree=worktree,
+            message=None if started else typed,
+        )
+        self._schedule(run, pipeline)
         return run
 
-    def _slot(self, spec: AgentSpec, node_id: NodeId, session_id: str) -> str:
+    def _session_started(self, run_id: str) -> bool:
+        """True if any turn of the conversation up to `run_id` got as far as Claude starting."""
+        run: Run | None = self.store.get_run(run_id)
+        while run is not None:
+            if any(e.data.get("type") == "system" for e in self.store.list_events(run.id)):
+                return True
+            run = self.store.get_run(run.parent_run) if run.parent_run else None
+        return False
+
+    def _slot(self, spec: AgentSpec, node_id: NodeId, conversation: str) -> str:
         """What a run occupies while it is active. Two conversations can go on side by side, but
-        one conversation takes one turn at a time, and a node has one decomposer or implementer
-        at a time.
+        one conversation (named by its first run) takes one turn at a time, and a node has one
+        decomposer or implementer at a time.
         """
         if spec.name == "apm-assistant":
-            return f"chat:{session_id}"
+            return f"chat:{conversation}"
         return f"{spec.name}:{node_id}"
+
+    def _conversation(self, run_id: str) -> str:
+        """The first run of the conversation `run_id` belongs to."""
+        run = self.store.get_run(run_id)
+        seen = {run.id}
+        while run.parent_run and run.parent_run not in seen:
+            seen.add(run.parent_run)
+            run = self.store.get_run(run.parent_run)
+        return run.id
 
     def _create_run(
         self,
@@ -163,13 +210,15 @@ class Runner:
         checked: its slot must be free, and `max_concurrent` pipelines in all.
         """
         if config is not None:
-            slot = self._slot(spec, node_id, session_id or "new")
+            # A new conversation can't be busy yet; the next turn of one is, while one is going.
+            conversation = self._conversation(parent_run) if parent_run else "new"
+            slot = self._slot(spec, node_id, conversation)
             elsewhere = any(
                 run.agent == spec.name
                 and run.pid != os.getpid()
                 and run.pid is not None
                 and pid_alive(run.pid)
-                and (spec.name != "apm-assistant" or run.session_id == session_id)
+                and (spec.name != "apm-assistant" or self._conversation(run.id) == conversation)
                 for run in self.store.list_runs(node_id=node_id, status="running")
             )
             if slot in self._tasks or elsewhere:
@@ -191,7 +240,7 @@ class Runner:
         return run
 
     def _schedule(self, run: Run, pipeline: Coroutine[Any, Any, None]) -> None:
-        slot = self._slot(AGENTS[run.agent], run.node_id, run.session_id)
+        slot = self._slot(AGENTS[run.agent], run.node_id, self._conversation(run.id))
         task = asyncio.get_running_loop().create_task(pipeline)
         self._tasks[slot] = task
         self._slots[run.id] = slot
@@ -219,8 +268,17 @@ class Runner:
         resume: bool = False,
         worktree: str | None = None,
         cwd: Path | None = None,
+        message: str | None = None,
     ) -> None:
+        """`message` is what the user typed, for a run whose first message the runner completes
+        once it has started: an implementer's, with the base branch.
+        """
+        implementer = spec.name == "apm-implementer"
+        if implementer and message is not None and not resume:
+            run = await self._with_base(spec, run, message)
         answer = await self._execute(spec, config, run, resume=resume, worktree=worktree, cwd=cwd)
+        if implementer and answer is not None:
+            await self._ensure_pr(run)
         if spec.name != "apm-decomposer" or answer is None:
             return
         try:
@@ -282,6 +340,60 @@ class Runner:
         except ProposalError:
             return None
         return answer, run
+
+    # --- an implementer's base branch and pull request ---
+
+    async def _with_base(self, spec: AgentSpec, run: Run, message: str) -> Run:
+        """Works out the base branch (it fetches, so not on the event loop) and puts it in the
+        run's first message.
+        """
+        try:
+            base = await asyncio.to_thread(choose_base, self.project, run.node_id)
+        except Exception:  # a base is advice: never a reason not to run
+            base = Base(None)
+        graph = load_graph(self.project)
+        return self.store.set_prompt(
+            run.id, build_prompt(spec, graph, run.node_id, message, base=base)
+        )
+
+    async def _ensure_pr(self, run: Run) -> None:
+        """After an implementer's turn: the node's work should have a pull request. If the agent
+        pushed a branch but couldn't open one, APM opens it. If nobody could, the chat says why,
+        and so do the node's Notes when a branch is waiting for one. Nothing is marked done.
+        """
+        try:
+            outcome = await asyncio.to_thread(
+                ensure_pull_request, self.project, run.node_id, run=run.id
+            )
+            if outcome.problem and outcome.branch:
+                await asyncio.to_thread(
+                    note_missing_pr, self.project, run.node_id, outcome, run=run.id
+                )
+        except Exception as err:  # the run itself is done: report, don't raise
+            self._notice(run.id, "warning", f"APM couldn't check for a pull request: {err}")
+            return
+        if outcome.action == "opened":
+            self._notice(
+                run.id, "info", f"APM opened the pull request against {outcome.base}: {outcome.pr}"
+            )
+        elif outcome.action == "found":
+            self._notice(
+                run.id,
+                "info",
+                f"APM found the open pull request for {outcome.branch} and recorded it:"
+                f" {outcome.pr}",
+            )
+        elif outcome.problem:
+            text = f"No pull request yet: {outcome.problem}."
+            if outcome.branch:
+                text += (
+                    f" Branch `{outcome.branch}` is pushed; the node's Notes say what is missing."
+                )
+            self._notice(run.id, "warning", text)
+
+    def _notice(self, run_id: str, level: str, text: str) -> None:
+        """A line from APM itself in a run's conversation."""
+        self._record(run_id, {"type": "apm_notice", "level": level, "text": text})
 
     # --- one process ---
 

@@ -5,7 +5,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Markdown } from "./Markdown";
 import type { Issue, Kind, NodeDetail, NodeRef, NodeView, Project, Proposal, Status } from "./types";
 import { Empty, StatePill } from "./ui";
-import { STATUS_LABEL, cx, stateOf, timeAgo } from "./util";
+import { STATUS_LABEL, cx, stackedName, stateOf, timeAgo } from "./util";
 
 export interface DetailActions {
   patch: (change: { title?: string; kind?: Kind; status?: Status; body?: string }) => Promise<void>;
@@ -57,6 +57,20 @@ export function NodeDetails({ detail, nodes, actions }: { detail: NodeDetail; no
           <RefList refs={detail.links.waiting_on} onPick={actions.goTo} />
         </section>
       )}
+      {state.key === "stacked" && (
+        <section>
+          <h3>Stacked on</h3>
+          <p className="hint">
+            This can start now, on top of work that is delivered but not merged. Implement builds it on the branch of{" "}
+            {stackedName(detail)}, and its pull request targets that branch, so it shows only its own changes. It is plainly
+            ready once that work merges.
+          </p>
+          <RefList
+            refs={detail.links.waiting_on.filter((ref) => detail.stacked_on.some((s) => s.id === ref.id))}
+            onPick={actions.goTo}
+          />
+        </section>
+      )}
       {detail.dropped_deps.length > 0 && (
         <div className="callout warn">
           This depends on a dropped node, which will never be done. Remove the dependency or point it somewhere else.
@@ -91,6 +105,14 @@ export function NodeDetails({ detail, nodes, actions }: { detail: NodeDetail; no
         <section>
           <h3>Delivery</h3>
           <dl className="delivery">
+            {!detail.delivery.pr && detail.delivery.branch && (
+              <>
+                <dt>Pull request</dt>
+                <dd className="no-pr" title="The branch is delivered, but no pull request is recorded. The Notes say why.">
+                  None yet
+                </dd>
+              </>
+            )}
             {detail.delivery.pr && (
               <>
                 <dt>Pull request</dt>
@@ -208,7 +230,13 @@ export function PlanSummary({
       {nodes.length > 0 && (
         <section>
           <h3>Ready to start</h3>
-          <RefList refs={refs(ready)} onPick={onGoTo} />
+          <RefList refs={refs(ready.filter((n) => !n.stack_top))} onPick={onGoTo} />
+          {ready.some((n) => n.stack_top) && (
+            <>
+              <h3>Ready, stacked on open work</h3>
+              <RefList refs={refs(ready.filter((n) => n.stack_top))} onPick={onGoTo} />
+            </>
+          )}
         </section>
       )}
     </article>

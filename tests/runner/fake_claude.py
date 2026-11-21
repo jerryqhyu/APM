@@ -12,6 +12,7 @@ What it does is steered by FAKE_CLAUDE (a comma-separated set of words):
 - `critic-fails`: the critic exits 1.
 - `ask-permission`: ask the host whether it may run a command, and report the answer.
 - `ask-question`: ask the host a question, and report the answer.
+- `ask-multi`: ask a question that takes several options, and report the answer.
 - `other-control`: send a control request that isn't a permission prompt.
 
 Every call's arguments, working directory and prompt are appended to FAKE_CLAUDE_LOG as one JSON
@@ -54,6 +55,18 @@ QUESTION = {
     "header": "Indent",
     "multiSelect": False,
     "options": [{"label": "Tabs", "description": ""}, {"label": "Spaces", "description": ""}],
+}
+
+
+MULTI = {
+    "question": "Which checks?",
+    "header": "Checks",
+    "multiSelect": True,
+    "options": [
+        {"label": "Lint", "description": ""},
+        {"label": "Types", "description": ""},
+        {"label": "Tests", "description": ""},
+    ],
 }
 
 
@@ -114,6 +127,10 @@ def main() -> int:
             text = f"allowed: {decision['updatedInput']['command']}"
         else:
             text = f"denied: {decision['message']}"
+        emit({"type": "assistant", "message": {"content": [{"type": "text", "text": text}]}})
+    if "ask-multi" in modes:
+        decision = ask_host("m-1", "AskUserQuestion", {"questions": [MULTI]})
+        text = f"you chose: {decision['updatedInput']['answers'][MULTI['question']]}"
         emit({"type": "assistant", "message": {"content": [{"type": "text", "text": text}]}})
     if "ask-question" in modes:
         decision = ask_host("q-1", "AskUserQuestion", {"questions": [QUESTION]})

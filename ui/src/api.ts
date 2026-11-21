@@ -27,7 +27,7 @@ export class ApiError extends Error {
   }
 }
 
-export async function api<T>(path: string, init: { method?: string; body?: unknown } = {}): Promise<T> {
+async function send(path: string, init: { method?: string; body?: unknown } = {}): Promise<Response> {
   const response = await fetch(path, {
     method: init.method ?? "GET",
     headers: {
@@ -47,7 +47,48 @@ export async function api<T>(path: string, init: { method?: string; body?: unkno
     }
     throw new ApiError(response.status, message);
   }
-  return (await response.json()) as T;
+  return response;
+}
+
+export async function api<T>(path: string, init: { method?: string; body?: unknown } = {}): Promise<T> {
+  return (await (await send(path, init)).json()) as T;
+}
+
+/** The file name a response's Content-Disposition header gives, or null. */
+function attachmentName(header: string | null): string | null {
+  if (!header) return null;
+  const encoded = /filename\*=UTF-8''([^;]+)/i.exec(header);
+  if (encoded) {
+    try {
+      return decodeURIComponent(encoded[1]!);
+    } catch {
+      // malformed: fall back to the plain name
+    }
+  }
+  return /filename="([^"]+)"/i.exec(header)?.[1] ?? null;
+}
+
+/**
+ * Downloads a file from the API and saves it. A plain link can't do this: the token has to go in
+ * a header, so the file is fetched here and handed to the browser as a Blob.
+ */
+export async function download(path: string, fallbackName: string): Promise<string> {
+  const response = await send(path);
+  const name = attachmentName(response.headers.get("Content-Disposition")) ?? fallbackName;
+  const url = URL.createObjectURL(await response.blob());
+  try {
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = name;
+    link.style.display = "none";
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+  } finally {
+    // Let the browser start the save before the Blob goes away.
+    window.setTimeout(() => URL.revokeObjectURL(url), 10_000);
+  }
+  return name;
 }
 
 export function query(params: Record<string, string | boolean | null | undefined>): string {

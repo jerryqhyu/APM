@@ -1,17 +1,23 @@
+import io
+import tempfile
 import time
+import zipfile
 from collections.abc import Iterator
+from pathlib import Path
 from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
+from apm.core.archive import MANIFEST_FILE, PROPOSALS_FILE, RUNS_FILE, import_archive
 from apm.core.git import log
 from apm.core.ids import handle
 from apm.core.model import Status
-from apm.core.ops import NewNode, create_nodes, set_status
+from apm.core.ops import NewNode, attach_delivery, create_nodes, set_status
 from apm.core.project import Project, load_graph
-from apm.server.app import create_app
+from apm.core.store import Store
+from apm.server.app import archive_name, create_app
 from apm.server.security import host_is_loopback, origin_allowed
 from tests.runner.fake import FakeClaude
 
@@ -174,6 +180,18 @@ def test_build_and_read_a_plan(client: TestClient, project: Project) -> None:
     assert [h["title"] for h in client.get("/api/search", params={"q": "make"}).json()] == ["Build"]
 
 
+def test_ready_includes_stacked_work_and_says_so(client: TestClient, project: Project) -> None:
+    first = client.post("/api/nodes", json={"title": "First"}).json()["id"]
+    second = client.post("/api/nodes", json={"title": "Second", "depends_on": [first]}).json()["id"]
+    client.patch(f"/api/nodes/{first}", json={"status": "in_progress"})
+    assert client.get("/api/ready").json() == []
+    attach_delivery(project, first, branch="apm/first", pr="https://github.com/o/r/pull/20")
+    (ready,) = client.get("/api/ready").json()
+    assert (ready["id"], ready["ready"], ready["blocked"]) == (second, True, False)
+    assert ready["stacked_on"] == [{"id": first, "handle": handle(first), "pr": "#20"}]
+    assert client.get("/api/project").json()["counts"]["ready"] == 1
+
+
 def test_each_edit_is_one_commit(client: TestClient, project: Project) -> None:
     a = client.post("/api/nodes", json={"title": "A"}).json()["id"]
     b = client.post("/api/nodes", json={"title": "B"}).json()["id"]
@@ -318,6 +336,8 @@ def test_run_limits_refusals_cancel_and_continue(
     run = client.post(
         "/api/runs", json={"agent": "apm-assistant", "node_id": child, "message": "Why?"}
     ).json()
+    while not client.get(f"/api/runs/{run['id']}").json()["events"]:  # Claude has started
+        time.sleep(0.02)
     assert run["mode"] == "auto"
     busy = client.post(f"/api/runs/{run['id']}/continue", json={"message": "more"})
     assert busy.status_code == 409
@@ -397,7 +417,7 @@ def test_merge_and_project_actions(client: TestClient, project: Project) -> None
     assert graph[c].depends_on == (a,)
     assert client.post("/api/merge", json={"target": a, "others": [a]}).status_code == 422
 
-    assert client.post("/api/reconcile").json() == {"done": []}
+    assert client.post("/api/reconcile").json() == {"done": [], "findings": []}
     assert client.post("/api/commit").json() == {"sha": None, "nodes": []}
     detail = client.get(f"/api/nodes/{a}").json()
     assert detail["links"]["dependents"][0]["title"] == "C"
@@ -467,3 +487,94 @@ def test_a_question_from_a_running_agent_is_answered_over_the_api(
     late = client.post(f"/api/requests/{question['id']}", json={"allow": True})
     assert late.status_code == 422
     assert "no longer waiting" in late.json()["error"]
+
+
+def test_proposals_for_deleted_nodes_close_themselves(client: TestClient, project: Project) -> None:
+    node = client.post("/api/nodes", json={"title": "Doomed"}).json()["id"]
+    client.post("/api/runs", json={"agent": "apm-decomposer", "node_id": node, "critic": False})
+    wait_for_runs(client)
+    (proposal,) = client.get("/api/proposals").json()
+    client.delete(f"/api/nodes/{node}")
+    assert client.get("/api/proposals").json() == []
+    assert client.get("/api/project").json()["counts"]["proposals"] == 0
+    gone = client.post(f"/api/proposals/{proposal['id']}/accept")
+    assert gone.status_code == 409
+    assert "no longer exists" in gone.json()["error"]
+
+
+def test_a_blank_title_is_refused_not_ignored(client: TestClient) -> None:
+    node = client.post("/api/nodes", json={"title": "  Kept  "}).json()
+    assert node["title"] == "Kept"
+    refused = client.patch(f"/api/nodes/{node['id']}", json={"title": "", "status": "done"})
+    assert refused.status_code == 422
+    assert refused.json()["error"] == "a title can't be blank"
+    assert client.get(f"/api/nodes/{node['id']}").json()["status"] == "todo"
+
+
+# --- archives -----------------------------------------------------------------------------------
+
+
+def archive_names(content: bytes) -> set[str]:
+    with zipfile.ZipFile(io.BytesIO(content)) as archive:
+        return set(archive.namelist())
+
+
+def test_export_downloads_the_plan_as_an_archive(
+    client: TestClient, project: Project, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(scratch))
+    assert client.get("/api/export", headers={"Authorization": ""}).status_code == 401
+    assert client.get("/api/export", headers={"Authorization": "Bearer wrong"}).status_code == 401
+
+    response = client.get("/api/export")
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "application/zip"
+    disposition = response.headers["content-disposition"]
+    assert disposition.startswith("attachment")
+    assert 'filename="my-app.apm.zip"' in disposition
+    names = archive_names(response.content)
+    assert MANIFEST_FILE in names
+    assert RUNS_FILE not in names
+    assert PROPOSALS_FILE not in names
+    assert list(scratch.iterdir()) == []  # the temporary copy is cleaned up after sending
+
+
+def test_export_with_runs_holds_runs_and_proposals(client: TestClient, project: Project) -> None:
+    store = Store(project.apm_dir)
+    run = store.create_run(node_id="", agent="apm-decomposer")
+    store.add_event(run.id, {"type": "assistant"})
+    store.finish_run(run.id, "succeeded")
+    store.create_proposal(node_id="", data={"children": []}, run_id=run.id)
+
+    assert {RUNS_FILE, PROPOSALS_FILE} <= archive_names(
+        client.get("/api/export", params={"with_runs": "true"}).content
+    )
+    assert not {RUNS_FILE, PROPOSALS_FILE} & archive_names(
+        client.get("/api/export", params={"with_runs": "false"}).content
+    )
+
+
+def test_a_downloaded_archive_imports(client: TestClient, project: Project, tmp_path: Path) -> None:
+    node = client.post("/api/nodes", json={"title": "Carried over"}).json()["id"]
+    store = Store(project.apm_dir)
+    store.finish_run(store.create_run(node_id=node, agent="apm-implementer").id, "succeeded")
+    archive = tmp_path / "download.apm.zip"
+    archive.write_bytes(client.get("/api/export", params={"with_runs": "true"}).content)
+    target = tmp_path / "elsewhere"
+    target.mkdir()
+
+    imported = import_archive(archive, target)
+
+    graph = load_graph(imported.project)
+    assert [graph.nodes[n].title for n in graph.nodes] == ["Carried over"]
+    assert [r.node_id for r in Store(imported.project.apm_dir).list_runs()] == [node]
+    assert imported.manifest["counts"]["runs"] == 1
+
+
+def test_archive_names_are_safe_file_names() -> None:
+    assert archive_name("my-app") == "my-app.apm.zip"
+    assert archive_name("My App/v2") == "My-App-v2.apm.zip"
+    assert archive_name("../..") == "plan.apm.zip"
+    assert archive_name("café") == "café.apm.zip"

@@ -30,8 +30,9 @@ on a clear request without asking for permission first.
   restructuring half the plan does.
 - **When something is ambiguous** and guessing wrong would be costly, ask. One short question
   beats a wrong reorganisation.
-- Create related nodes in one `apm_create_nodes` call, using `key` and `depends_on_keys` so they
-  can depend on each other.
+- Create related nodes in one `apm_create_nodes` call. Give each a `key`; the others can nest
+  under it with `parent_key` and depend on it with `depends_on_keys`, so a whole subtree is one
+  change.
 - Follow the `apm-decompose` skill when breaking work down: 3 to 7 children, no overlap, real
   dependencies only, acceptance criteria that can be checked.
 - Use `apm_merge_nodes` for nodes that are the same work, `apm_move_node` to regroup, and

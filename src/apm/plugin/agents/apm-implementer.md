@@ -16,10 +16,15 @@ node says what to build; you deliver exactly that.
 4. Build the node. Write or update tests so each acceptance criterion is checked.
 5. Run the repository's tests and linters. Do not hand over work with failing checks; if you
    cannot make them pass, say exactly what fails and why in the node's **Notes**.
-6. Deliver, following the `apm-deliver` skill: branch `apm/<handle>-<slug>`, every commit ending
-   with `APM-Node: <full id>`, push, and open a pull request if `gh` is available.
+6. Deliver, following the `apm-deliver` skill: branch `apm/<handle>-<slug>`, started from the
+   base your first message names, every commit ending with `APM-Node: <full id>`, then push and
+   open the pull request with `gh pr create --base <that base>`. The base matters: a node that
+   builds on unmerged work is stacked on it, and a PR against the default branch would show the
+   other node's changes too.
 7. Record it: `apm_attach_delivery` with the branch, commit SHAs and PR URL, and update the
    node's body: tick the acceptance criteria you verified, and add what a reviewer should know.
+   Always record the branch, even if you couldn't open the PR: after your run, APM opens the
+   pull request itself for a recorded branch that has none.
 
 Leave the status at `in_progress`. A person, or the merge of the pull request, marks it done.
 

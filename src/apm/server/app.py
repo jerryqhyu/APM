@@ -2,18 +2,23 @@
 
 import asyncio
 import contextlib
+import re
+import shutil
+import tempfile
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
+from starlette.background import BackgroundTask
 
 from apm import __version__
 from apm.core import ops
+from apm.core.archive import SUFFIX, export_archive
 from apm.core.config import read_config
 from apm.core.errors import ApmError
 from apm.core.files import read_body, render_body
@@ -23,8 +28,8 @@ from apm.core.lifting import check_all
 from apm.core.model import Kind, NodeId, Status
 from apm.core.mutate import commit_hand_edits
 from apm.core.project import Project, load_graph
-from apm.core.proposals import accept_proposal, reject_proposal
-from apm.core.reconcile import describe, reconcile
+from apm.core.proposals import accept_proposal, close_orphaned, reject_proposal
+from apm.core.reconcile import Report, describe, reconcile
 from apm.core.store import PROJECT, Store
 from apm.core.views import all_nodes_view, level_json, node_history, node_ref, node_view, search
 from apm.runner.agents import AGENTS, MODES
@@ -216,6 +221,7 @@ def create_app(
     def get_project() -> dict[str, Any]:
         config = read_config(project.apm_dir)
         graph = load_graph(project)
+        close_orphaned(store, graph)
         return {
             "name": config.name,
             "version": __version__,
@@ -274,6 +280,25 @@ def create_app(
             {**node_ref(graph, hit.node_id), "snippet": hit.snippet}
             for hit in search(project, graph, q)
         ]
+
+    @app.get("/api/export")
+    def get_export(with_runs: bool = False) -> FileResponse:
+        """The project as an `.apm.zip` download, like `apm export`.
+
+        With `with_runs`, run transcripts go in too, and they can hold secrets: the UI warns first.
+        """
+        scratch = Path(tempfile.mkdtemp(prefix="apm-download-"))
+        try:
+            manifest = export_archive(project, scratch / f"plan{SUFFIX}", with_runs=with_runs)
+        except BaseException:
+            shutil.rmtree(scratch, ignore_errors=True)
+            raise
+        return FileResponse(
+            scratch / f"plan{SUFFIX}",
+            media_type="application/zip",
+            filename=archive_name(manifest["project"]),
+            background=BackgroundTask(shutil.rmtree, scratch, ignore_errors=True),
+        )
 
     # --- changing the plan ---
 
@@ -335,8 +360,12 @@ def create_app(
         return {"changed": result.sha is not None}
 
     @app.post("/api/reconcile")
-    def run_reconcile() -> dict[str, Any]:
-        return {"done": describe(reconcile(project))}
+    def run_reconcile(retarget: bool = False) -> dict[str, Any]:
+        report = reconcile(project, retarget=retarget)
+        return {
+            "done": describe(Report(done=report.done)),
+            "findings": describe(Report(findings=report.findings)),
+        }
 
     @app.post("/api/commit")
     def commit_edits() -> dict[str, Any]:
@@ -395,6 +424,7 @@ def create_app(
     ) -> list[dict[str, Any]]:
         if status not in (None, "pending", "accepted", "rejected"):
             return []
+        close_orphaned(store, load_graph(project))
         return [asdict(p) for p in store.list_proposals(node_id=node_id, status=status)]
 
     @app.get("/api/proposals/{proposal_id}")
@@ -462,6 +492,12 @@ async def _watch_head(project: Project, hub: Hub) -> None:
             if head != last:
                 last = head
                 hub.publish({"type": "graph.changed", "head": head})
+
+
+def archive_name(project_name: str) -> str:
+    """`<project>.apm.zip`, with anything unsafe in a file name replaced by a dash."""
+    stem = re.sub(r"[^\w.-]+", "-", project_name).strip(".-") or "plan"
+    return f"{stem}{SUFFIX}"
 
 
 def _error(status: int, message: str) -> JSONResponse:

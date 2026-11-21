@@ -363,6 +363,18 @@ textarea {
   --c-subtle: var(--good-subtle);
 }
 
+/* Ready, but on top of delivered work that isn't merged: the same green, drawn as a ring. */
+.state-stacked {
+  --c: var(--good);
+  --c-subtle: var(--good-subtle);
+}
+
+.dot.state-stacked,
+.state-stacked > .dot {
+  background: transparent !important;
+  box-shadow: inset 0 0 0 2px var(--c);
+}
+
 .state-blocked {
   --c: var(--warn);
   --c-subtle: var(--warn-subtle);
@@ -607,6 +619,11 @@ textarea {
 
 .menu-list .empty {
   padding: 6px 8px;
+}
+
+.menu-note {
+  color: var(--fg-muted);
+  font-size: 12px;
 }
 
 .snippet {
@@ -1424,6 +1441,33 @@ main {
   font-size: 12px;
 }
 
+.apm-notice {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 6px 0;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 13px;
+}
+
+.apm-notice.warn {
+  border-color: var(--warn);
+  background: var(--warn-subtle);
+}
+
+.apm-notice-who {
+  flex: none;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--fg-muted);
+}
+
+.apm-notice .markdown p {
+  margin: 0;
+}
+
 .turn-error {
   color: var(--bad);
   background: var(--bad-subtle);
@@ -1694,6 +1738,10 @@ main {
 .delivery dd {
   margin: 0;
   overflow-wrap: anywhere;
+}
+
+.delivery dd.no-pr {
+  color: var(--warn);
 }
 
 /* --- markdown --- */

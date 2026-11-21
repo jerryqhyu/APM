@@ -8,7 +8,7 @@ from apm.core.files import read_body
 from apm.core.git import log
 from apm.core.ids import handle
 from apm.core.model import Delivery, Status
-from apm.core.ops import NewNode, create_nodes
+from apm.core.ops import NewNode, attach_delivery, create_nodes, set_status
 from apm.core.project import Project, load_graph
 from apm.mcp.server import SCOPE_ENV, Scope, build_server
 
@@ -89,6 +89,16 @@ def test_read_tools(plan: tuple[Project, str, str, str]) -> None:
     assert session.call("apm_search", query="second") == f"{second} Second"
     assert session.call("apm_search", query="zebra") == "(no matches)"
     assert session.call("apm_check") == "ok"
+
+
+def test_ready_marks_stacked_work(plan: tuple[Project, str, str, str]) -> None:
+    project, _, first, second = plan
+    first_id = load_graph(project).resolve(first)
+    set_status(project, first_id, Status.IN_PROGRESS)
+    attach_delivery(project, first_id, branch="apm/first")
+    assert Session(project).call("apm_ready") == (
+        f"{second} [work/todo·ready·stacked] Second → {first} · stacked on {first}"
+    )
 
 
 def test_an_empty_plan_reads_cleanly(project: Project) -> None:
@@ -244,3 +254,23 @@ def test_scope_parsing() -> None:
     for bad in ("write", "node:", "node:1234", "READ"):
         with pytest.raises(ValueError, match="APM_RUN_SCOPE must be"):
             Scope.parse(bad)
+
+
+def test_a_subtree_is_one_create_call(project: Project) -> None:
+    session = Session(project)
+    created = session.call(
+        "apm_create_nodes",
+        nodes=[
+            {"title": "Feature", "key": "f"},
+            {"title": "Model", "key": "m", "parent_key": "f"},
+            {"title": "View", "parent_key": "f", "depends_on_keys": ["m"]},
+        ],
+    )
+    feature, model, view = (line.split()[0] for line in created.splitlines())
+    assert session.call("apm_get_graph").splitlines() == [
+        f"{feature} [work/todo·ready] Feature (0/2)",
+        f"  {model} [work/todo·ready] Model",
+        f"  {view} [work/todo·blocked] View → {model}",
+    ]
+    assert len(log(project.apm_dir)) == 2  # init + one commit
+    assert "a title can't be blank" in session.refused("apm_update_node", node=feature, title=" ")

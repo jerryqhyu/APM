@@ -14,6 +14,7 @@ APM is a project planner you run on your own machine. You keep a plan as a graph
 - [In your own Claude Code session](#in-your-own-claude-code-session)
 - [Settings](#settings)
 - [Where the plan lives](#where-the-plan-lives)
+- [Sharing or moving a project](#sharing-or-moving-a-project)
 - [When something goes wrong](#when-something-goes-wrong)
 
 ## Install
@@ -71,7 +72,8 @@ That is the whole loop: talk, shape the plan, build a piece, repeat.
 | You see | It means |
 |---|---|
 | **Ready** | To do, and nothing it needs is unfinished. You can start it. |
-| **Blocked** | To do, but something it needs isn't done yet. A node inside a blocked node is blocked too. |
+| **Ready · stacked on #20** | To do, and what it needs is built and pushed but not merged yet. You can start it now: it builds on that work's branch. It becomes plain **Ready** once that merges. |
+| **Blocked** | To do, but something it needs isn't done yet, and isn't pushed either. A node inside a blocked node is blocked too. |
 | **2/5** on a node | Two of the five leaves inside it are done. |
 
 **Handle.** The short code on each node, like `1c0b9a44`. Use it to name a node in the terminal or to Claude.
@@ -162,8 +164,9 @@ With nothing selected, the panel acts on the whole plan:
 |---|---|
 | **Add node** | Adds a node at the top level. |
 | **Check plan** | Looks for broken rules and warnings. |
-| **Reconcile** | Marks nodes done whose pull request or commits have merged. |
+| **Reconcile** | Marks nodes done whose work is on your default branch. A pull request merged into another step's branch doesn't count yet: Reconcile says where it went. It also lists open pull requests that still target a branch that has landed, to retarget. |
 | **Commit hand edits** | Records changes you made by editing the plan's files directly. |
+| **Export archive…** | Downloads the plan and its history as one `.apm.zip` file (see [Sharing or moving a project](#sharing-or-moving-a-project)). |
 
 To edit a description, press **Edit** in Details. It is markdown; ⌘/Ctrl+Enter saves.
 
@@ -191,15 +194,19 @@ Decompose versus conversation: use Decompose when you want a reviewed proposal t
 
 ## Having Claude build a node
 
-**Implement** is available on a leaf that is Ready or already In progress. Claude then:
+**Implement** is available on a leaf that is Ready (stacked or not) or already In progress. Claude then:
 
 1. works in its own copy of your repository (a git worktree under `.claude/worktrees/`), so your own checkout is not touched;
 2. builds what the node describes, on a branch named `apm/<handle>-<title>`;
 3. commits, with a line in each commit message naming the node;
-4. pushes and opens a pull request, if the GitHub CLI (`gh`) is set up;
+4. pushes and opens a pull request with the GitHub CLI (`gh`);
 5. records the branch, commits and pull request on the node, and ticks the acceptance criteria it verified.
 
-You follow it in the node's conversation and can reply to it there. The node stays **In progress** until you mark it done, or until its pull request merges and you press **Reconcile** (APM also checks when `apm serve` starts).
+**Stacking.** If the node builds on another node's work that isn't merged yet, the branch starts from that node's branch and the pull request targets it, so each pull request shows only its own changes. APM works this out when the run starts (it fetches first) and tells Claude. Otherwise the base is your default branch. If it waits on several unmerged branches, it builds on the one that was built on the others; if they're on separate branches, the node shows as **Blocked** until all but one of them merge.
+
+**If Claude can't open the pull request** (no `gh`, or `gh` refuses), it still pushes and records the branch, and APM opens the pull request itself once the run ends. You see a line from APM in the conversation either way. If nobody could open it, that line says why, the node's Notes say so, and Details shows **Pull request: None yet**. Nothing is marked done.
+
+You follow it in the node's conversation and can reply to it there. The node stays **In progress** until its work reaches your default branch and you press **Reconcile** (APM also checks when `apm serve` starts), or until you mark it done. You don't need to mark it done for the next step to start: once its branch is pushed, what depends on it is **Ready · stacked**.
 
 Two things to know:
 
@@ -224,6 +231,8 @@ apm link-dep 1c0b9a44 7d2e0f11               # the first needs the second
 apm ready                                    # what can be started now
 apm search "csv"                             # search titles and descriptions
 apm check                                    # look for problems
+apm export plan.apm.zip                      # the whole project as one file
+apm import plan.apm.zip                      # restore it into a folder with no plan
 ```
 
 Agents:
@@ -235,6 +244,7 @@ apm run decomposer 1c0b9a44 -m "Three steps at most."      # then: apm proposal 
 apm run implementer 7d2e0f11 --mode manual                 # build, asking before each change
 apm proposal accept <id>                                    # or: apm proposal reject <id>
 apm reconcile                                               # mark merged work done
+apm reconcile --retarget                                    # ...and retarget stacked PRs
 ```
 
 When an agent needs an answer, `apm run` asks you in the terminal.
@@ -287,6 +297,45 @@ You can edit the files by hand. Afterwards run `apm commit` (or press **Commit h
 
 If you ever want a backup or a second machine, `apm link --remote <url>` gives the plan a remote, and `apm push`, `apm pull` and `apm clone` use it. This is optional.
 
+To hand the whole project to someone, or move it without a remote, export it as one file: see the next section.
+
+## Sharing or moving a project
+
+An archive is the whole project in one `.apm.zip` file: the plan and its full history. Use it to hand a plan to someone, keep a backup, or move to another machine.
+
+**Export.** In the terminal:
+
+```bash
+apm export plan.apm.zip
+```
+
+Or, in the UI, select nothing and press **Export archive…** in the Actions panel, then **Download**. The file is named after the project.
+
+**Include runs if you want them.** Add `--with-runs` (in the UI, tick **Include runs**) to bring agent conversations, their transcripts and proposals along too. **Transcripts can hold tool output and secrets**: file contents, tokens, keys. Check the file before you share it.
+
+**What is not in an archive:**
+
+- the code repository's `.apm-link`, and any remote you set with `apm link`; import writes a fresh link;
+- the server's access token, so `apm serve` on the other side prints a new address;
+- edits to the plan's files you haven't committed. The archive holds the plan as last committed, so run `apm commit` first if you want them;
+- runs and proposals, unless you asked for them.
+
+**Import.** Go to the folder that should hold the plan, usually the code repository, and run:
+
+```bash
+apm import plan.apm.zip
+```
+
+You get the same plan, with the same history, as `.apm/`, linked the way `apm init` links it. Then run `apm check` or `apm serve`.
+
+Imported runs are history only: you can read them, but nothing starts again. A run that was still going when the archive was made comes back as **Stopped** ("Stopped before it finished").
+
+**Import refuses**, and changes nothing, when:
+
+- the folder already has a plan (`.apm/` or `.apm-link`). Import only into a folder that has none;
+- the archive was made by a newer APM, with a newer archive format or, for runs, a newer store schema. Upgrade APM, then import;
+- the file is damaged: truncated, not an APM archive, or its contents don't match its manifest or history.
+
 ## When something goes wrong
 
 | What you see | What to do |
@@ -298,6 +347,10 @@ If you ever want a backup or a second machine, `apm link --remote <url>` gives t
 | "… is already running" | One conversation takes one turn at a time, and a node has one Decompose or Implement at a time. Wait, or press **Stop**. |
 | "2 runs are already active" | Raise `runner.max_concurrent`, or wait for one to finish. |
 | Implement is greyed out | Hover over it: the node has children, is blocked, or is already done. |
+| "No pull request yet: `gh` is not installed" | Install the GitHub CLI and run `gh auth login`, then send any reply in the node's conversation: after that turn, APM tries again. |
+| "couldn't tell which GitHub repository … is" | Set the repo's `remote: https://github.com/<owner>/<repo>` in `.apm/apm.yaml`. |
 | A change is refused with a code like `I2` | It would break a rule of the plan. The message says which nodes are involved. |
+| Import says "… already exists" | The folder already has a plan. Import into a folder without `.apm/` or `.apm-link`. |
+| Import says "upgrade APM to import it" | The archive came from a newer APM. Update APM (see [Install](#install)) and try again. |
 | "uncommitted changes in the plan repo" | You edited the plan's files by hand. Run `apm commit` first. |
 | A run was "interrupted" | `apm serve` was stopped while it ran. Send another message to continue the conversation. |
