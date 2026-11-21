@@ -2,10 +2,14 @@
 
 import asyncio
 
+import pytest
+
 from apm.core.model import NodeId, Status
 from apm.core.ops import NewNode, create_nodes, set_status, update_node
-from apm.core.project import Project
+from apm.core.project import Project, load_graph
+from apm.runner import auto
 from apm.runner.auto import TASK_REVIEWER, AutoQueue
+from apm.runner.runner import FEATURE_REVIEWER, RunnerBusy
 from tests.runner.fake import FakeClaude
 from tests.runner.test_runner import Harness, option
 
@@ -128,3 +132,101 @@ def test_switching_task_review_off_stops_queueing(project: Project) -> None:
     configure(project, "automation:\n  task_review: false\n")
     queue.scan()
     assert queue.queued == {}
+
+
+def test_reconcile_runs_every_interval_and_not_when_off(
+    project: Project, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    configure(project, "automation:\n  reconcile_interval_s: 60\n")
+    calls: list[bool] = []
+    monkeypatch.setattr(auto, "reconcile", lambda _, *, actor, retarget: calls.append(retarget))
+    clock = Clock()
+    queue = AutoQueue(Harness(project).runner, clock=clock)
+    ran = []
+    for now in (0, 10, 59, 60, 100, 120):
+        clock.now = now
+        ran.append(queue.reconcile())
+    assert ran == [True, False, False, True, False, True]
+    assert calls == [True, True, True]
+    configure(project, "  reconcile: false\n")
+    clock.now += 1000
+    assert not queue.reconcile()
+    assert len(calls) == 3
+
+
+def feature(project: Project, *titles: str) -> tuple[NodeId, NodeId, tuple[NodeId, ...]]:
+    """A feature with done tasks: its review step is ready."""
+    (top,) = tasks(project, "Feature")
+    kids = create_nodes(project, [NewNode(title=t, parent=top) for t in titles]).created
+    for kid in kids:
+        set_status(project, kid, Status.DONE)
+    step = load_graph(project).review_step(top)
+    assert step is not None
+    return top, step, kids
+
+
+def recording(harness: Harness, monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, NodeId]]:
+    started: list[tuple[str, NodeId]] = []
+    monkeypatch.setattr(harness.runner, "start", lambda a, n, **_: started.append((a, n)))
+    return started
+
+
+def test_a_ready_review_step_queues_one_feature_review(
+    project: Project, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    configure(project, "automation:\n  task_review: false\n")
+    _, step, _ = feature(project, "Parse", "Print")
+    harness = Harness(project)
+    started = recording(harness, monkeypatch)
+    queue = AutoQueue(harness.runner, debounce_s=0)
+    for _ in range(3):
+        queue.scan()
+        queue.pump()
+    assert started == [(FEATURE_REVIEWER, step)]
+
+
+def test_feature_review_off_queues_none(project: Project) -> None:
+    configure(project, "automation:\n  task_review: false\n  feature_review: false\n")
+    feature(project, "Parse")
+    queue = AutoQueue(Harness(project).runner, debounce_s=0)
+    queue.scan()
+    assert queue.queued == {}
+
+
+def test_a_busy_review_step_stays_queued(project: Project, monkeypatch: pytest.MonkeyPatch) -> None:
+    configure(project, "automation:\n  task_review: false\n")
+    _, step, _ = feature(project, "Parse")
+    harness = Harness(project)
+
+    def busy(*_: object, **__: object) -> None:
+        raise RunnerBusy("busy")
+
+    monkeypatch.setattr(harness.runner, "start", busy)
+    queue = AutoQueue(harness.runner, debounce_s=0)
+    queue.scan()
+    queue.pump()
+    assert (FEATURE_REVIEWER, step) in queue.queued
+
+
+def test_the_review_is_queued_again_once_reconcile_finishes_the_follow_ups(
+    project: Project, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    configure(project, "automation:\n  task_review: false\n")
+    top, step, _ = feature(project, "Parse")
+    harness = Harness(project)
+    started = recording(harness, monkeypatch)
+    queue = AutoQueue(harness.runner, debounce_s=0)
+    queue.scan()
+    queue.pump()
+    # The review found a gap: a follow-up task, and the step goes back to do.
+    set_status(project, step, Status.IN_PROGRESS)
+    (follow_up,) = create_nodes(project, [NewNode(title="Fix", parent=top)]).created
+    set_status(project, step, Status.TODO)
+    queue.scan()
+    queue.pump()
+    assert started == [(FEATURE_REVIEWER, step)]
+    monkeypatch.setattr(auto, "reconcile", lambda p, **_: set_status(p, follow_up, Status.DONE))
+    assert queue.reconcile()
+    queue.scan()
+    queue.pump()
+    assert started == [(FEATURE_REVIEWER, step), (FEATURE_REVIEWER, step)]
