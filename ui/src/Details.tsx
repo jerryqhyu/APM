@@ -2,6 +2,7 @@
 // haven't picked one.
 
 import { useEffect, useMemo, useState } from "react";
+import { FeatureReportSection } from "./FeatureReport";
 import { Markdown } from "./Markdown";
 import { FeatureSettingsSection } from "./Settings";
 import type {
@@ -112,6 +113,7 @@ export function NodeDetails({ detail, nodes, actions }: { detail: NodeDetail; no
       {detail.children > 0 && (
         <FeatureSettingsSection detail={detail} onSave={actions.saveSettings} onClear={actions.clearSettings} onGoTo={actions.goTo} />
       )}
+      {detail.children > 0 && <FeatureReportSection featureId={detail.id} />}
 
       <section>
         <h3>Depends on</h3>

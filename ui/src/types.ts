@@ -219,6 +219,38 @@ export interface Batch {
   skipped: (NodeRef & { reason: string })[];
 }
 
+// --- the feature report (src/apm/core/report_branch.py) ---
+
+/** A report APM wrote, committed to the feature branch (or kept, with why it wasn't). */
+export interface FeatureReport {
+  node_id: string;
+  run_id: string | null;
+  branch: string;
+  path: string;
+  /** The commit that put it on the branch; null if it couldn't be committed. */
+  sha: string | null;
+  error: string | null;
+  markdown: string;
+  summary: string;
+  detail: ReportDetail;
+  created: number;
+}
+
+/** Where a feature's report stands. */
+export interface ReportStatus {
+  feature: string;
+  state: "none" | "writing" | "written" | "not_committed";
+  /** The latest report, even while a new one is being written. */
+  report: FeatureReport | null;
+  running: Run | null;
+  /** Its page on GitHub, once committed. */
+  url: string | null;
+  pr: string | null;
+  /** Whether it is written on its own once the feature's review passes (`features.report`). */
+  automatic: boolean;
+  detail: ReportDetail;
+}
+
 export interface Agent {
   name: string;
   label: string;
@@ -268,4 +300,5 @@ export type LiveEvent =
   | { type: "run.request"; request: AgentRequest }
   | { type: "run.request_resolved"; run_id: string; id: string }
   | { type: "proposal.created"; proposal: Proposal }
-  | { type: "proposal.resolved"; id: string; status: string };
+  | { type: "proposal.resolved"; id: string; status: string }
+  | { type: "report.written"; node_id: string };

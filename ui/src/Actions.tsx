@@ -2,6 +2,7 @@
 // several nodes, or (with nothing selected) the plan as a whole.
 
 import { FeatureControls } from "./FeatureControls";
+import { WriteReportRow } from "./FeatureReport";
 import type { Batch, NodeDetail, NodeView, Status } from "./types";
 import { STATUS_LABEL, cx, stackedName } from "./util";
 
@@ -239,6 +240,9 @@ export function Actions({
           )}
           {one && one.children > 0 && !isStep && (
             <FeatureControls feature={one} nodes={nodes} onReviewTasks={handlers.reviewTasks} onImplementAll={handlers.implementAll} />
+          )}
+          {one && one.children > 0 && !isStep && (
+            <WriteReportRow feature={one} step={step} onWrite={() => handlers.runAgent("apm-feature-reporter", one.id)} />
           )}
         </>
       )}

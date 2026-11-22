@@ -1,6 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { type ActionHandlers, Actions } from "./Actions";
-import { ApiError, api, clearNodeSettings, download, implementAll, query, reviewAllTasks, saveNodeSettings } from "./api";
+import {
+  ApiError,
+  api,
+  clearNodeSettings,
+  download,
+  implementAll,
+  query,
+  reviewAllTasks,
+  saveNodeSettings,
+  writeReport,
+} from "./api";
 import { Canvas } from "./Canvas";
 import { Chat } from "./Chat";
 import { type DetailActions, NodeDetails, PlanSummary } from "./Details";
@@ -516,10 +526,13 @@ export function App() {
           defaultMode={project.default_mode}
           onClose={() => setDialog(null)}
           onStart={async (message, critic, mode, branch) => {
-            const run = await api<Run>("/api/runs", {
-              method: "POST",
-              body: { agent: dialog.agent, node_id: dialog.node, message, critic, mode, branch: branch || null },
-            });
+            const run =
+              dialog.agent === "apm-feature-reporter"
+                ? await writeReport(dialog.node, { message, mode })
+                : await api<Run>("/api/runs", {
+                    method: "POST",
+                    body: { agent: dialog.agent, node_id: dialog.node, message, critic, mode, branch: branch || null },
+                  });
             setDialog(null);
             setRoute({ ...route, selected: [dialog.node] });
             setFocusRun(run.id);

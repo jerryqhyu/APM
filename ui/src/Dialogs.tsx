@@ -79,6 +79,10 @@ const GUIDANCE: Record<string, { placeholder: string; go: string }> = {
   "apm-decomposer": { placeholder: "For example: keep it to three steps, or slice by user-visible feature.", go: "Decompose" },
   "apm-implementer": { placeholder: "Anything Claude should know beyond what the node says.", go: "Start building" },
   "apm-feature-reviewer": { placeholder: "For example: look hard at error handling.", go: "Start review" },
+  "apm-feature-reporter": {
+    placeholder: "For example: say more about the storage format. The decisions and their reasons come from the plan's record.",
+    go: "Write report",
+  },
 };
 
 export function RunAgentDialog({

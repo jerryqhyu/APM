@@ -2012,6 +2012,34 @@ input.number {
   font-size: 12px;
 }
 
+/* --- the feature report (details) --- */
+
+.report-state {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 13px;
+}
+
+p.report-state {
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+}
+
+.report-state .hint {
+  font-size: 12px;
+}
+
+.report-body {
+  margin-top: 4px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  max-height: 480px;
+  overflow: auto;
+}
+
 /* --- proposal review --- */
 
 .rationale {
