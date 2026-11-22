@@ -105,11 +105,14 @@ _TEST_NAME = re.compile(r"(^test_|_test\.|\.test\.|\.spec\.)")
 
 
 def is_source(path: str) -> bool:
-    """Roughly what a task's size limit counts: not tests, docs, data or configuration."""
+    """Roughly what a task's size limit counts: not tests, docs, data or configuration (dotfiles
+    included).
+    """
     parts = PurePosixPath(path)
     return (
         not _NOT_SOURCE_DIRS.intersection(parts.parts[:-1])
         and parts.suffix not in _NOT_SOURCE_SUFFIXES
+        and not parts.name.startswith(".")
         and _TEST_NAME.search(parts.name) is None
     )
 
