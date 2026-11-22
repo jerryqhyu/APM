@@ -2,6 +2,7 @@
 // haven't picked one.
 
 import { useEffect, useMemo, useState } from "react";
+import { EagerSection, eagerFeature } from "./Eager";
 import { Markdown } from "./Markdown";
 import { FeatureSettingsSection } from "./Settings";
 import type {
@@ -28,6 +29,8 @@ export interface DetailActions {
   /** A feature's own settings: null inherits one again. */
   saveSettings: (change: SettingsChange<FeatureSettings>) => Promise<void>;
   clearSettings: () => Promise<void>;
+  /** Redo on an eager feature. */
+  eagerRedo: () => Promise<void>;
 }
 
 const REVIEW_LABEL: Record<string, string> = {
@@ -41,6 +44,7 @@ const REVIEW_LABEL: Record<string, string> = {
 export function NodeDetails({ detail, nodes, actions }: { detail: NodeDetail; nodes: NodeView[]; actions: DetailActions }) {
   const state = stateOf(detail);
   const review = detail.review;
+  const eager = eagerFeature(detail);
   return (
     <article className="details">
       <div className="kicker">
@@ -112,6 +116,7 @@ export function NodeDetails({ detail, nodes, actions }: { detail: NodeDetail; no
       {detail.children > 0 && (
         <FeatureSettingsSection detail={detail} onSave={actions.saveSettings} onClear={actions.clearSettings} onGoTo={actions.goTo} />
       )}
+      {eager && <EagerSection eager={eager} onRedo={actions.eagerRedo} onGoTo={actions.goTo} />}
 
       <section>
         <h3>Depends on</h3>

@@ -2012,6 +2012,51 @@ input.number {
   font-size: 12px;
 }
 
+/* --- eager mode: a feature's build and its chain of pull requests --- */
+
+.eager {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.eager-chain {
+  margin: 0;
+  padding-left: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 13px;
+}
+
+.eager-chain .dot {
+  margin-right: 6px;
+}
+
+.eager-chain a,
+.eager-chain .no-pr {
+  margin-left: 8px;
+  font-size: 12px;
+}
+
+.eager-chain .no-pr,
+.eager-state.stale {
+  color: var(--warn);
+}
+
+.eager-state {
+  margin-left: 8px;
+  color: var(--fg-muted);
+  font-size: 12px;
+}
+
+.eager-warnings {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--warn);
+  font-size: 12px;
+}
+
 /* --- proposal review --- */
 
 .rationale {

@@ -22,7 +22,7 @@ import { cx, errorText } from "./util";
  * Settings whose feature isn't built yet: they are saved, and do nothing until it is. Take a name
  * out when its feature lands.
  */
-const NOT_BUILT = new Set<string>(["eager", "report", "report_detail", "eager_redo"]);
+const NOT_BUILT = new Set<string>(["report", "report_detail"]);
 const NOT_BUILT_HINT = "Not built yet: saved for when it is.";
 
 const MIN_TASK_LINES = 5;

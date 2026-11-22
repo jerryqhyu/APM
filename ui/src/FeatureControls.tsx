@@ -31,16 +31,20 @@ const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? o
 export function FeatureControls({
   feature,
   nodes,
+  eager = false,
   onReviewTasks,
   onImplementAll,
 }: {
   feature: NodeView;
   nodes: NodeView[];
+  /** Eager mode applies and nothing is split yet: Implement all builds every To do task at once. */
+  eager?: boolean;
   onReviewTasks: (id: string) => Promise<Batch>;
   onImplementAll: (id: string) => Promise<Batch>;
 }) {
   const tasks = useMemo(() => tasksIn(feature.id, nodes), [feature.id, nodes]);
-  const ready = tasks.filter((t) => t.ready);
+  // An eager build covers blocked tasks too: it builds them all in dependency order.
+  const ready = eager ? tasks : tasks.filter((t) => t.ready);
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState<Action | null>(null);
   const [result, setResult] = useState<{ action: Action; batch: Batch } | null>(null);
@@ -84,7 +88,11 @@ export function FeatureControls({
         </button>
         {confirming ? (
           <>
-            <span className="row-hint">Build up to {plural(ready.length, "ready task")}?</span>
+            <span className="row-hint">
+              {eager
+                ? `Build all ${plural(ready.length, "To do task")} in one run, then split ${ready.length === 1 ? "it" : "them"} into one pull request each?`
+                : `Build up to ${plural(ready.length, "ready task")}?`}
+            </span>
             <button className="primary" onClick={() => void start("implement")}>
               Start
             </button>
@@ -95,9 +103,11 @@ export function FeatureControls({
             onClick={() => setConfirming(true)}
             disabled={busy !== null || ready.length === 0}
             title={
-              ready.length
-                ? `Claude builds every task inside that is ready (${ready.length}, stacked ones included) and has passed its task review, each in its own worktree. Up to runner.max_concurrent at once; the rest wait their turn.`
-                : "No task inside is ready"
+              eager && ready.length
+                ? `Eager mode: Claude builds every To do task (${ready.length}) in one run on one branch, once each has passed its task review; APM then splits it into one pull request per task, each targeting the one before.`
+                : ready.length
+                  ? `Claude builds every task inside that is ready (${ready.length}, stacked ones included) and has passed its task review, each in its own worktree. Up to runner.max_concurrent at once; the rest wait their turn.`
+                  : "No task inside is ready"
             }
           >
             {busy === "implement" && <Spinner />}

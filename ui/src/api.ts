@@ -1,6 +1,6 @@
 // Talking to `apm serve`. Every request carries the token from the URL the server printed.
 
-import type { Automation, Batch, FeatureSettings, NodeSettings, ProjectSettings, SettingsChange } from "./types";
+import type { Automation, Batch, FeatureSettings, NodeSettings, ProjectSettings, Run, SettingsChange } from "./types";
 
 const TOKEN_KEY = "apm-token";
 
@@ -133,4 +133,9 @@ export function reviewAllTasks(id: string): Promise<Batch> {
 /** Implement all: the implementer on every ready task inside the feature that passed its review. */
 export function implementAll(id: string): Promise<Batch> {
   return api<Batch>(`/api/nodes/${id}/implement`, { method: "POST", body: {} });
+}
+
+/** Redo on an eager feature: rebuild the tasks after one that changed, or split again. */
+export function redoEager(id: string): Promise<Run> {
+  return api<Run>(`/api/nodes/${id}/eager/redo`, { method: "POST", body: {} });
 }
