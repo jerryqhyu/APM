@@ -174,9 +174,9 @@ automation:                  # what `apm serve` does on its own (§7.7); every s
   accept_follow_ups: true
   implement_follow_ups: true
   feature_pr: true
-  eager_redo: true           # for eager mode (§7.8); does nothing until it is built
+  eager_redo: true           # rebuild the tasks after an eager task PR that changed (§7.9)
 features:                    # how features are built and reported (§7.8)
-  eager: false               # build a feature in one run, then split it into task PRs
+  eager: false               # build a feature in one run, then split it into task PRs (§7.9)
   task_max_lines: 50         # the task size limit a task review applies, in real lines
   report: true               # write a feature report when its feature review passes
   report_detail: standard    # brief | standard | detailed
@@ -260,11 +260,17 @@ run_events(run_id, seq, ts, json)             -- the stream-json events a transc
 proposals(id PK, node_id, run_id, json, review, status, created, resolved)
 task_reviews(node_id, fingerprint, verdict, data, run_id, created)
                                               -- one row per task review (§7.7)
+eager_builds(feature_id PK, round, branch, base, base_sha, sha, state, tasks, run_id, error,
+             warnings, pending, updated)      -- a feature's latest eager build (§7.9)
+eager_slices(feature_id, node_id, position, branch, commit_sha, parent_sha, tree, patch_id,
+             lines, landed)                   -- each task's part of it, in chain order
 ```
 
 `task_reviews.fingerprint` is the SHA-256 of the task's title, kind and body (`content_fingerprint`), so a review applies to exactly one version of the content and a status change or delivery doesn't invalidate it. `verdict` is `pass`, `too_big`, `unclear` or `error`; `data` is what the reviewer returned with it. Task reviews are not archived: an imported project's tasks are simply reviewed again.
 
-Deleting `.cache/` loses run logs, pending proposals and task reviews, never anything about the project itself. They leave the machine only in an archive made with `--with-runs` (§3.8).
+Eager builds aren't archived either: they describe branches in this machine's clone. Without them a split feature's tasks are still delivered and reconciled as usual; only redo detection is lost.
+
+Deleting `.cache/` loses run logs, pending proposals, task reviews and eager builds, never anything about the project itself. They leave the machine only in an archive made with `--with-runs` (§3.8).
 
 **No index of the plan yet.** Reads parse `graph.ndjson` into the in-memory graph each time, and search scans titles and bodies directly. At the size of a real plan (hundreds of nodes) that is instant, and there is nothing to keep in sync. The tables below are the design for when it stops being enough, and for playback (§5):
 
@@ -390,6 +396,7 @@ PATCH  /api/nodes/:id/settings  { eager?, task_max_lines?, report?, report_detai
 DELETE /api/nodes/:id/settings      a feature's own settings, cleared
 POST   /api/nodes/:id/review-tasks · POST /api/nodes/:id/implement   { mode?, message? }
                             Review all tasks · Implement all: { started, waiting, skipped }
+POST   /api/nodes/:id/eager/redo   { mode?, message? }   Redo on an eager feature (§7.9): the run
 GET    /api/runs?node_id=&scope=project&status= · GET /api/runs/:id?after=<seq>
 POST   /api/runs            { agent, node_id?, message?, critic?, mode? }   no node_id = the project
 POST   /api/runs/:id/continue   { message, mode? }    the next turn of a conversation
@@ -487,6 +494,8 @@ Limits: `max_concurrent` pipelines in total. One conversation takes one turn at 
 | `apm-decomposer` | `read` | Read, Grep, Glob, the read tools | returns a decomposition (JSON schema); file-editing tools are disallowed |
 | `apm-critic` | `read` | Read, Grep, Glob, the read tools | returns a review (JSON schema); only started by the pipeline; `dontAsk` |
 | `apm-implementer` | `node:<id>` | Read, Grep, Glob, Edit, Write, `Bash(git *)`, `Bash(gh pr *)`, its node's tools | `--worktree`; its first message names the base branch (§7.4) |
+| `apm-eager-builder` | `read` | Read, Grep, Glob, Edit, Write, `Bash(git *)`, the read tools | `--worktree`; builds every task of an eager feature on its eager branch; only started by Implement or Redo (§7.9) |
+| `apm-splitter` | `read` | Read, Grep, Glob, Edit, Write, `Bash(git *)`, the read tools | `--worktree`; carves an eager build into one commit per task and returns the chain (JSON schema); only started by the eager pipeline |
 
 Give the implementer the commands that run your tests, e.g. `allowed_tools: ["Bash(uv run *)"]` under `runner.agents.apm-implementer`, or it has to ask (or, in `dontAsk`, cannot run them).
 
@@ -533,6 +542,7 @@ The chat (`apm-assistant`) is the open-ended one: it has `project` scope, so wit
 - It works on branch `apm/<handle>-<slug>`. Commits carry `APM-Node:`. It opens the PR itself, with `gh pr create --base <base>`.
 - It calls `apm_set_status(in_progress)` when it starts and `apm_attach_delivery` when the work is pushed, and ticks the acceptance criteria it verified in the node's body.
 - **Never on a review step**: those run the feature reviewer (§7.6).
+- **Not on a task of an eager feature**: Implement there starts the feature's eager build, or is refused once the feature is split (§7.9).
 - **The base branch** is plain code (`apm.core.delivery.choose_base`), worked out when the run starts and written into its first message. A task inside a feature targets the **feature branch** (§2.5), created on demand; otherwise the default branch. Stacking then works within that target. The candidates are the delivery branches of what the node depends on (its own dependencies and its ancestors', and the leaves of a dependency that has children). `origin` is fetched first, and a candidate counts as *open* if its branch still exists and isn't merged (its PR isn't merged, and its tip isn't on the default branch).
   - One open candidate: the agent starts from it and the PR targets it, so stacked PRs each show only their own node's changes.
   - None: the default branch.
@@ -552,7 +562,7 @@ The chat (`apm-assistant`) is the open-ended one: it has `project` scope, so wit
 - **A PR merged into another branch** (a stack: #21 merged into #20's branch) leaves the node in progress. Reconcile reports "PR #21 merged into apm/… (#20's branch), not yet on main" and writes it under the node's Notes once.
 - **Without a PR** (or when `gh` can't tell), the node is done when every delivery commit is on the default branch, or when the same changes are: each commit rebased (`git cherry`), or all of them squashed into one commit (the patch id of their combined diff matches one of the default branch's last 500 commits).
 - **A PR closed without merging** is reported and left alone.
-- **Retargeting.** An open PR whose base is a branch that has landed (its tip is on the default branch, or the node that delivered it is done, or that node's PR merged into the default branch) is reported: "PR #21 still targets apm/… (#20's branch), which has landed: retarget it to main". `apm reconcile --retarget` (or `POST /api/reconcile?retarget=true`) points it at the default branch through `gh api -X PATCH`. Without the flag nothing on GitHub changes.
+- **Retargeting.** This is also what moves an eager feature's chain of task PRs along as its tasks merge in order (§7.9). An open PR whose base is a branch that has landed (its tip is on the default branch, or the node that delivered it is done, or that node's PR merged into the default branch) is reported: "PR #21 still targets apm/… (#20's branch), which has landed: retarget it to main". `apm reconcile --retarget` (or `POST /api/reconcile?retarget=true`) points it at the default branch through `gh api -X PATCH`. Without the flag nothing on GitHub changes.
 - If nothing can be determined (no `gh`, offline, a commit this clone doesn't have), the node is left alone.
 
 ### 7.6 Feature review
@@ -598,7 +608,7 @@ Automated runs share `runner.max_concurrent` with everything else, waiting in th
 
 **Settings.** `features:` in `apm.yaml` (§3.4) holds the project's defaults for every feature and per-feature overrides. `apm.core.settings.feature_settings(config, graph, node)` is the one place that works out what applies to a node: the defaults, then each enclosing feature's override from the outside in, then the node's own. A task gets its features' settings. The task review, the decomposer and the implementer read `task_max_lines` through it.
 
-- `eager`: build a feature in one run on one branch, then split it into one pull request per task. Not built yet: `apm.runner.feature_runs.implement_feature` is where it plugs in, and `automation.eager_redo` (rebuild and re-split the tasks after a task PR that changed) is read by it.
+- `eager`: build a feature in one run on one branch, then split it into one pull request per task (§7.9). `apm.runner.feature_runs.implement_feature` is where it plugs in.
 - `report`, `report_detail`: write a feature report once the feature review passes. Not built yet.
 
 **Changing them.** `set_defaults`, `set_override` and `clear_override` edit `apm.yaml` in place with ruamel.yaml's round trip (`apm.core.config_edit`): comments, indentation and the spelling of untouched values stay. The result must differ from the original by exactly the change asked for, read the way `parse_config` reads it, and must pass `parse_config`; otherwise nothing is written. Each change is one `settings` commit under the write lock (§3.5). Hand edits to `apm.yaml`, which `apm commit` doesn't take, are committed with it, and the commit says so. A change of the limit doesn't undo passed task reviews: Review all tasks reviews a feature's tasks again.
@@ -606,6 +616,38 @@ Automated runs share `runner.max_concurrent` with everything else, waiting in th
 **Review all tasks** (`apm review-tasks <feature>`) starts a task review on every To do task in the feature, nested features included, but not review steps; tasks under review are skipped. **Implement all** (`apm implement <feature>`) starts the implementer on every task that is ready now, stacked ones included, and passes the Implement gate; blocked tasks, and tasks that fail the gate or are under review, are skipped with the reason. On a task, either covers that task.
 
 Both go through a `RunQueue` (`apm.runner.queue`): what fits under `max_concurrent` starts at once, the rest waits, oldest first. In `apm serve` the automation loop pumps it ahead of its own queue; it is separate from that queue, so a run asked for by hand never counts as the automatic run of a version. A queued run that can no longer start when its turn comes (the node is gone or changed, or it is already running) is dropped. In the terminal, the command pumps the queue itself and follows every run, each line tagged with its node's handle.
+
+### 7.9 Eager mode: one build, one pull request per task
+
+With `features.eager` on for a feature (§7.8), Implement doesn't start one implementer per task. One agent builds every To do task of the feature in a single run, on one branch, and APM splits that branch into one branch and one pull request per task. The plain code is `apm.core.eager` (scope, gate, recording, redo detection) and `apm.core.split` (the git side); the runs are `apm.runner.eager`, one pipeline in the runner's slot for `apm-eager-builder` on the feature, so it counts once under `max_concurrent`.
+
+```
+gate ─▶ eager branch ─▶ apm-eager-builder ─▶ split ─▶ verify ─▶ push task branches ─▶ record ─▶ PRs
+                        (one run, worktree)   │         │        (atomic, never forced)  (APM)    (chained)
+                                              │         └─ fails: chat + feature Notes, nothing delivered
+                                              └─ APM itself when the commits are task by task, else apm-splitter
+```
+
+- **Scope.** A build covers the feature's own To do tasks (not a nested feature's, which builds into its own branch), in dependency order (`dependency_order`: each after everything it depends on inside the build, otherwise outline order).
+- **The gate** (`build_blockers`): every task passes its task review for its current content (`implement_blocker`), isn't under review or being implemented, and everything it needs from outside the build is done, since the build starts from the feature branch. Otherwise nothing starts, and each task says why (Implement all lists them as skipped; Implement on one task is refused with the list).
+- **Where it plugs in.** Implement all on an eager feature (`implement_feature`) queues the build instead of implementers, for it and for any eager feature inside it. Implement on one To do task of an eager feature with no split yet starts that feature's build, the way Review feature on a feature runs on its review step (`Runner.start` → `redirect`); once the feature is split, it is refused ("its tasks come from the split; use Redo"), except for a task that isn't part of the split (added since, e.g. a review follow-up), which is implemented as usual.
+- **The build.** APM makes the eager branch, `eager/<handle>-<slug>` (`-2`, `-3`, … for later rounds, so no build reuses a branch), from the feature branch's tip (`ensure_feature_branch`), and pushes it. `apm-eager-builder` (worktree `apm-eager-<handle>-<round>`, may edit, `Bash(git *)`, read-only plan) gets every task in order: title, handle, full id, description with its acceptance criteria, what it depends on, its size limit, and the branch it will get. It is told to commit task by task, each commit ending in `APM-Node: <id>`, to run the repository's tests and linters before handing over (as the implementer is), and to push the eager branch and nothing else.
+- **The split.** If every commit from the base to the eager branch's tip names exactly one task, each task's commits come one after another, every task has some, and the order respects the dependencies, the split is deterministic (`mechanical_split`): those commits are the chain, a task's several commits squashed into one with `git commit-tree`, no agent involved. This is the case the builder is told to produce, so it is the usual one. Otherwise (one big commit, mixed commits) `apm-splitter` (worktree `apm-split-<handle>-<round>`, `Bash(git *)`, may edit to carve a file between tasks) makes the chain locally, without pushing, and returns it (`SPLIT_SCHEMA`: per task, in order, its `node_id`, `branch`, `commit`, `within_limit`, `note`). Worktrees share the object store, so APM reads its commits directly.
+- **Verification** (`check_chain`), however the chain was made: one commit per task and each task once, in an order the dependencies allow, each commit's only parent the one before (the first's the base), each with its task's `APM-Node` trailer, none empty, and the last one's tree exactly the eager tip's. A chain that fails is reported in the chat and under the feature's Notes, nothing is pushed or recorded as delivered, and the build is kept: Redo splits it again.
+- **Recording** (`record_split`, by APM, not the agent): the task branches, `apm/<handle>-<slug>` like the implementer's, are pushed in one atomic, plain push (`publish`: a branch that already exists with other content is never overwritten). Each task gets its delivery (branch, commit) and goes In progress; `eager_slices` records each task's branch, commit, parent, tree, the patch id of its own change and a rough line count. Parts that look larger than their task's `task_max_lines` (APM's count of non-blank added source lines), and parts the splitter says it couldn't keep within it, are shown as warnings.
+- **The PR chain.** APM opens one pull request per task through `ensure_pull_request` with an explicit base: the first targets the feature branch, each later one the task before it, so each shows only its own part. Its description says which part it is and to merge in order. `apm reconcile --retarget` (run by `apm serve`, §7.7) already does the rest: when task k merges into the feature branch, it is done (its home is the feature branch, §7.5) and task k+1's PR, whose base has landed, is pointed at the feature branch. A PR merged into the task before it is "merged elsewhere" and becomes done once that one lands.
+
+**Redo.** A task's pull request *changes* when its branch gets new content after the split (review fixes), or when it merges into the feature branch with content other than its slice (edited during review, or squashed with changes). `find_changes` is the one place that decides, comparing what the split recorded with the branch tips (as fetched) and the PRs' merges:
+
+- merged into the feature branch: as split if the merge commit's tree is the slice's tree, or the change the merge brings (first parent to merge) has the slice's patch id (a squash, a rebase, a merge on top of other work); such a task is marked *landed*. Otherwise it changed;
+- merged into the task before it: left to that branch's check;
+- open: changed if the branch's tip moved to a different tree, unless the new tip merely merged a later task into it (it holds that task's commit, and has its tree).
+
+After every periodic reconcile in `apm serve` (`AutoQueue.reconcile`), `detect_redos` records on each split build what changed (the UI shows the tasks after it as stale), and with `automation.eager_redo` queues a redo, once per change (its signature is task, kind and tip). With the switch off nothing starts on its own; Redo (UI, `POST /api/nodes/:id/eager/redo`, `apm eager redo`) works either way.
+
+A redo (`plan_redo`) starts from the earliest change: from the changed task's new tip, or from the feature branch's tip if it merged. It refuses, and says why on the feature, when it would have to touch what it must not: a task after the change that has merged or is done, a second changed task after it (commits APM didn't make), or a deleted branch. Otherwise a new round's eager branch starts at that base, the builder is told what changed (the diff between the split slice and what is there now) and rebuilds only the tasks after it, and the split runs as above on that base. Then each rebuilt task's branch **moves forward**, never rewritten (`rebuilt_commits`): APM adds a merge commit whose parents are the branch's old tip and the rebuilt task before it (the base for the first), and whose tree is the new part. The push is a plain fast-forward from where APM left the branch, so a commit someone else pushed meanwhile makes git refuse it, and nothing is forced anywhere. Each pull request's diff against the one before is again exactly its new part; the first rebuilt one is retargeted to the feature branch if the change merged. The change is then accepted (a pushed tip becomes the task's recorded commit; a merge marks it landed). Done and merged tasks are never touched. A redo that finds nothing after the change to rebuild just accepts it.
+
+**What the UI shows.** A feature's details carry `eager`: the build (round, branch, base and its commit, state, error, warnings), each task's part in chain order with its pull request and state (open, merged, or stale: will be rebuilt), the pending change or why it can't be redone, and what Redo would do. A task's details say whether Implement builds its whole feature or why it can't start on its own.
 
 ---
 
@@ -623,6 +665,8 @@ src/apm/plugin/
     apm-feature-reviewer.md  review step → checks the feature branch against the feature's
                           description, criterion by criterion (read-only, json-schema)
     apm-task-reviewer.md  task → pass, too_big (with a split) or unclear (read-only, json-schema)
+    apm-eager-builder.md  eager feature → every task on one branch, one commit per task (§7.9)
+    apm-splitter.md       eager build → a chain of one commit per task (json-schema)
   skills/
     apm-node-format/      node fields, body sections, handles, the rules, what follows from them
     apm-decompose/        what a good breakdown looks like: 3–7 children, no overlap,
@@ -649,7 +693,7 @@ The conversation is the main interface; the graph is what it is about. The [user
 - **Right panel**, always there: an action bar on top, then two tabs, Chat and Details:
   - **Actions:** every operation as a button, for what is selected. One node: status, open, add child, add sibling, rename, switch kind, move, link, delete, Decompose, Implement. Several nodes: status, **merge**, delete. A feature: also **Review all tasks** and **Implement all**, with what started, what waits for room and what was skipped. Nothing selected: add node, check plan, reconcile, commit hand edits, **export archive** (a download; including runs shows the secrets warning first), and **Settings…**: the `features:` defaults and the `automation:` switches, saved to `apm.yaml`.
   - **Chat:** the conversation with Claude, about the selected node or the whole plan, turn by turn. Past conversations are tabs. Every agent run appears here, so it is also where a decomposition or an implementation is followed. A question or permission prompt shows as a card with its options, or Allow and Deny (with a reason). The permission mode is picked under the message box.
-  - **Details:** title (edited in place), state, description (markdown, with an editor), for a feature its settings (each with where it comes from: the project, an enclosing feature, or set here; Inherit, or a value of its own), what it waits on, depends on (add and remove), is needed by and contains, delivery, and history. With nothing selected, a summary of the plan: progress, what is in progress, what is ready, problems.
+  - **Details:** title (edited in place), state, description (markdown, with an editor), for a feature its settings (each with where it comes from: the project, an enclosing feature, or set here; Inherit, or a value of its own) and its eager build (the branch, each task's part and pull request in merge order, what is stale, Redo; §7.9), what it waits on, depends on (add and remove), is needed by and contains, delivery, and history. With nothing selected, a summary of the plan: progress, what is in progress, what is ready, problems.
 - **Proposal review:** the rationale, the critic's review and the agent's warnings; you can edit any child, leave children out, and accept or reject.
 - **Live:** every view refreshes when the plan changes, whoever changed it.
 - **Look:** GitHub / VS Code. System font, neutral greys, one blue accent, 6px corners, hairline borders; colour only for state. Light, dark, or following the system.
@@ -670,7 +714,9 @@ apm link-dep <from> <to> · apm unlink-dep <from> <to>
 apm ready [--root h] · apm search <query>
 apm run <assistant|decomposer|implementer|feature-reviewer> [h] [-m "..."] [--mode m] [--no-critic] [--branch b]
 apm review-tasks <h> [--mode m]  a task review on every To do task in a feature
-apm implement <h> [-m "..."] [--mode m]   the implementer on every ready, reviewed task in a feature
+apm implement <h> [-m "..."] [--mode m]   the implementer on every ready, reviewed task in a feature;
+                                 on an eager feature, its eager build (§7.9)
+apm eager show <h> · redo <h> [-m "..."] [--mode m]   an eager feature's build and PR chain · Redo
 apm settings show [h] · set NAME=VALUE... [--node h] · clear <h>   apm.yaml's settings (§7.8)
 apm proposal ls [--all] · show <id> · accept <id> [--only key] · reject <id>
 apm reconcile [--retarget]       mark nodes done whose work is on the default branch; report
@@ -707,7 +753,8 @@ apm plugin-path                  where the Claude Code plugin is
 | **M7** | Reconciling, stack-aware | Work reaching the default branch moves its node to `done`, with no manual step and no early `done` for stacked PRs | **Built** as `apm reconcile` (§7.5), with "ready, stacked" (§2.3). Tested against local repos and a stand-in for `gh` |
 | **M8** | Archives: `apm export` / `apm import`, Export archive… in the UI (§3.8) | A project, with its history and optionally its runs, round-trips through one `.apm.zip` | **Built**; round trip, refusals and the download are tested |
 | **M9** | Review steps, feature branches and the feature reviewer (§2.5, §7.6) | A feature's tasks merge into its branch; its review step checks the branch against the description and opens the PR on | **Built**; tested with stand-ins for `claude` and `gh` |
-| **M10** | Feature settings and feature-level actions (§7.8) | Settings changed from the UI or the CLI land in `apm.yaml` with its comments kept; the task limit reaches the agents; Review all tasks and Implement all never fail on `max_concurrent` | **Built**, except eager mode and the feature report, whose settings are in place; tested with a stand-in for `claude` |
+| **M10** | Feature settings and feature-level actions (§7.8) | Settings changed from the UI or the CLI land in `apm.yaml` with its comments kept; the task limit reaches the agents; Review all tasks and Implement all never fail on `max_concurrent` | **Built**, except the feature report, whose settings are in place; tested with a stand-in for `claude` |
+| **M11** | Eager mode (§7.9) | A feature is built in one run, split into a verified chain of one pull request per task, and its later tasks are rebuilt when a task's pull request changes, without rewriting a branch | **Built**; the build, the split (deterministic and by agent), verification, the PR chain, reconcile along it and redo are tested with stand-ins for `claude` and `gh` against real git repos |
 
 ---
 
