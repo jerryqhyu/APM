@@ -598,7 +598,9 @@ async def test_apm_serve_redoes_a_changed_task_on_its_own(
     queue = AutoQueue(harness.runner, debounce_s=0)
 
     assert queue.reconcile()
-    pending = harness.store.eager_build(feature).pending  # ty: ignore[possibly-missing-attribute]
+    before = harness.store.eager_build(feature)
+    assert before is not None
+    pending = before.pending
     assert pending is not None
     assert (pending["node_id"], pending["tasks"]) == (parse, [index, rank])
     queue.scan()
