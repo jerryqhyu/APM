@@ -10,6 +10,8 @@ except a task review, which `due_task_reviews` retries once for the same content
 It also reconciles (retargeting open PRs) every `reconcile_interval_s`, and queues a feature
 review whenever a review step becomes ready, again after its follow-ups are done. The follow-ups
 that review proposed (and APM accepted) are built once their task review passes.
+
+Runs you asked for that are waiting for room (`manual`, a `RunQueue`) start first.
 """
 
 import asyncio
@@ -29,6 +31,7 @@ from apm.core.project import load_graph
 from apm.core.reconcile import reconcile
 from apm.core.store import Store, content_fingerprint
 from apm.core.task_review import due_task_reviews
+from apm.runner.queue import RunQueue
 from apm.runner.runner import FEATURE_REVIEWER, Runner, RunnerBusy
 
 TASK_REVIEWER = "apm-task-reviewer"
@@ -52,6 +55,11 @@ class AutoQueue:
     """task → the run of its last automatic task review."""
     next_reconcile: float = 0.0
     """When the next periodic reconcile is due (0 = at once)."""
+    manual: RunQueue = field(init=False)
+    """Runs asked for by hand (Review all tasks, Implement all) waiting for room. They go first."""
+
+    def __post_init__(self) -> None:
+        self.manual = RunQueue(self.runner)
 
     def push(self, agent: str, node_id: NodeId, version: str) -> None:
         key = (agent, node_id)
@@ -128,6 +136,7 @@ class AutoQueue:
                     rescan = True
                 if rescan:
                     await asyncio.to_thread(self.scan)
+                self.manual.pump()
                 self.pump()
             rescan = False
             with contextlib.suppress(TimeoutError):
