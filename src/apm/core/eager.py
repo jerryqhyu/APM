@@ -659,12 +659,17 @@ def detect_redos(project: Project, store: Store, *, read: PrReader = read_pr) ->
     """Redo detection for every split eager feature, after a reconcile: records on each build
     what changed (for the UI, whether or not a redo starts by itself), and returns the redos to
     run. A change with nothing after it to rebuild is simply accepted.
+
+    A build that is running, or whose split failed, is left alone: the failed one's plan is
+    what Redo splits again, on the base its round was built from.
     """
     plans: list[RedoPlan] = []
     graph = load_graph(project)
     for build in store.eager_builds():
         feature = build.feature_id
         if feature not in graph or is_running(store, feature) or not store.eager_slices(feature):
+            continue
+        if state_of(store, build) == "split_failed":
             continue
         pending: dict[str, Any] | None = None
         try:
@@ -705,10 +710,12 @@ def record_redo(
     """
     repo_dir = code_repo(project)
     graph = load_graph(project)
+    if plan.base != build.base_sha:
+        raise EagerRefused("this rebuild started from another commit than its plan: press Redo")
     old = {s.node_id: s for s in store.eager_slices(build.feature_id)}
     why = describe_change(graph, plan.change, build.base)
     commits = rebuilt_commits(
-        repo_dir, pieces, {p.node_id: old[p.node_id].commit for p in pieces}, plan.base, why
+        repo_dir, pieces, {p.node_id: old[p.node_id].commit for p in pieces}, build.base_sha, why
     )
     publish(
         repo_dir,
@@ -719,7 +726,7 @@ def record_redo(
     )
     accept_change(store, repo_dir, build.feature_id, plan.change)
     rebuilt: list[EagerSlice] = []
-    below = plan.base
+    below = build.base_sha
     for piece, new in zip(pieces, commits, strict=True):
         before = old[piece.node_id]
         rebuilt.append(

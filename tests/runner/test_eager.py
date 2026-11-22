@@ -14,8 +14,9 @@ from typing import Any
 
 import pytest
 
+from apm.core.config import read_config
 from apm.core.delivery import feature_branch
-from apm.core.eager import plan_redo
+from apm.core.eager import eager_view, plan_redo
 from apm.core.files import read_body
 from apm.core.git import CommitMessage, git
 from apm.core.ids import handle
@@ -647,3 +648,42 @@ async def test_with_eager_redo_off_nothing_starts_but_redo_by_hand_works(
     assert build is not None
     assert (build.state, build.round) == ("split", 2)
     assert git_out(code_repo, "rev-parse", f"origin/{old[rank].branch}") != old[rank].commit
+
+
+async def test_redo_after_a_failed_split_splits_the_same_build_again(
+    code_repo: CodeRepo, eager: tuple[Harness, Agents], fake_gh: FakeGh
+) -> None:
+    harness, agents = eager
+    project = code_repo.project
+    feature, tasks = three_tasks(project, harness)
+    files = {t: f"src/{t[-6:]}.py" for t in tasks}
+    agents.build = lambda b: agents.commit_on(b, [(f, "x = 1\n", None) for f in files.values()])
+
+    def split(parts: dict[NodeId, list[str]]) -> Callable[[EagerBuild], list[dict[str, Any]]]:
+        def make(b: EagerBuild) -> list[dict[str, Any]]:
+            tip = git_out(code_repo, "rev-parse", f"origin/{b.branch}")
+            return agents.chain(b, [(t, parts[t]) for t in tasks], tip)
+
+        return make
+
+    agents.split = split({tasks[0]: [files[tasks[0]]], tasks[1]: [files[tasks[1]]], tasks[2]: []})
+    implement_feature(RunQueue(harness.runner), feature)
+    await settle(harness)
+    failed = harness.store.eager_build(feature)
+    assert failed is not None
+    assert failed.state == "split_failed"
+    view = eager_view(harness.store, read_config(project.apm_dir), load_graph(project), feature)
+    assert view is not None
+    assert view["redo"]["action"] == "split"
+
+    agents.split = split({t: [files[t]] for t in tasks})
+    run = await harness.runner.eager.redo(feature)
+    assert (run.agent, run.node_id) == (SPLITTER, feature)
+    await settle(harness)
+
+    build = harness.store.eager_build(feature)
+    assert build is not None
+    assert (build.state, build.round, build.sha) == ("split", 1, failed.sha)  # the same build
+    assert [s.node_id for s in harness.store.eager_slices(feature)] == tasks
+    assert harness.store.get_run(run.id).status == "succeeded"
+    assert len(posted(fake_gh)) == 3

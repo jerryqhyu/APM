@@ -138,7 +138,7 @@ class EagerRuns:
         """
         runner, store = self.runner, self.runner.store
         graph, config = load_graph(self.project), read_config(self.project.apm_dir)
-        graph[feature]
+        graph[feature]  # a feature that is gone: KeyError, as for any run on a deleted node
         build = store.eager_build(feature)
         if build is None:
             raise RunRefused("nothing to redo: this feature hasn't been built eagerly")
@@ -248,14 +248,22 @@ class EagerRuns:
         await self._split(config, run, build, plan)
 
     async def _resplit(self, config: ApmConfig, run: Run, build: EagerBuild) -> None:
+        """Split again: the same build, on the same base, for the same tasks. A redo round's
+        plan is the one it was built for, kept on the build.
+        """
+        store = self.runner.store
         plan = None
-        if build.pending and store_has_slices(self.runner, build.feature_id):
+        if build.pending and store.eager_slices(build.feature_id):
             plan = RedoPlan.from_json(build.feature_id, build.pending)
         self._notice(run.id, "info", f"Splitting `{build.branch}` again.")
-        build = self.runner.store.save_eager_build(
-            replace(build, state="splitting", run_id=run.id, error=None)
-        )
-        await self._split(config, run, build, plan, own_run=True)
+        build = store.save_eager_build(replace(build, state="splitting", run_id=run.id, error=None))
+        await self._split(config, run, build, plan)
+        if store.get_run(run.id).status == "running":  # this run has no agent of its own
+            after = store.eager_build(build.feature_id)
+            if after is not None and after.state == "split":
+                self._finish(run, "succeeded")
+            else:
+                self._finish(run, "failed", after.error if after else "the split failed")
 
     async def _split(
         self,
@@ -263,18 +271,14 @@ class EagerRuns:
         run: Run,
         build: EagerBuild,
         plan: RedoPlan | None,
-        *,
-        own_run: bool = False,
     ) -> None:
-        """Splits the finished build, checks the chain, records it and opens the pull requests.
-        `own_run`: `run` is a splitter's own run (split again), to finish here.
-        """
+        """Splits the finished build, checks the chain, records it and opens the pull requests."""
         store, project = self.runner.store, self.project
         try:
             repo_dir = code_repo(project)
             tip = await asyncio.to_thread(built_tip, repo_dir, build)
         except (ApmError, GitError) as err:
-            await self._split_failed(run, build, str(err), own_run=own_run)
+            await self._split_failed(run, build, str(err))
             return
         build = store.save_eager_build(replace(build, sha=tip, state="splitting", error=None))
         graph = load_graph(project)
@@ -293,7 +297,7 @@ class EagerRuns:
             )
             outcome = await self._run_splitter(config, run, build, tip, tasks)
             if isinstance(outcome, str):
-                await self._split_failed(run, build, outcome, own_run=own_run)
+                await self._split_failed(run, build, outcome)
                 return
             last, answer = outcome
             pieces = answer.pieces
@@ -309,7 +313,7 @@ class EagerRuns:
             check_chain, repo_dir, build.base_sha, tip, pieces, tasks, before
         )
         if problems:
-            await self._split_failed(last, build, "; ".join(problems), own_run=own_run)
+            await self._split_failed(last, build, "; ".join(problems))
             return
         warnings += await asyncio.to_thread(self._size_warnings, config, pieces)
         try:
@@ -330,7 +334,7 @@ class EagerRuns:
                     warnings=warnings,
                 )
         except (ApmError, GitError) as err:
-            await self._split_failed(last, build, str(err), own_run=own_run)
+            await self._split_failed(last, build, str(err))
             return
         graph = load_graph(project)
         chain = " → ".join(_named(graph, p.node_id) for p in pieces)
@@ -339,8 +343,6 @@ class EagerRuns:
         for warning in warnings:
             self._notice(run.id, "warning", warning)
         await self._pull_requests(run, prs)
-        if own_run:
-            self._finish(run, "succeeded")
 
     async def _run_splitter(
         self, config: ApmConfig, parent: Run, build: EagerBuild, tip: str, tasks: list[NodeId]
@@ -383,9 +385,7 @@ class EagerRuns:
                 )
         return out
 
-    async def _split_failed(
-        self, run: Run, build: EagerBuild, reason: str, *, own_run: bool = False
-    ) -> None:
+    async def _split_failed(self, run: Run, build: EagerBuild, reason: str) -> None:
         """Says so in the chat and the feature's Notes, records nothing as delivered, and keeps
         the eager branch for Redo to split again.
         """
@@ -470,10 +470,6 @@ class EagerRuns:
     def _fail_run(self, run: Run, error: str) -> None:
         self._notice(run.id, "warning", error)
         self._finish(run, "failed", error)
-
-
-def store_has_slices(runner: Runner, feature: NodeId) -> bool:
-    return bool(runner.store.eager_slices(feature))
 
 
 # --- the agents' first messages ---
