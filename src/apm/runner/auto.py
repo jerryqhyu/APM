@@ -4,7 +4,8 @@ Automations push `(agent, node, version)` onto one `AutoQueue`. A push whose ver
 run would work on, e.g. a task's content fingerprint) changed restarts that run's wait, so a burst
 of edits ends in one run on the final content. `pump` starts the runs whose wait is over while
 there is room under `runner.max_concurrent`; a run that can't start yet stays queued. One version
-gets one automatic run per server: a run that errored is tried again after an edit or a restart.
+gets one automatic run per server: a run that errored is tried again after an edit or a restart,
+except a task review, which `due_task_reviews` retries once for the same content (`MAX_ERRORS`).
 
 It also reconciles (retargeting open PRs) every `reconcile_interval_s`, and queues a feature
 review whenever a review step becomes ready, again after its follow-ups are done. The follow-ups
@@ -34,6 +35,8 @@ TASK_REVIEWER = "apm-task-reviewer"
 IMPLEMENTER = "apm-implementer"
 DEBOUNCE_S = 3.0
 """How long a run waits after the last change to what it works on."""
+RESCAN_ON = ("graph.changed", "run.finished")
+"""Events after which `drive` scans again: a finished run may have left a review to retry."""
 
 
 @dataclass
@@ -45,6 +48,8 @@ class AutoQueue:
     """(agent, node) → (version, when it may start)."""
     started: dict[tuple[str, NodeId], str] = field(default_factory=dict)
     """(agent, node) → the version last started."""
+    task_runs: dict[NodeId, str] = field(default_factory=dict)
+    """task → the run of its last automatic task review."""
     next_reconcile: float = 0.0
     """When the next periodic reconcile is due (0 = at once)."""
 
@@ -74,6 +79,7 @@ class AutoQueue:
         automation = read_config(project.apm_dir).automation
         graph, body = load_graph(project), partial(read_body, project.apm_dir)
         if automation.task_review:
+            self.forget_errored_task_reviews()
             for node_id in due_task_reviews(graph, self.runner.store, body):
                 due[TASK_REVIEWER, node_id] = content_fingerprint(graph[node_id], body(node_id))
         if automation.feature_review:
@@ -87,6 +93,14 @@ class AutoQueue:
         for (agent, node_id), version in due.items():
             self.push(agent, node_id, version)
 
+    def forget_errored_task_reviews(self) -> None:
+        """Lets the store's error count decide whether a task review that errored runs again."""
+        for node_id, run_id in list(self.task_runs.items()):
+            latest = self.runner.store.latest_task_review(node_id)
+            if latest is not None and latest.run_id == run_id and latest.verdict == "error":
+                self.started.pop((TASK_REVIEWER, node_id), None)
+                del self.task_runs[node_id]
+
     def pump(self) -> None:
         """Starts the runs whose wait is over, oldest first, while there is room."""
         ripe = sorted((at, key, v) for key, (v, at) in self.queued.items() if at <= self.clock())
@@ -95,8 +109,10 @@ class AutoQueue:
             if self.runner.active() >= limit:
                 return
             try:
-                self.runner.start(*key, critic=False)
+                run = self.runner.start(*key, critic=False)
                 self.started[key] = version
+                if key[0] == TASK_REVIEWER and run is not None:  # None: a test's stand-in
+                    self.task_runs[key[1]] = run.id
             except RunnerBusy:  # its node is busy: try again later
                 continue
             except ApmError, KeyError:  # it no longer applies (e.g. the node is gone): drop it
@@ -115,7 +131,7 @@ class AutoQueue:
                 self.pump()
             rescan = False
             with contextlib.suppress(TimeoutError):
-                rescan = (await asyncio.wait_for(events.get(), tick_s))["type"] == "graph.changed"
+                rescan = (await asyncio.wait_for(events.get(), tick_s))["type"] in RESCAN_ON
 
 
 def due_feature_reviews(graph: Graph) -> list[NodeId]:
