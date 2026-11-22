@@ -226,7 +226,7 @@ def gather_record(
     """
     graph = load_graph(project)
     subtree = [feature, *graph.descendants(feature)]
-    history, bookkeeping, runs = _history(project, set(subtree))
+    history, bookkeeping, runs = _history(project, set(subtree), _accepted_by_apm(store, subtree))
     step = graph.review_step(feature)
     delivery = graph[step].delivery if step is not None else None
     return Record(
@@ -306,10 +306,13 @@ def _plan_log(project: Project) -> Iterator[_Commit]:
         yield _Commit(int(time), subject, "\n".join(note).strip(), trailers)
 
 
-def _history(project: Project, nodes: set[NodeId]) -> tuple[list[PlanChange], int, set[str]]:
+def _history(
+    project: Project, nodes: set[NodeId], by_apm: set[str]
+) -> tuple[list[PlanChange], int, set[str]]:
     """The plan commits that touched the feature's nodes, oldest first: those that record a
     decision (a change a person made, a breakdown accepted, a setting, a change made in a chat),
-    how many others there were, and the runs any of them came from.
+    how many others there were, and the runs any of them came from. `by_apm` are the runs whose
+    proposals APM accepted on its own: those breakdowns are nobody's decision.
     """
     shown: list[PlanChange] = []
     bookkeeping = 0
@@ -317,26 +320,43 @@ def _history(project: Project, nodes: set[NodeId]) -> tuple[list[PlanChange], in
     for commit in _plan_log(project):
         if not nodes & set(commit.trailers.get("APM-Nodes", "").split(",")):
             continue
-        if run := commit.trailers.get("APM-Run"):
+        run = commit.trailers.get("APM-Run")
+        if run:
             runs.add(run)
         actor = commit.trailers.get("APM-Actor", "user")  # settings commits name no actor
         op = commit.trailers.get("APM-Op", "")
         if actor == "user" or op in ("decompose", "settings") or actor == "agent:apm-assistant":
-            shown.append(PlanChange(commit.time, _who(actor, op), commit.subject, commit.note))
+            who = _who(actor, op, automatic=run in by_apm)
+            shown.append(PlanChange(commit.time, who, commit.subject, commit.note))
         else:
             bookkeeping += 1
     return shown, bookkeeping, runs
 
 
-def _who(actor: str, op: str) -> str:
+def _who(actor: str, op: str, *, automatic: bool) -> str:
     if actor == "user":
         return "the user"
     agent = actor.removeprefix("agent:")
     if op == "decompose":
-        return f"the user, accepting {agent}'s proposal"
+        who = "APM on its own" if automatic else "the user"
+        return f"{who}, accepting {agent}'s proposal"
     if agent == "apm-assistant":
         return "Claude in a chat, as asked there"
     return agent
+
+
+def _accepted_by_apm(store: Store, subtree: list[NodeId]) -> set[str]:
+    """The runs whose proposals APM accepted on its own: a feature review's follow-ups, with
+    `automation.accept_follow_ups` on (`apm.core.feature_review.record_review`).
+    """
+    follow_ups = store.follow_ups()
+    runs = set()
+    for node_id in subtree:
+        for proposal in store.list_proposals(node_id=node_id, status="accepted"):
+            acceptance = store.acceptance(proposal.id)
+            if proposal.run_id and acceptance and follow_ups & set(acceptance.created):
+                runs.add(proposal.run_id)
+    return runs
 
 
 # --- what people said ---
@@ -701,6 +721,10 @@ def _one_line(text: str, limit: int) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
+def _count(n: int, one: str, many: str) -> str:
+    return f"{n} {one if n == 1 else many}"
+
+
 def _quote(text: str) -> str:
     """`text` as a markdown block quote, so headings in it don't break the record's outline."""
     return "\n".join(f"> {line}" if line.strip() else ">" for line in text.strip().splitlines())
@@ -744,8 +768,12 @@ def _feature_part(record: Record) -> list[str]:
         facts.append(f"- Feature branch: `{changes.branch}`, going into `{changes.home}`")
     if record.pr:
         facts.append(f"- Pull request: {record.pr}")
-    body = _clip(record.body, BODY_LIMIT) or "(no description)"
-    return ["## The feature", "\n".join(facts), "### Its description", body]
+    return [
+        "## The feature",
+        "\n".join(facts),
+        "### Its description",
+        _body(record.body, BODY_LIMIT),
+    ]
 
 
 def _items_part(record: Record) -> list[str]:
@@ -778,12 +806,24 @@ def _items_part(record: Record) -> list[str]:
         if item.sizing:
             facts.append(f"task review: {item.sizing}")
         heading = f"{level} {handle(item.node_id)} “{item.title}”"
-        parts += [heading, "; ".join(facts) + ".", _body(item.body)]
+        parts += [heading, "; ".join(facts).rstrip(".") + ".", _body(item.body)]
     return parts
 
 
-def _body(text: str) -> str:
-    return _quote(_clip(text, NODE_LIMIT)) if text.strip() else "(no description)"
+def _body(text: str, limit: int = NODE_LIMIT) -> str:
+    """A node's description, quoted, without the empty sections of the template."""
+    text = _without_empty_sections(text)
+    return _quote(_clip(text, limit)) if text else "(no description)"
+
+
+def _without_empty_sections(text: str) -> str:
+    """`## Notes` with nothing under it says nothing: drop such headings."""
+    kept = []
+    for part in re.split(r"(?m)^(?=#{1,6} )", text.strip()):
+        part = part.strip()
+        if part and not (part.startswith("#") and len(part.splitlines()) == 1):
+            kept.append(part)
+    return "\n\n".join(kept)
 
 
 def _said_part(record: Record, *, replies: int, typed: int) -> list[str]:
@@ -873,8 +913,8 @@ def _history_part(record: Record) -> list[str]:
         lines.append(line)
     if record.bookkeeping:
         lines.append(
-            f"- ({record.bookkeeping} more commits were APM's and the agents' own bookkeeping:"
-            " statuses, deliveries, review notes)"
+            f"- ({_count(record.bookkeeping, 'more commit was', 'more commits were')} APM's and"
+            " the agents' own bookkeeping: statuses, deliveries, review notes)"
         )
     return [*parts, "\n".join(lines)]
 
