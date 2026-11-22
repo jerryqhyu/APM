@@ -2,6 +2,8 @@
 from the feature's pull request, or by hand. A fake `claude`, real git and a fake `gh`.
 """
 
+import asyncio
+
 import pytest
 
 from apm.core.delivery import choose_base
@@ -243,7 +245,13 @@ async def test_one_report_of_a_feature_at_a_time(
     run = harness.runner.start(REPORTER, node)
     with pytest.raises(RunnerBusy, match="already running on this feature"):
         harness.runner.start(REPORTER, node)
+    for _ in range(1000):  # let it get as far as Claude: the checkout is made by then
+        if fake_claude.calls:
+            break
+        await asyncio.sleep(0.01)
     await harness.runner.cancel(run.id)
+    assert harness.store.get_run(run.id).status == "cancelled"
+    assert harness.store.latest_report(node) is None
 
 
 async def test_a_report_needs_a_feature_with_work(
