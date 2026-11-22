@@ -208,7 +208,7 @@ APM checks this before a task is built. A **task review** (the `apm-task-reviewe
 
 **The lock.** While its review runs, a task can't be edited, moved, merged, deleted, decomposed or implemented. The UI shows **Under review** and disables those actions; the API, the terminal and MCP refuse with "under review". The lock ends when the review finishes, fails or is cancelled, and a lock left behind by a run that died doesn't count.
 
-**The gate.** Implement on a To do task needs a **Pass** for its current content. Edit a passed task's title, kind or description and it needs a new review. Tasks already In progress or Done aren't gated, and neither are review steps.
+**The gate.** Implement on a To do task needs a **Pass** for its current content. Edit a passed task's title, kind or description and it needs a new review. Tasks already In progress or Done aren't gated, and neither are review steps. The gate holds even with `automation.task_review` off; that switch only stops the reviews `apm serve` starts on its own (see [Automation](#automation)).
 
 ## Having Claude build a node
 
@@ -334,7 +334,7 @@ While `apm serve` is up it can take a feature from review to pull request on its
 
 | Key | Default | What it does |
 | --- | --- | --- |
-| `task_review` | `true` | Review a task when it is created or its title, kind or description changes, and review unreviewed To do tasks when `apm serve` starts. |
+| `task_review` | `true` | Review a task when it is created or its title, kind or description changes, and review unreviewed To do tasks when `apm serve` starts. Turning it off stops only these automatic reviews: the Implement gate, the review state and the **Review task** button stay, so you review a task by hand before building it. |
 | `reconcile` | `true` | Reconcile, and retarget open pull requests, every `reconcile_interval_s` seconds. |
 | `reconcile_interval_s` | `300` | Seconds between those reconciles. Must be above 0. |
 | `feature_review` | `true` | Start a feature's review once its review step becomes Ready. |
