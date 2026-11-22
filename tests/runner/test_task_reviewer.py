@@ -2,6 +2,7 @@
 
 import asyncio
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -250,3 +251,27 @@ def test_a_restart_leaves_a_lock_another_run_holds(project: Project) -> None:
     Runner(project, store)
     assert under_review(project.apm_dir, task)
     assert store.get_run(orphan.id).status == "failed"
+
+
+@pytest.mark.parametrize("mode", ["", "fail", "bad-verdict"])
+async def test_the_run_finishes_after_the_verdict_is_stored_and_the_lock_released(
+    project: Project, fake_claude: FakeClaude, mode: str
+) -> None:
+    fake_claude.mode(mode)
+    harness = Harness(project)
+    task = create_nodes(project, [NewNode(title="Parse lines")]).created[0]
+    seen: list[tuple[str, bool, str | None]] = []
+
+    def on_event(event: dict[str, Any]) -> None:
+        if event["type"] == "run.finished":
+            stored = harness.store.latest_task_review(task)
+            status = harness.store.get_run(event["run"]["id"]).status
+            seen.append(
+                (status, under_review(project.apm_dir, task), stored.verdict if stored else None)
+            )
+
+    runner = Runner(project, harness.store, on_event)
+    run = runner.start("apm-task-reviewer", task)
+    await runner.wait(run.id)
+    expected = ("succeeded", False, "pass") if mode == "" else ("failed", False, "error")
+    assert seen == [expected]

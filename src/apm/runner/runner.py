@@ -592,29 +592,40 @@ class Runner:
         """
         node = load_graph(self.project)[run.node_id]
         fingerprint = content_fingerprint(node, read_body(self.project.apm_dir, run.node_id))
-        answer = await self._execute(spec, config, run, **kw)
-        try:
-            if answer is None:
-                raise VerdictRefused(self.store.get_run(run.id).error or "the run failed")
-            verdict = parse_task_verdict(answer)
-        except VerdictRefused as err:
+        said: list[tuple[str, str]] = []
+
+        def conclude(answer: Any, error: str | None) -> str | None:
+            """Stores the verdict and releases the lock before the run is reported finished, so
+            nothing sees a finished review on a task still under review. Returns why the run
+            failed, if its answer is no verdict.
+            """
+            try:
+                if answer is None:
+                    raise VerdictRefused(error or "the run failed")
+                verdict = parse_task_verdict(answer)
+            except VerdictRefused as err:
+                review = TaskReview(run.node_id, fingerprint, "error", {"error": str(err)}, run.id)
+                self.store.add_task_review(review)
+                self._release_review_lock(run)
+                said.append(("warning", f"APM couldn't record a task verdict: {err}"))
+                return str(err)
+            data = verdict.model_dump(mode="json")
             self.store.add_task_review(
-                TaskReview(run.node_id, fingerprint, "error", {"error": str(err)}, run.id)
+                TaskReview(run.node_id, fingerprint, verdict.verdict, data, run.id)
             )
-            if answer is not None:
-                self.store.finish_run(run.id, "failed", error=str(err))
-                self._emit({"type": "run.finished", "run": asdict(self.store.get_run(run.id))})
-            self._notice(run.id, "warning", f"APM couldn't record a task verdict: {err}")
-            return
-        data = verdict.model_dump(mode="json")
-        self.store.add_task_review(
-            TaskReview(run.node_id, fingerprint, verdict.verdict, data, run.id)
-        )
-        if verdict.verdict == "too_big":
-            split = {"rationale": verdict.summary, "children": data["children"], "warnings": []}
-            proposal = self.store.create_proposal(node_id=run.node_id, data=split, run_id=run.id)
-            self._emit({"type": "proposal.created", "proposal": proposal_dict(proposal)})
-        self._notice(run.id, "warning" if verdict.verdict != "pass" else "info", _said(verdict))
+            self._release_review_lock(run)
+            if verdict.verdict == "too_big":
+                split = {"rationale": verdict.summary, "children": data["children"], "warnings": []}
+                proposal = self.store.create_proposal(
+                    node_id=run.node_id, data=split, run_id=run.id
+                )
+                self._emit({"type": "proposal.created", "proposal": proposal_dict(proposal)})
+            said.append(("warning" if verdict.verdict != "pass" else "info", _said(verdict)))
+            return None
+
+        await self._execute(spec, config, run, conclude=conclude, **kw)
+        for level, text in said:
+            self._notice(run.id, level, text)
 
     def _notice(self, run_id: str, level: str, text: str) -> None:
         """A line from APM itself in a run's conversation."""
@@ -631,9 +642,11 @@ class Runner:
         resume: bool = False,
         worktree: str | None = None,
         cwd: Path | None = None,
+        conclude: Callable[[Any, str | None], str | None] | None = None,
     ) -> dict[str, Any] | None:
         """Runs one `claude` process to the end. Returns its structured answer, if it has one and
-        the run succeeded.
+        the run succeeded. `conclude`, if given, sees the answer (None if the run failed) and the
+        error before the run is finished, and returns why the run fails, if it should.
         """
         status: RunStatus = "failed"
         error: str | None = None
@@ -693,6 +706,12 @@ class Runner:
                 del self._requests[request.id]
             if stderr_task is not None:
                 stderr_task.cancel()
+            if conclude is not None and status != "cancelled":
+                answer = result.get("structured_output") if status == "succeeded" else None
+                if status == "succeeded" and not isinstance(answer, dict):
+                    answer, error = None, "the agent returned no structured answer"
+                if refused := conclude(answer, error):
+                    status, error = "failed", refused
             finished = self.store.finish_run(
                 run.id,
                 status,
