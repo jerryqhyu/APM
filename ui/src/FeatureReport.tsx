@@ -6,7 +6,7 @@ import { useCallback, useEffect, useState } from "react";
 import { getReport } from "./api";
 import { useLiveEvents } from "./live";
 import { Markdown } from "./Markdown";
-import type { NodeView, ReportDetail, ReportStatus } from "./types";
+import type { FeatureSettings, NodeView, ReportDetail, ReportStatus } from "./types";
 import { Spinner } from "./ui";
 import { errorText, timeAgo } from "./util";
 
@@ -36,8 +36,17 @@ export function WriteReportRow({ feature, step, onWrite }: { feature: NodeView; 
   );
 }
 
-/** Where the feature's report stands, with its link on GitHub and the report itself. */
-export function FeatureReportSection({ featureId }: { featureId: string }) {
+/** Where the feature's report stands, with its link on GitHub and the report itself. `settings`
+ * are the feature's own, from its details: they change without a report run, so the line saying
+ * whether and how APM will write the report follows them rather than the last fetch.
+ */
+export function FeatureReportSection({
+  featureId,
+  settings,
+}: {
+  featureId: string;
+  settings?: Pick<FeatureSettings, "report" | "report_detail">;
+}) {
   const [status, setStatus] = useState<ReportStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
@@ -65,6 +74,8 @@ export function FeatureReportSection({ featureId }: { featureId: string }) {
   });
 
   const report = status?.report ?? null;
+  const automatic = settings?.report ?? status?.automatic ?? true;
+  const detail = settings?.report_detail ?? status?.detail ?? "standard";
   return (
     <section className="report">
       <div className="section-head">
@@ -85,8 +96,8 @@ export function FeatureReportSection({ featureId }: { featureId: string }) {
       {status && !report && status.state !== "writing" && (
         <p className="hint">
           Not written yet.{" "}
-          {status.automatic
-            ? `APM writes it once the feature's review passes, at ${DETAIL[status.detail].toLowerCase()} detail.`
+          {automatic
+            ? `APM writes it once the feature's review passes, as a ${DETAIL[detail].toLowerCase()} report.`
             : "Reports are off for this feature (Settings): APM won't write one on its own."}{" "}
           Press Write report in Actions to write it now.
         </p>

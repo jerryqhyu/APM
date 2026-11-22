@@ -117,7 +117,7 @@ export function NodeDetails({ detail, nodes, actions }: { detail: NodeDetail; no
       {detail.children > 0 && (
         <FeatureSettingsSection detail={detail} onSave={actions.saveSettings} onClear={actions.clearSettings} onGoTo={actions.goTo} />
       )}
-      {detail.children > 0 && <FeatureReportSection featureId={detail.id} />}
+      {detail.children > 0 && <FeatureReportSection featureId={detail.id} settings={detail.settings?.values} />}
       {eager && <EagerSection eager={eager} onRedo={actions.eagerRedo} onGoTo={actions.goTo} />}
 
       <section>
