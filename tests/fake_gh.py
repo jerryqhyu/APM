@@ -7,7 +7,8 @@ It answers the REST calls APM makes:
 - `gh api -X POST repos/<o>/<r>/pulls ...`: a new pull request, `https://github.com/o/r/pull/7`.
 - `gh api [--hostname H] repos/<o>/<r>/pulls/<n>`: one pull request, from the JSON file at
   FAKE_GH_PRS (see `FakeGh.add`); 404 if it isn't there.
-- `gh api -X PATCH repos/<o>/<r>/pulls/<n> -f base=<branch>`: retargets it in that file.
+- `gh api -X PATCH repos/<o>/<r>/pulls/<n> -f base=<branch>`: retargets it in that file; with
+  `-f body=<text>`, rewrites its description there.
 - FAKE_GH=fail: every call fails the way GitHub refuses a pull request with no changes.
 
 Every call's arguments are appended to FAKE_GH_LOG as one JSON line.
@@ -76,6 +77,9 @@ def _one_pr(args: list[str]) -> int | None:
     if method == "PATCH" and "base" in fields:
         prs[path]["base"]["ref"] = fields["base"]
         store.write_text(json.dumps(prs))
+    if method == "PATCH" and "body" in fields:
+        prs[path]["body"] = fields["body"]
+        store.write_text(json.dumps(prs))
     print(json.dumps(prs[path]))
     return 0
 
@@ -122,6 +126,7 @@ class FakeGh:
         merged: bool = False,
         merge_commit: str | None = None,
         repo: str = "o/r",
+        body: str = "",
     ) -> str:
         """Makes pull request `number` exist, as `gh api .../pulls/<n>` will return it. Returns
         its URL.
@@ -135,6 +140,7 @@ class FakeGh:
             "merged": merged,
             "merge_commit_sha": merge_commit,
             "base": {"ref": base},
+            "body": body,
         }
         self.prs.write_text(json.dumps(prs))
         return url

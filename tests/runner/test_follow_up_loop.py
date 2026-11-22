@@ -12,6 +12,7 @@ from apm.core.git import git
 from apm.core.model import NodeId, Status
 from apm.core.ops import NewNode, attach_delivery, create_nodes, set_status
 from apm.core.project import Project, load_graph
+from apm.core.report import REPORTER
 from apm.runner.auto import IMPLEMENTER, TASK_REVIEWER, AutoQueue
 from apm.runner.runner import FEATURE_REVIEWER, Runner
 from tests.conftest import CodeRepo
@@ -85,10 +86,18 @@ async def test_gaps_are_followed_up_built_merged_and_reviewed_again(
     assert queue.reconcile()
     graph = load_graph(project)
     assert (graph[fix].status, graph[report].status) == (Status.DONE, Status.DONE)
-    assert await turn() == [(FEATURE_REVIEWER, step)]
+    # It passes: the feature's pull request opens, and its report is written onto the branch.
+    assert await turn() == sorted([(FEATURE_REVIEWER, step), (REPORTER, feature_node)])
     prs = [c for c in fake_gh.calls if c[:3] == ["api", "-X", "POST"]]
     assert (fake_gh.field(prs[-1], "base"), fake_gh.field(prs[-1], "head")) == ("main", branch)
     assert load_graph(project)[step].status is Status.IN_PROGRESS
+    written = harness.store.latest_report(feature_node)
+    assert written is not None
+    assert written.sha == git(code_repo.dir, ["rev-parse", f"origin/{branch}"]).strip()
+    # The record had the whole story: both reviews, and the follow-ups that closed the gaps.
+    prompt = fake_claude.calls[-1]["prompt"]
+    assert "Incomplete" in prompt
+    assert "“Handle errors” (done" in prompt
     assert await turn() == []
     assert load_graph(project)[feature_node].status is not Status.DONE  # until its PR merges
 
