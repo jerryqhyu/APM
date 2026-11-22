@@ -153,7 +153,7 @@ class Runner:
         if spec.name == FEATURE_REVIEWER:
             check_reviewable(graph, node_id, branch)
         mode = check_mode(mode, config)
-        prompt = build_prompt(spec, graph, node_id, message)
+        prompt = build_prompt(spec, graph, node_id, message, config=config)
         run = self._create_run(spec, node_id, prompt, mode=mode, config=config)
         worktree = worktree_name(graph, node_id) if spec.worktree else None
         pipeline = self._pipeline(
@@ -185,7 +185,7 @@ class Runner:
             graph = load_graph(self.project)
             if previous.node_id and previous.node_id not in graph:
                 raise RunRefused("the node this conversation was about no longer exists")
-            message = build_prompt(spec, graph, previous.node_id, message)
+            message = build_prompt(spec, graph, previous.node_id, message, config=config)
         run = self._create_run(
             spec,
             previous.node_id,
@@ -543,9 +543,9 @@ class Runner:
             base = await asyncio.to_thread(choose_base, self.project, run.node_id)
         except Exception:  # a base is advice: never a reason not to run
             base = Base(None)
-        graph = load_graph(self.project)
+        graph, config = load_graph(self.project), read_config(self.project.apm_dir)
         return self.store.set_prompt(
-            run.id, build_prompt(spec, graph, run.node_id, message, base=base)
+            run.id, build_prompt(spec, graph, run.node_id, message, config=config, base=base)
         )
 
     async def _ensure_pr(self, run: Run) -> None:

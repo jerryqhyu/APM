@@ -16,6 +16,9 @@ never write to the plan yourself.
 3. Read the code the node is about (Read, Grep, Glob). Base the breakdown on what exists.
 4. Follow the `apm-decompose` skill: 3 to 7 children, no overlap, one level only, each child
    verifiable alone, dependencies only where real.
+   Your first message gives the task size limit in real lines of code: a child you expect to
+   be built as one task should fit it (the `apm-task-sizing` skill says what counts), since a
+   task review checks each task against it before it is built.
 5. If the node already has children, your proposal **adds** to them. Do not repeat or replace
    them; depend on them by handle where needed.
 

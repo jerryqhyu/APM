@@ -16,6 +16,12 @@ def frontmatter(path: Path) -> dict[str, str]:
     return dict(line.split(": ", 1) for line in head.strip().splitlines())
 
 
+def test_the_agent_takes_its_limit_from_the_prompt() -> None:
+    text = AGENT.read_text()
+    assert "the limit your first message gives" in text
+    assert "50 real lines" not in text
+
+
 def test_the_agent_is_read_only_and_uses_the_sizing_skill() -> None:
     meta = frontmatter(AGENT)
     assert meta["name"] == "apm-task-reviewer"
@@ -28,7 +34,10 @@ def test_the_agent_is_read_only_and_uses_the_sizing_skill() -> None:
 def test_the_skill_defines_real_lines_and_the_limit() -> None:
     assert frontmatter(SKILL)["name"] == "apm-task-sizing"
     text = SKILL.read_text().lower()
-    assert "at most 50 real lines" in text
+    # The limit is the one the prompt gives (the project's setting), 50 when none is given.
+    assert "use the limit your prompt gives for the task" in text
+    assert "features.task_max_lines" in text
+    assert "default: **at most 50 real lines**" in text
     excluded = text.split("## what counts as a real line", 1)[1].split("##", 1)[0]
     for word in ("blank lines", "comments", "imports", "tests", "docs", "skill and agent markdown"):
         assert word in excluded

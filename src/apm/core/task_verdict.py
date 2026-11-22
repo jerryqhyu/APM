@@ -1,7 +1,9 @@
 """What the task reviewer returns: one verdict on whether a task is small enough to build.
 
-A task should need at most about 50 lines of real source code (the `apm-task-sizing` skill says
-what counts). The reviewer reads the task and the code it touches and answers with exactly one of:
+A task should need at most the task size limit in lines of real source code: the project's
+`features.task_max_lines`, 50 by default (`apm.core.settings.feature_settings` works out the limit
+for a task, and the `apm-task-sizing` skill says what counts). The reviewer reads the task and the
+code it touches and answers with exactly one of:
 
 - `pass`: small enough to build as it is.
 - `too_big`: with a split into two or more smaller tasks, shaped like a decomposer's children.

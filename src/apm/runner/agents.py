@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
-from apm.core.config import ApmConfig
+from apm.core.config import ApmConfig, FeaturesConfig
 from apm.core.delivery import Base
 from apm.core.errors import ApmError
 from apm.core.feature_review import FEATURE_REVIEW_SCHEMA, Target
@@ -18,6 +18,7 @@ from apm.core.ids import handle
 from apm.core.model import NodeId, Status
 from apm.core.project import Project
 from apm.core.proposals import DECOMPOSITION_SCHEMA, REVIEW_SCHEMA
+from apm.core.settings import feature_settings
 from apm.core.store import PROJECT
 from apm.core.task_verdict import TASK_VERDICT_SCHEMA
 
@@ -132,9 +133,9 @@ AGENTS: dict[str, AgentSpec] = {
         AgentSpec(
             name="apm-task-reviewer",
             label="Review task",
-            summary="Check that this task is small enough to read in five minutes: at most about"
-            " 50 lines of real code. Too big, and it proposes a split; too vague, and it says what"
-            " is missing.",
+            summary="Check that this task is small enough to read in five minutes: at most the"
+            " project's task size limit (50 lines of real code by default). Too big, and it"
+            " proposes a split; too vague, and it says what is missing.",
             scope="read",
             tools=READ_TOOLS,
             mcp_tools=READ_MCP,
@@ -203,36 +204,61 @@ def worktree_name(graph: Graph, node_id: NodeId) -> str:
 
 
 def build_prompt(
-    spec: AgentSpec, graph: Graph, node_id: NodeId, message: str, *, base: Base | None = None
+    spec: AgentSpec,
+    graph: Graph,
+    node_id: NodeId,
+    message: str,
+    *,
+    config: ApmConfig | None = None,
+    base: Base | None = None,
 ) -> str:
     """The first message of a run: what the user typed, with where they are looking. An
-    implementer's also says which branch to start from and open its pull request against.
+    implementer's also says which branch to start from and open its pull request against. The
+    decomposer, the implementer and the task reviewer are told the task size limit that applies
+    (`feature_settings`; the default without `config`).
     """
     message = message.strip()
     if node_id == PROJECT:
         return message or "Give me a short overview of the plan: where it stands and what's next."
     node = graph[node_id]
     where = f'node {handle(node_id)} ("{node.title}") of the APM plan'
+    limit = task_limit(config, graph, node_id)
     if spec.name == "apm-decomposer":
-        prompt = f"Decompose {where} into child nodes and return the proposal."
+        prompt = (
+            f"Decompose {where} into child nodes and return the proposal. Size the tasks you"
+            f" propose to the task size limit here, {limit} real lines of code each: a task review"
+            " checks every task against it before it is built."
+        )
         return prompt + (f"\n\nGuidance from the user:\n{message}" if message else "")
     if spec.name == "apm-implementer":
         prompt = (
             f"Implement {where}. Its full id is {node_id}; use it in the APM-Node trailer.\n"
             f"Work on branch apm/{handle(node_id)}-{slug(node.title)}.\n"
-            f"{base_instructions(graph, base)}"
+            f"{base_instructions(graph, base)}\n"
+            f"Aim to keep the change within {limit} real lines of code, the task size limit its"
+            " task review applied."
         )
         return prompt + (f"\n\nGuidance from the user:\n{message}" if message else "")
     if spec.name == "apm-feature-reviewer":
         prompt = f"Review the feature in {where}: is it fully built?"
         return prompt + (f"\n\nGuidance from the user:\n{message}" if message else "")
     if spec.name == "apm-task-reviewer":
-        prompt = f"Review the task in {where}: size it with the apm-task-sizing skill."
+        prompt = (
+            f"Review the task in {where}: size it with the apm-task-sizing skill. The limit for"
+            f" this task is {limit} real lines of code."
+        )
         return prompt + (f"\n\nGuidance from the user:\n{message}" if message else "")
     if spec.name == "apm-assistant":
         question = message or "Summarise this node: what it is for, its state, and what's next."
         return f"The user is looking at {where}.\n\n{question}"
     raise RunRefused(f"{spec.name} can't be started directly")
+
+
+def task_limit(config: ApmConfig | None, graph: Graph, node_id: NodeId) -> int:
+    """The task size limit for a node, in real lines of code: APM's default without `config`."""
+    if config is None:
+        return FeaturesConfig().task_max_lines
+    return feature_settings(config, graph, node_id).task_max_lines
 
 
 def base_instructions(graph: Graph, base: Base | None) -> str:
