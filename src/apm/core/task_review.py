@@ -45,10 +45,11 @@ def implement_blocker(
     graph: Graph, store: Store, config: ApmConfig, node_id: NodeId, body: Callable[[NodeId], str]
 ) -> str | None:
     """Why Implement may not start on this node now, or None: a To do task needs a passing
-    review of the content it has now, while `automation.task_review` is on. Every entry point
-    (UI, API, CLI, MCP, automation) goes through this, by way of `check_startable`.
+    review of the content it has now. Every entry point (UI, API, CLI, MCP, automation) goes
+    through this, by way of `check_startable`. The gate holds whatever `config` says:
+    `automation.task_review` only switches off the reviews `apm serve` starts on its own.
     """
-    if not config.automation.task_review or graph[node_id].status != Status.TODO:
+    if graph[node_id].status != Status.TODO:
         return None
     latest = store.latest_task_review(node_id)
     if latest is None or latest.fingerprint != content_fingerprint(graph[node_id], body(node_id)):
@@ -59,14 +60,11 @@ def implement_blocker(
 
 
 def review_state(
-    graph: Graph, store: Store, config: ApmConfig, node_id: NodeId, body: str, running: bool
-) -> dict[str, Any] | None:
+    graph: Graph, store: Store, node_id: NodeId, body: str, running: bool
+) -> dict[str, Any]:
     """What the UI shows of a task's review: `state` (none, running, pass, too_big, unclear,
-    error, or stale when the content changed since), plus what the reviewer returned. None while
-    `automation.task_review` is off.
+    error, or stale when the content changed since), plus what the reviewer returned.
     """
-    if not config.automation.task_review:
-        return None
     latest = store.latest_task_review(node_id)
     if running or latest is None:
         return {"state": "running" if running else "none"}

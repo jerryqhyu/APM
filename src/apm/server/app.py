@@ -206,7 +206,7 @@ def create_app(
             **node_view(graph, node_id),
             "body": body,
             "under_review": locked,
-            "review": review_state(graph, store, config, node_id, body, locked),
+            "review": review_state(graph, store, node_id, body, locked),
             "implement_blocker": implement_blocker(
                 graph, store, config, node_id, partial(read_body, project.apm_dir)
             ),

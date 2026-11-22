@@ -620,5 +620,5 @@ def test_node_detail_reports_the_task_review(client: TestClient, project: Projec
     config = project.apm_dir / "apm.yaml"
     config.write_text(config.read_text() + "automation:\n  task_review: false\n")
     detail = client.get(f"/api/nodes/{node}").json()
-    assert detail["review"] is None
-    assert detail["implement_blocker"] is None
+    assert detail["review"] == {"state": "running"}  # the review state stays when it is off
+    assert "not been reviewed" in detail["implement_blocker"]  # and so does the gate

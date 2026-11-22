@@ -89,9 +89,12 @@ def test_implement_is_gated_on_a_passing_review_of_todo_tasks_only(tmp_path: Pat
     assert implement_blocker(graph, store, config(), B, lambda _: "edited") is not None
 
 
-def test_implement_is_not_gated_when_task_review_is_off(tmp_path: Path) -> None:
-    store = Store(tmp_path)
+def test_implement_is_gated_the_same_when_task_review_is_off(tmp_path: Path) -> None:
+    store, off = Store(tmp_path), config(task_review=False)
     graph = Graph([node(B)])
-    assert implement_blocker(graph, store, config(task_review=False), B, body) is None
-    review(store, graph[B], "unclear")
-    assert implement_blocker(graph, store, config(task_review=False), B, body) is None
+    for verdict in [None, "unclear", "pass"]:
+        if verdict:
+            review(store, graph[B], verdict)
+        expected = implement_blocker(graph, store, config(), B, body)
+        assert implement_blocker(graph, store, off, B, body) == expected
+    assert implement_blocker(graph, store, off, B, lambda _: "edited") is not None
