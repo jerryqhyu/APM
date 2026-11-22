@@ -23,6 +23,7 @@ from typing import Any
 
 from apm.core.config import ApmConfig, read_config
 from apm.core.delivery import Base, choose_base, ensure_pull_request, note_missing_pr
+from apm.core.errors import ApmError
 from apm.core.feature_review import (
     ReviewRefused,
     Target,
@@ -41,12 +42,24 @@ from apm.core.model import NodeId, Status
 from apm.core.ops import set_status
 from apm.core.project import Project, load_graph
 from apm.core.proposals import ProposalError, parse_decomposition, parse_review
+from apm.core.report import REPORTER, ReportAnswer, ReportRefused, parse_answer
+from apm.core.report_branch import (
+    ReportTarget,
+    check_reportable,
+    feature_pr,
+    link_report,
+    prepare_report,
+    report_subject,
+    report_url,
+    save_report,
+)
 from apm.core.review_lock import (
     read_review_lock,
     release_review_lock,
     take_review_lock,
     under_review,
 )
+from apm.core.settings import feature_settings
 from apm.core.store import PROJECT, Proposal, Run, RunStatus, Store, TaskReview, content_fingerprint
 from apm.core.task_review import implement_blocker
 from apm.core.task_verdict import TaskVerdict, VerdictRefused, parse_task_verdict
@@ -67,6 +80,8 @@ from apm.runner.agents import (
 
 FEATURE_REVIEWER = "apm-feature-reviewer"
 TASK_REVIEWER = "apm-task-reviewer"
+REPORT_TIMEOUT_S = 30 * 60.0
+"""How long the report written after a passing review may take: nobody may be watching it."""
 
 # Kept from the stream: what a transcript needs. Token deltas, rate-limit notices and the like
 # are dropped.
@@ -141,6 +156,8 @@ class Runner:
         if spec.name == FEATURE_REVIEWER and node_id in graph:
             # Started on a feature, it reviews through the feature's review step.
             node_id = review_subject(graph, node_id)[1] or node_id
+        if spec.name == REPORTER and node_id in graph:
+            node_id = report_subject(graph, node_id)  # a review step's report is its feature's
         # Under review says more than "not reviewed yet", so the lock is checked before the gate.
         locked = spec.name in ("apm-implementer", "apm-decomposer")
         if locked and under_review(self.project.apm_dir, node_id):
@@ -152,6 +169,9 @@ class Runner:
         )
         if spec.name == FEATURE_REVIEWER:
             check_reviewable(graph, node_id, branch)
+        if spec.name == REPORTER:
+            check_reportable(graph, node_id)
+            self._refuse_second_report(node_id)
         mode = check_mode(mode, config)
         prompt = build_prompt(spec, graph, node_id, message, config=config)
         run = self._create_run(spec, node_id, prompt, mode=mode, config=config)
@@ -335,6 +355,9 @@ class Runner:
             run, cwd = prepared
         if spec.name == TASK_REVIEWER:
             await self._review_task(spec, config, run, resume=resume)
+            return
+        if spec.name == REPORTER:
+            await self._report(spec, config, run, resume=resume, cwd=cwd, message=message)
             return
         answer = await self._execute(spec, config, run, resume=resume, worktree=worktree, cwd=cwd)
         if implementer and answer is not None:
@@ -532,6 +555,9 @@ class Runner:
             self._notice(run.id, "warning", text)
         if recorded.proposal is not None:
             self._emit({"type": "proposal.created", "proposal": proposal_dict(recorded.proposal)})
+        if recorded.complete and concluded is not None and not concluded.landed:
+            pr_open = concluded.pr is not None and concluded.pr.pr is not None
+            await self._report_after_review(run, target, pr_open=pr_open)
 
     # --- an implementer's base branch and pull request ---
 
@@ -582,6 +608,170 @@ class Runner:
                     f" Branch `{outcome.branch}` is pushed; the node's Notes say what is missing."
                 )
             self._notice(run.id, "warning", text)
+
+    # --- a feature report ---
+
+    def _refuse_second_report(self, feature: NodeId) -> None:
+        """One report of a feature at a time, counting the one written after its review."""
+        for run in self.store.list_runs(node_id=feature, status="running"):
+            alive = run.pid is not None and (run.pid == os.getpid() or pid_alive(run.pid))
+            if run.agent == REPORTER and alive:
+                raise RunnerBusy("Write report is already running on this feature")
+
+    async def _report_after_review(
+        self, review: Run, target: dict[str, Any], *, pr_open: bool
+    ) -> None:
+        """After a passing review, once its pull request is open, the feature's report: in the
+        same pipeline, so it takes no other room and Stop covers it, but never holding the pull
+        request up. Nothing with `features.report` off for the feature. If the report fails, the
+        review's conversation says so and how to write it by hand.
+        """
+        feature = str(target.get("feature") or "")
+        try:
+            graph, config = load_graph(self.project), read_config(self.project.apm_dir)
+            if not feature_settings(config, graph, feature).report:
+                return
+            check_reportable(graph, feature)
+        except ApmError, KeyError:  # gone meanwhile, or not a feature: nothing to report on
+            return
+        spec = AGENTS[REPORTER]
+        prompt = build_prompt(spec, graph, feature, "", config=config)
+        # Nobody may be watching, so it never stops to ask: like the critic, `dontAsk`.
+        run = self._create_run(spec, feature, prompt, mode="dontAsk")
+        self._slots[run.id] = self._slots.get(review.id, "")
+        self._notice(
+            review.id,
+            "info",
+            "APM is writing the feature report: follow it in the feature's conversation.",
+        )
+        try:
+            missing = await self._report(spec, config, run, timeout=REPORT_TIMEOUT_S)
+        except Exception as err:  # the review and its pull request stand: report, don't raise
+            missing = str(err)
+        if missing is None:
+            self._notice(
+                review.id, "info", "The feature report is written: see the feature's conversation."
+            )
+            return
+        text = f"No feature report: {missing}."
+        if pr_open:
+            text += " The pull request is open without it."
+        text += (
+            f" Write it by hand with **Write report** on the feature, or"
+            f" `apm report {handle(feature)}`."
+        )
+        self._notice(review.id, "warning", text)
+
+    async def _report(
+        self,
+        spec: AgentSpec,
+        config: ApmConfig,
+        run: Run,
+        *,
+        resume: bool = False,
+        cwd: Path | None = None,
+        message: str | None = None,
+        timeout: float | None = None,
+    ) -> str | None:
+        """Writes a feature report: works out the feature branch and gathers the record (git, so
+        not on the event loop), runs the reporter on a checkout of the branch, then commits the
+        report there and links it from the feature's pull request. A later turn of the same
+        conversation rewrites it. Returns why there is no report, or None once it is committed.
+        """
+        if resume:
+            event = self._conversation_event(run.id, "apm_report_target")
+            if event is None:
+                self._notice(
+                    run.id,
+                    "warning",
+                    "APM lost track of which branch this report is for. Start a new report.",
+                )
+                return "APM lost track of which branch the report is for"
+            target, worktree = ReportTarget.from_event(event), cwd
+        else:
+            try:
+                prepared = await asyncio.to_thread(
+                    prepare_report, self.project, self.store, run.node_id, message or ""
+                )
+            except Exception as err:  # refused, or git failed: the user can fix either
+                failed = self.store.finish_run(run.id, "failed", error=str(err))
+                self._emit({"type": "run.finished", "run": asdict(failed)})
+                return str(err)
+            target, worktree = prepared.target, prepared.worktree
+            run = self.store.set_prompt(run.id, prepared.prompt)
+            self._record(run.id, target.as_event())
+            self._notice(
+                run.id,
+                "info",
+                f"Writing the report from `{target.branch}` at `{target.short}`, at"
+                f" {target.detail} detail, into `{target.path}`.",
+            )
+        work = self._execute(spec, config, run, resume=resume, cwd=worktree)
+        try:
+            answer = await (asyncio.wait_for(work, timeout) if timeout else work)
+        except TimeoutError:
+            why = (
+                f"the reporter took longer than {(timeout or 0) / 60:g} minutes, so APM stopped it"
+            )
+            failed = self.store.finish_run(run.id, "failed", error=why)
+            self._emit({"type": "run.finished", "run": asdict(failed)})
+            return why
+        if answer is None:
+            return self.store.get_run(run.id).error or "the reporter failed"
+        try:
+            report = parse_answer(answer)
+        except ReportRefused as err:
+            failed = self.store.finish_run(run.id, "failed", error=str(err))
+            self._emit({"type": "run.finished", "run": asdict(failed)})
+            return str(err)
+        return await self._save_report(run, target, report, worktree)
+
+    async def _save_report(
+        self, run: Run, target: ReportTarget, answer: ReportAnswer, worktree: Path | None
+    ) -> str | None:
+        """Commits the report and links it from the feature's pull request, and says so."""
+        try:
+            saved = await asyncio.to_thread(
+                save_report, self.project, self.store, target, answer, run=run.id, worktree=worktree
+            )
+        except Exception as err:  # the run is done: report, don't raise
+            self._notice(run.id, "warning", f"APM couldn't keep the report: {err}")
+            return f"APM couldn't keep the report: {err}"
+        self._emit({"type": "report.written", "node_id": target.feature})
+        if saved.sha is None:
+            self._notice(
+                run.id,
+                "warning",
+                f"APM couldn't commit the report to `{target.branch}`: {saved.error}. It is kept:"
+                " the feature's Details show it.",
+            )
+            return f"APM couldn't commit it to {target.branch}: {saved.error}"
+        pr = feature_pr(load_graph(self.project), target.feature)
+        url = report_url(self.project, target.branch, target.path, pr)
+        where = f"[{target.path}]({url})" if url else f"`{target.path}`"
+        text = f"**Report written**: committed to `{target.branch}` as `{saved.sha[:7]}`, {where}."
+        level = "info"
+        if pr is None:
+            text += " The feature's pull request will contain it once it is opened."
+        else:
+            try:
+                await asyncio.to_thread(link_report, self.project, pr, target.path, url)
+                text += f" Its pull request links it: {pr}"
+            except Exception as err:  # the report is on the branch, in the pull request: say so
+                level = "warning"
+                text += f" It is in the pull request ({pr}), but APM couldn't link it there: {err}."
+        self._notice(run.id, level, text)
+        return None
+
+    def _conversation_event(self, run_id: str, kind: str) -> dict[str, Any] | None:
+        """The first event of type `kind` in the conversation `run_id` belongs to, up to it."""
+        run: Run | None = self.store.get_run(run_id)
+        while run is not None:
+            for event in self.store.list_events(run.id):
+                if event.data.get("type") == kind:
+                    return event.data
+            run = self.store.get_run(run.parent_run) if run.parent_run else None
+        return None
 
     # --- a task review ---
 

@@ -18,6 +18,7 @@ from apm.core.ids import handle
 from apm.core.model import NodeId, Status
 from apm.core.project import Project
 from apm.core.proposals import DECOMPOSITION_SCHEMA, REVIEW_SCHEMA
+from apm.core.report import REPORT_SCHEMA
 from apm.core.settings import feature_settings
 from apm.core.store import PROJECT
 from apm.core.task_verdict import TASK_VERDICT_SCHEMA
@@ -142,6 +143,18 @@ AGENTS: dict[str, AgentSpec] = {
             schema=TASK_VERDICT_SCHEMA,
             read_only=True,
         ),
+        AgentSpec(
+            name="apm-feature-reporter",
+            label="Write report",
+            summary="Write this feature's report for people who weren't there: what it is and"
+            " why, the decisions people made and their reasons, and how it was built. APM commits"
+            " it to the feature branch as docs/features/…md.",
+            scope="read",
+            tools=(*READ_TOOLS, *GIT_READ_TOOLS),
+            mcp_tools=READ_MCP,
+            schema=REPORT_SCHEMA,
+            read_only=True,
+        ),
     )
 }
 
@@ -251,6 +264,10 @@ def build_prompt(
     if spec.name == "apm-assistant":
         question = message or "Summarise this node: what it is for, its state, and what's next."
         return f"The user is looking at {where}.\n\n{question}"
+    if spec.name == "apm-feature-reporter":
+        # Replaced once the run starts by `apm.core.report.report_prompt`, with the record.
+        prompt = f"Write the feature report for {where}."
+        return prompt + (f"\n\nGuidance from the user:\n{message}" if message else "")
     raise RunRefused(f"{spec.name} can't be started directly")
 
 
