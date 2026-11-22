@@ -3,7 +3,19 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { Markdown } from "./Markdown";
-import type { Issue, Kind, NodeDetail, NodeRef, NodeView, Project, Proposal, Status } from "./types";
+import { FeatureSettingsSection } from "./Settings";
+import type {
+  FeatureSettings,
+  Issue,
+  Kind,
+  NodeDetail,
+  NodeRef,
+  NodeView,
+  Project,
+  Proposal,
+  SettingsChange,
+  Status,
+} from "./types";
 import { Empty, StatePill } from "./ui";
 import { STATUS_LABEL, cx, stackedName, stateOf, timeAgo } from "./util";
 
@@ -13,6 +25,9 @@ export interface DetailActions {
   unlink: (dependsOn: string) => Promise<void>;
   goTo: (id: string) => void;
   review: (proposal: Proposal) => void;
+  /** A feature's own settings: null inherits one again. */
+  saveSettings: (change: SettingsChange<FeatureSettings>) => Promise<void>;
+  clearSettings: () => Promise<void>;
 }
 
 const REVIEW_LABEL: Record<string, string> = {
@@ -94,6 +109,9 @@ export function NodeDetails({ detail, nodes, actions }: { detail: NodeDetail; no
       )}
 
       <Body key={`body-${detail.id}`} body={detail.body} onSave={(body) => actions.patch({ body })} />
+      {detail.children > 0 && (
+        <FeatureSettingsSection detail={detail} onSave={actions.saveSettings} onClear={actions.clearSettings} onGoTo={actions.goTo} />
+      )}
 
       <section>
         <h3>Depends on</h3>

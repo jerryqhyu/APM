@@ -1900,6 +1900,118 @@ main {
   gap: 8px;
 }
 
+/* --- settings --- */
+
+.settings {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.settings section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.settings h3 {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.settings section > .hint {
+  margin-top: -6px;
+}
+
+.setting {
+  display: grid;
+  grid-template-columns: 140px 1fr;
+  gap: 12px;
+  align-items: baseline;
+}
+
+.setting-name {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.setting-control {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  min-width: 0;
+}
+
+.setting-hint,
+.setting-source {
+  color: var(--fg-muted);
+  font-size: 12px;
+}
+
+.setting-note {
+  color: var(--warn);
+  font-size: 12px;
+}
+
+.setting-control .form-error,
+.setting-control button.link {
+  font-size: 12px;
+}
+
+.automation-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+}
+
+input.number {
+  width: 6.5em;
+  padding: 2px 6px;
+  font-size: 13px;
+}
+
+.feature-settings .setting-table {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 10px 14px;
+  align-items: baseline;
+}
+
+.feature-settings .setting-name {
+  font-weight: 400;
+}
+
+.feature-settings select {
+  padding: 2px 6px;
+  font-size: 12px;
+}
+
+/* --- feature-level actions --- */
+
+.feature-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.batch-result {
+  margin-left: 58px;
+  color: var(--fg-muted);
+  font-size: 12px;
+}
+
+.batch-result ul {
+  margin: 2px 0 0;
+  padding-left: 16px;
+}
+
+.feature-controls .form-error {
+  margin-left: 58px;
+  font-size: 12px;
+}
+
 /* --- proposal review --- */
 
 .rationale {

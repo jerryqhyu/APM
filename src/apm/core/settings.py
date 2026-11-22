@@ -74,13 +74,20 @@ def feature_settings(config: ApmConfig, graph: Graph, node_id: NodeId) -> Featur
     return resolve_settings(config, graph, node_id).settings
 
 
-def resolve_settings(config: ApmConfig, graph: Graph, node_id: NodeId) -> ResolvedSettings:
-    """`feature_settings`, with where each value comes from: what the UI shows."""
+def resolve_settings(
+    config: ApmConfig, graph: Graph, node_id: NodeId, *, inherited: bool = False
+) -> ResolvedSettings:
+    """`feature_settings`, with where each value comes from: what the UI shows. With `inherited`,
+    what the node would get without its own override.
+    """
     defaults = config.features
     values: dict[SettingName, Any] = {name: getattr(defaults, name) for name in SETTINGS}
     sources: dict[SettingName, NodeId | None] = dict.fromkeys(SETTINGS)
     overrides = overrides_by_node(config, graph)
-    for owner in reversed([graph[node_id].id, *graph.ancestors(node_id)]):
+    owners = (
+        graph.ancestors(node_id) if inherited else [graph[node_id].id, *graph.ancestors(node_id)]
+    )
+    for owner in reversed(owners):
         override = overrides.get(owner)
         for name in SETTINGS if override is not None else ():
             if (value := getattr(override, name)) is not None:

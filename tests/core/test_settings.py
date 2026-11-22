@@ -69,6 +69,11 @@ def test_an_inner_override_wins_for_what_it_sets() -> None:
     }
     assert resolved.own is None
     assert resolve_settings(cfg, GRAPH, B).own is not None
+    # What B would have without its own override: A's.
+    inherited = resolve_settings(cfg, GRAPH, B, inherited=True)
+    assert inherited.settings == FeatureSettings(True, 40, True, "standard")
+    assert inherited.sources["task_max_lines"] == A
+    assert resolve_settings(cfg, GRAPH, A, inherited=True).settings.task_max_lines == 60
 
 
 def test_a_node_can_override_its_own_settings() -> None:
@@ -153,7 +158,9 @@ def test_setting_what_is_already_set_commits_nothing(project: Project) -> None:
 
 def test_a_bad_value_is_refused_and_the_file_left_alone(project: Project) -> None:
     before, commits = apm_yaml(project), len(log(project.apm_dir))
-    with pytest.raises(ConfigError, match=r"features\.task_max_lines: .*greater than or equal to 5"):
+    with pytest.raises(
+        ConfigError, match=r"features\.task_max_lines: .*greater than or equal to 5"
+    ):
         set_defaults(project, features={"task_max_lines": 3})
     with pytest.raises(ConfigError, match=r"features\.report_detail: "):
         set_defaults(project, features={"report_detail": "huge"})
@@ -201,7 +208,9 @@ def test_a_features_override_is_set_inherited_and_cleared(project: Project) -> N
     assert node_history(project, task) == node_history(project, task)[-1:]  # only its creation
 
     set_override(project, top, {"eager": None})
-    assert log(project.apm_dir)[0].subject.startswith(f"settings {handle(top)}: eager mode inherited")
+    assert log(project.apm_dir)[0].subject.startswith(
+        f"settings {handle(top)}: eager mode inherited"
+    )
     overrides = parse_config(apm_yaml(project)).features.overrides
     assert overrides[top].model_dump(exclude_none=True) == {"report_detail": "detailed"}
 
@@ -232,7 +241,7 @@ def test_an_override_refuses_bad_values_and_unknown_nodes(project: Project) -> N
     top, _ = feature(project)
     with pytest.raises(ConfigError, match=r"features\.overrides\..*\.task_max_lines"):
         set_override(project, top, {"task_max_lines": 1})
-    with pytest.raises(OpError, match="unknown setting features.automation"):
+    with pytest.raises(OpError, match=r"unknown setting features\.automation"):
         set_override(project, top, {"automation": True})
     with pytest.raises(HandleError, match="no node matches"):
         set_override(project, "abcdef12", {"eager": True})

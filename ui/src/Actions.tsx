@@ -1,7 +1,8 @@
 // The actions panel: every way to change the graph directly, for whatever is selected. One node,
 // several nodes, or (with nothing selected) the plan as a whole.
 
-import type { NodeDetail, NodeView, Status } from "./types";
+import { FeatureControls } from "./FeatureControls";
+import type { Batch, NodeDetail, NodeView, Status } from "./types";
 import { STATUS_LABEL, cx, stackedName } from "./util";
 
 export interface ActionHandlers {
@@ -19,6 +20,9 @@ export interface ActionHandlers {
   reconcile: () => void;
   commitEdits: () => void;
   exportArchive: () => void;
+  openSettings: () => void;
+  reviewTasks: (id: string) => Promise<Batch>;
+  implementAll: (id: string) => Promise<Batch>;
   clear: () => void;
 }
 
@@ -30,12 +34,15 @@ export function Actions({
   handlers,
   lookup,
   detail,
+  nodes,
 }: {
   selected: NodeView[];
   detail: NodeDetail | null;
   running: Set<string>;
   handlers: ActionHandlers;
   lookup: (id: string) => NodeView | undefined;
+  /** Every node of the plan. */
+  nodes: NodeView[];
 }) {
   const one = selected.length === 1 ? selected[0]! : null;
   const ids = selected.map((n) => n.id);
@@ -108,6 +115,9 @@ export function Actions({
           </button>
           <button onClick={handlers.exportArchive} title="Download the plan and its history as one .apm.zip file">
             Export archive…
+          </button>
+          <button onClick={handlers.openSettings} title="The project's settings: eager mode, the task size limit, feature reports and automation">
+            Settings…
           </button>
         </div>
       )}
@@ -198,7 +208,7 @@ export function Actions({
                     <button
                       onClick={() => handlers.runAgent("apm-task-reviewer", one.id)}
                       disabled={busy}
-                      title="Claude checks that this task is small enough: at most about 50 lines of real code"
+                      title={`Claude checks that this task is small enough: at most about ${mine.settings.values.task_max_lines} lines of real code`}
                     >
                       Review task
                     </button>
@@ -226,6 +236,9 @@ export function Actions({
               )}
               <span className="row-hint">or just say what you want below</span>
             </div>
+          )}
+          {one && one.children > 0 && !isStep && (
+            <FeatureControls feature={one} nodes={nodes} onReviewTasks={handlers.reviewTasks} onImplementAll={handlers.implementAll} />
           )}
         </>
       )}

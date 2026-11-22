@@ -156,6 +156,67 @@ export interface NodeDetail extends NodeView {
   /** Null while task review is off. */
   review: { state: "none" | "running" | "stale" | "pass" | "too_big" | "unclear" | "error"; summary?: string; missing?: string[]; error?: string } | null;
   implement_blocker: string | null;
+  settings: NodeSettings;
+}
+
+// --- settings (apm.yaml; src/apm/core/settings.py) ---
+
+export type ReportDetail = "brief" | "standard" | "detailed";
+
+/** What `features:` sets, project-wide or for one feature. */
+export interface FeatureSettings {
+  eager: boolean;
+  task_max_lines: number;
+  report: boolean;
+  report_detail: ReportDetail;
+}
+
+export type SettingName = keyof FeatureSettings;
+
+/** Settings with where each comes from: the feature whose override sets it, or null for the project. */
+export interface ResolvedSettings {
+  values: FeatureSettings;
+  sources: Record<SettingName, NodeRef | null>;
+}
+
+/** What applies to a node: its own settings on top of what it inherits. */
+export interface NodeSettings extends ResolvedSettings {
+  /** Only the settings the node sets itself. */
+  own: Partial<FeatureSettings>;
+  /** What it would have without its own settings. */
+  inherited: ResolvedSettings;
+}
+
+/** What `apm serve` does on its own (`automation:`). */
+export interface Automation {
+  task_review: boolean;
+  reconcile: boolean;
+  reconcile_interval_s: number;
+  feature_review: boolean;
+  accept_follow_ups: boolean;
+  implement_follow_ups: boolean;
+  feature_pr: boolean;
+  eager_redo: boolean;
+}
+
+export interface ProjectSettings {
+  features: FeatureSettings;
+  automation: Automation;
+  defaults: { features: FeatureSettings; automation: Automation };
+  /** Each feature's own settings, by its key in apm.yaml. `node` is null if the key names no node. */
+  overrides: { key: string; node: string | null; values: Partial<FeatureSettings> }[];
+  problems: string[];
+}
+
+/** A change to settings: null puts one back to its default, or (for a feature) inherits it again. */
+export type SettingsChange<T> = { [K in keyof T]?: T[K] | null };
+
+/** What Review all tasks or Implement all did. */
+export interface Batch {
+  started: Run[];
+  /** Queued until there is room under runner.max_concurrent. */
+  waiting: NodeRef[];
+  skipped: (NodeRef & { reason: string })[];
 }
 
 export interface Agent {

@@ -94,7 +94,7 @@ def test_a_features_own_settings_are_shown_set_and_cleared(
 ) -> None:
     top, (task,) = feature(project, "Index")
     detail = client.get(f"/api/nodes/{top}").json()
-    assert detail["settings"] == {
+    defaults = {
         "values": {
             "eager": False,
             "task_max_lines": 50,
@@ -102,12 +102,14 @@ def test_a_features_own_settings_are_shown_set_and_cleared(
             "report_detail": "standard",
         },
         "sources": dict.fromkeys(("eager", "task_max_lines", "report", "report_detail")),
-        "own": {},
     }
+    assert detail["settings"] == {**defaults, "own": {}, "inherited": defaults}
 
     own = client.patch(f"/api/nodes/{top}/settings", json={"eager": True, "task_max_lines": 30})
     assert own.status_code == 200
     assert own.json()["own"] == {"eager": True, "task_max_lines": 30}
+    assert own.json()["values"]["task_max_lines"] == 30
+    assert own.json()["inherited"] == defaults
     inside = client.get(f"/api/nodes/{task}").json()["settings"]
     assert inside["values"]["task_max_lines"] == 30
     assert inside["sources"]["task_max_lines"]["id"] == top

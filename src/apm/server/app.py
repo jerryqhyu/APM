@@ -34,6 +34,7 @@ from apm.core.proposals import accept_proposal, close_orphaned, reject_proposal
 from apm.core.reconcile import Report, describe, reconcile
 from apm.core.review_lock import under_review
 from apm.core.settings import (
+    ResolvedSettings,
     clear_override,
     override_problems,
     resolve_settings,
@@ -589,17 +590,24 @@ def create_app(
 
 
 def node_settings(config: ApmConfig, graph: Graph, node_id: NodeId) -> dict[str, Any]:
-    """The settings that apply to a node, where each comes from (a node, or null for the
-    project), and the node's own override.
+    """The settings that apply to a node and where each comes from (a node, or null for the
+    project); the node's own override; and what it would have without it.
     """
+
+    def view(resolved: ResolvedSettings) -> dict[str, Any]:
+        return {
+            "values": asdict(resolved.settings),
+            "sources": {
+                name: node_ref(graph, source) if source else None
+                for name, source in resolved.sources.items()
+            },
+        }
+
     resolved = resolve_settings(config, graph, node_id)
     return {
-        "values": asdict(resolved.settings),
-        "sources": {
-            name: node_ref(graph, source) if source else None
-            for name, source in resolved.sources.items()
-        },
+        **view(resolved),
         "own": resolved.own.model_dump(exclude_none=True) if resolved.own else {},
+        "inherited": view(resolve_settings(config, graph, node_id, inherited=True)),
     }
 
 

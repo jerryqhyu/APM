@@ -1,5 +1,7 @@
 // Talking to `apm serve`. Every request carries the token from the URL the server printed.
 
+import type { Automation, Batch, FeatureSettings, NodeSettings, ProjectSettings, SettingsChange } from "./types";
+
 const TOKEN_KEY = "apm-token";
 
 /** Takes the token out of the address bar on first load and remembers it for this tab. */
@@ -98,4 +100,37 @@ export function query(params: Record<string, string | boolean | null | undefined
   }
   const text = search.toString();
   return text ? `?${text}` : "";
+}
+
+// --- settings and feature-level actions ---
+
+export function getSettings(): Promise<ProjectSettings> {
+  return api<ProjectSettings>("/api/settings");
+}
+
+/** Changes the project's settings in apm.yaml, keeping its comments. A bad value is refused. */
+export function saveSettings(change: {
+  features?: SettingsChange<FeatureSettings>;
+  automation?: SettingsChange<Automation>;
+}): Promise<ProjectSettings> {
+  return api<ProjectSettings>("/api/settings", { method: "PATCH", body: change });
+}
+
+/** Changes a feature's own settings: null inherits that one again. */
+export function saveNodeSettings(id: string, change: SettingsChange<FeatureSettings>): Promise<NodeSettings> {
+  return api<NodeSettings>(`/api/nodes/${id}/settings`, { method: "PATCH", body: change });
+}
+
+export function clearNodeSettings(id: string): Promise<NodeSettings> {
+  return api<NodeSettings>(`/api/nodes/${id}/settings`, { method: "DELETE" });
+}
+
+/** Review all tasks: a task review on every To do task inside the feature. */
+export function reviewAllTasks(id: string): Promise<Batch> {
+  return api<Batch>(`/api/nodes/${id}/review-tasks`, { method: "POST", body: {} });
+}
+
+/** Implement all: the implementer on every ready task inside the feature that passed its review. */
+export function implementAll(id: string): Promise<Batch> {
+  return api<Batch>(`/api/nodes/${id}/implement`, { method: "POST", body: {} });
 }
