@@ -22,6 +22,7 @@ from apm.core import ops
 from apm.core.archive import SUFFIX, export_archive
 from apm.core.config import ApmConfig, read_config
 from apm.core.config_edit import Scalar
+from apm.core.eager import eager_view
 from apm.core.errors import ApmError
 from apm.core.files import read_body, render_body
 from apm.core.git import GitError, rev_parse
@@ -250,6 +251,7 @@ def create_app(
                 asdict(p) for p in store.list_proposals(node_id=node_id, status="pending")
             ],
             "settings": node_settings(config, graph, node_id),
+            "eager": eager_view(store, config, graph, node_id),
         }
 
     def batch_view(graph: Graph, batch: Batch) -> dict[str, Any]:
@@ -474,6 +476,15 @@ def create_app(
         body = body or StartBatch()
         batch = implement_feature(queue, node_id, mode=body.mode, message=body.message)
         return batch_view(graph, batch)
+
+    @app.post("/api/nodes/{node}/eager/redo", status_code=201)
+    async def eager_redo(node: str, body: StartBatch | None = None) -> dict[str, Any]:
+        """Redo on an eager feature: rebuild the tasks after one whose pull request changed, or
+        split a build again whose split failed.
+        """
+        _, node_id = locate(node)
+        body = body or StartBatch()
+        return asdict(await runner.eager.redo(node_id, body.message, mode=body.mode))
 
     # --- runs: one turn of an agent ---
 
