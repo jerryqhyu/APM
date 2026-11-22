@@ -1,6 +1,6 @@
 # APM — Design Plan
 
-**Status:** v10 · v1 is implemented except playback (M5) and the SQLite index; §11 has the state of each milestone · **Last updated:** 2026-11-21
+**Status:** v10 · v1 is implemented except playback (M5) and the SQLite index; §11 has the state of each milestone · **Last updated:** 2026-11-22
 
 APM is a local-first project manager built for working with AI agents. A project is a **nested graph of nodes**: you start with a big idea, then break it down with Claude agents, level by level, until each piece is small enough to ship as a commit or PR. The plan lives in its own git repo, so every change to it can be traced and **played back** from the project's first node onward.
 
@@ -175,7 +175,16 @@ automation:                  # what `apm serve` does on its own (§7.7); every s
   implement_follow_ups: true
   feature_pr: true
   eager_redo: true           # for eager mode (§7.8); does nothing until it is built
+features:                    # how features are built and reported (§7.8)
+  eager: false               # build a feature in one run, then split it into task PRs
+  task_max_lines: 50         # the task size limit a task review applies, in real lines
+  report: true               # write a feature report when its feature review passes
+  report_detail: standard    # brief | standard | detailed
+  overrides:                 # per feature, by node id (a handle typed by hand works too)
+    0192f0c1-8a2b-7c3d-9e4f-1c0b9a44d2e7: { eager: true, report_detail: detailed }
 ```
+
+`features.overrides` keys must have the form of an id or a handle; a handle of digits only goes in quotes, or YAML reads it as a number. An override that names no node, or a second one for the same node, is ignored, and `apm check` warns about it.
 
 ### 3.5 Commit format (plan repo)
 
@@ -190,7 +199,7 @@ APM-Actor: agent:apm-decomposer        # or user
 APM-Run: <run-id>                      # optional
 ```
 
-Ops: `create, update, move, delete, link, unlink, status, deliver, decompose, edit-body, merge`. The plan repo's first commit is `init <name>`, with `APM-Op: init`.
+Ops: `create, update, move, delete, link, unlink, status, deliver, decompose, edit-body, merge, settings`. `settings` changes `apm.yaml`, not the graph (§7.8); a feature's override lists that feature in `APM-Nodes`, so it shows in its history. The plan repo's first commit is `init <name>`, with `APM-Op: init`.
 
 `merge` folds several nodes into one: the target keeps its id, status and kind, and takes on the others' children, dependencies, dependents and bodies (appended under a heading). Edges among the merged nodes disappear. At most one of them may carry a delivery.
 
@@ -376,6 +385,11 @@ POST   /api/nodes · PATCH /api/nodes/:id · POST /api/nodes/:id/move · DELETE 
 POST   /api/merge           { target, others[], title? }
 POST   /api/edges · DELETE /api/edges
 POST   /api/reconcile?retarget= · POST /api/commit    mark merged work done, report stacks · commit hand edits
+GET    /api/settings · PATCH /api/settings  { features?, automation? }   apm.yaml's settings (§7.8)
+PATCH  /api/nodes/:id/settings  { eager?, task_max_lines?, report?, report_detail? }   null = inherit
+DELETE /api/nodes/:id/settings      a feature's own settings, cleared
+POST   /api/nodes/:id/review-tasks · POST /api/nodes/:id/implement   { mode?, message? }
+                            Review all tasks · Implement all: { started, waiting, skipped }
 GET    /api/runs?node_id=&scope=project&status= · GET /api/runs/:id?after=<seq>
 POST   /api/runs            { agent, node_id?, message?, critic?, mode? }   no node_id = the project
 POST   /api/runs/:id/continue   { message, mode? }    the next turn of a conversation
@@ -455,7 +469,7 @@ claude -p \
 
 **Permission modes** are Claude Code's own, chosen per run: `auto` (the default: Claude decides what is safe and asks about the rest), `manual` (ask before every change), `acceptEdits`, `plan`, `dontAsk`. `runner.permission_mode` in `apm.yaml` sets the default. The critic always runs in `dontAsk`, so a review never stops to ask.
 
-Limits: `max_concurrent` pipelines in total. One conversation takes one turn at a time; a node has one decomposer and one implementer at a time. A request beyond that is refused (HTTP 409), not queued. Stop = SIGTERM to the process group, then SIGKILL after 5s. A run still marked running whose host process has died is marked failed the next time a runner starts.
+Limits: `max_concurrent` pipelines in total. One conversation takes one turn at a time; a node has one decomposer and one implementer at a time. A request beyond that is refused (HTTP 409), not queued; Review all tasks and Implement all queue theirs instead (§7.8). Stop = SIGTERM to the process group, then SIGKILL after 5s. A run still marked running whose host process has died is marked failed the next time a runner starts.
 
 **Why each flag is there:**
 - The MCP is passed with `--mcp-config` rather than through the plugin's `.mcp.json`, so each run can inject its own env vars. `--strict-mcp-config` keeps your personal MCP servers out of runs, and also drops the plugin's own MCP entry (checked).
@@ -562,7 +576,7 @@ The plain code around it (`apm.core.feature_review`):
 
 ### 7.7 Task review and the automation loop
 
-A task (a leaf that is not a review step) must fit in about five minutes of reading: at most **50 real lines** of source, not counting blank lines, comments, imports, tests, docs or agent/skill markdown. The task reviewer (`apm-task-reviewer`, with the `apm-task-sizing` skill, label **Review task**, `apm run task-reviewer <node>`) is read-only, reads the task and the code it will touch, and returns one verdict: `pass`; `too_big` with a split of at least two children, in the decomposer's shape; or `unclear` with a non-empty list of what is missing. Malformed output, a failed run or a run cut off by a restart is recorded as `error`.
+A task (a leaf that is not a review step) must fit in about five minutes of reading: at most the **task size limit** in real lines of source (`features.task_max_lines`, 50 by default, §7.8), not counting blank lines, comments, imports, tests, docs or agent/skill markdown. The reviewer's first message states the limit for its task; the decomposer's and the implementer's state it too. The task reviewer (`apm-task-reviewer`, with the `apm-task-sizing` skill, label **Review task**, `apm run task-reviewer <node>`) is read-only, reads the task and the code it will touch, and returns one verdict: `pass`; `too_big` with a split of at least two children, in the decomposer's shape; or `unclear` with a non-empty list of what is missing. Malformed output, a failed run or a run cut off by a restart is recorded as `error`.
 
 - **Recording.** Each verdict is a `task_reviews` row (§4) keyed by the content fingerprint. `too_big` also becomes a proposal on the task; accepting it turns the task into a feature with those children and its review step.
 - **The lock.** While a review runs, `.cache/task-review/<uuid>.json` holds the reviewer's pid, host and run id (`apm.core.review_lock`). Every plan operation that would edit, move, merge, delete, decompose or implement the task checks it and refuses with `TaskUnderReview` (HTTP 409); status changes and deliveries still go through. The marker is removed when the run ends however it ends; one whose pid is dead on this host doesn't count, so a crash never leaves a task locked.
@@ -579,6 +593,19 @@ A task (a leaf that is not a review step) must fit in about five minutes of read
 6. `feature_pr`: a complete review opens the feature's PR into its home. Off, the reviewed commit is recorded and no PR is opened.
 
 Automated runs share `runner.max_concurrent` with everything else, waiting in the queue rather than failing for lack of a slot, and each gets its agent's `budget_usd`.
+
+### 7.8 Feature settings and feature-level actions
+
+**Settings.** `features:` in `apm.yaml` (§3.4) holds the project's defaults for every feature and per-feature overrides. `apm.core.settings.feature_settings(config, graph, node)` is the one place that works out what applies to a node: the defaults, then each enclosing feature's override from the outside in, then the node's own. A task gets its features' settings. The task review, the decomposer and the implementer read `task_max_lines` through it.
+
+- `eager`: build a feature in one run on one branch, then split it into one pull request per task. Not built yet: `apm.runner.feature_runs.implement_feature` is where it plugs in, and `automation.eager_redo` (rebuild and re-split the tasks after a task PR that changed) is read by it.
+- `report`, `report_detail`: write a feature report once the feature review passes. Not built yet.
+
+**Changing them.** `set_defaults`, `set_override` and `clear_override` edit `apm.yaml` in place with ruamel.yaml's round trip (`apm.core.config_edit`): comments, indentation and the spelling of untouched values stay. The result must differ from the original by exactly the change asked for, read the way `parse_config` reads it, and must pass `parse_config`; otherwise nothing is written. Each change is one `settings` commit under the write lock (§3.5). Hand edits to `apm.yaml`, which `apm commit` doesn't take, are committed with it, and the commit says so. A change of the limit doesn't undo passed task reviews: Review all tasks reviews a feature's tasks again.
+
+**Review all tasks** (`apm review-tasks <feature>`) starts a task review on every To do task in the feature, nested features included, but not review steps; tasks under review are skipped. **Implement all** (`apm implement <feature>`) starts the implementer on every task that is ready now, stacked ones included, and passes the Implement gate; blocked tasks, and tasks that fail the gate or are under review, are skipped with the reason. On a task, either covers that task.
+
+Both go through a `RunQueue` (`apm.runner.queue`): what fits under `max_concurrent` starts at once, the rest waits, oldest first. In `apm serve` the automation loop pumps it ahead of its own queue; it is separate from that queue, so a run asked for by hand never counts as the automatic run of a version. A queued run that can no longer start when its turn comes (the node is gone or changed, or it is already running) is dropped. In the terminal, the command pumps the queue itself and follows every run, each line tagged with its node's handle.
 
 ---
 
@@ -601,7 +628,7 @@ src/apm/plugin/
     apm-decompose/        what a good breakdown looks like: 3–7 children, no overlap,
                           explicit deps, testable acceptance, prefer sibling edges
     apm-deliver/          branch naming, trailer format, PR body, recording the delivery
-    apm-task-sizing/      what counts as a real line, the 50-line limit, how to split a task
+    apm-task-sizing/      what counts as a real line, the task size limit, how to split a task
   .mcp.json               { "mcpServers": { "apm": { "command": "apm", "args": ["mcp"] } } }
 ```
 
@@ -620,9 +647,9 @@ The conversation is the main interface; the graph is what it is about. The [user
   - **Edges:** lifted edges show a count badge. Edges that leave the level show as dashed stubs naming the outside node. Entangled nodes are outlined under a banner.
   - **Proposals** show as dashed ghost nodes and edges on the level they would land in.
 - **Right panel**, always there: an action bar on top, then two tabs, Chat and Details:
-  - **Actions:** every operation as a button, for what is selected. One node: status, open, add child, add sibling, rename, switch kind, move, link, delete, Decompose, Implement. Several nodes: status, **merge**, delete. Nothing selected: add node, check plan, reconcile, commit hand edits, **export archive** (a download; including runs shows the secrets warning first).
+  - **Actions:** every operation as a button, for what is selected. One node: status, open, add child, add sibling, rename, switch kind, move, link, delete, Decompose, Implement. Several nodes: status, **merge**, delete. A feature: also **Review all tasks** and **Implement all**, with what started, what waits for room and what was skipped. Nothing selected: add node, check plan, reconcile, commit hand edits, **export archive** (a download; including runs shows the secrets warning first), and **Settings…**: the `features:` defaults and the `automation:` switches, saved to `apm.yaml`.
   - **Chat:** the conversation with Claude, about the selected node or the whole plan, turn by turn. Past conversations are tabs. Every agent run appears here, so it is also where a decomposition or an implementation is followed. A question or permission prompt shows as a card with its options, or Allow and Deny (with a reason). The permission mode is picked under the message box.
-  - **Details:** title (edited in place), state, description (markdown, with an editor), what it waits on, depends on (add and remove), is needed by and contains, delivery, and history. With nothing selected, a summary of the plan: progress, what is in progress, what is ready, problems.
+  - **Details:** title (edited in place), state, description (markdown, with an editor), for a feature its settings (each with where it comes from: the project, an enclosing feature, or set here; Inherit, or a value of its own), what it waits on, depends on (add and remove), is needed by and contains, delivery, and history. With nothing selected, a summary of the plan: progress, what is in progress, what is ready, problems.
 - **Proposal review:** the rationale, the critic's review and the agent's warnings; you can edit any child, leave children out, and accept or reject.
 - **Live:** every view refreshes when the plan changes, whoever changed it.
 - **Look:** GitHub / VS Code. System font, neutral greys, one blue accent, 6px corners, hairline borders; colour only for state. Light, dark, or following the system.
@@ -642,10 +669,13 @@ apm node mv <h> <parent|--top> · merge <target> <others...> [--title] · rm <h>
 apm link-dep <from> <to> · apm unlink-dep <from> <to>
 apm ready [--root h] · apm search <query>
 apm run <assistant|decomposer|implementer|feature-reviewer> [h] [-m "..."] [--mode m] [--no-critic] [--branch b]
+apm review-tasks <h> [--mode m]  a task review on every To do task in a feature
+apm implement <h> [-m "..."] [--mode m]   the implementer on every ready, reviewed task in a feature
+apm settings show [h] · set NAME=VALUE... [--node h] · clear <h>   apm.yaml's settings (§7.8)
 apm proposal ls [--all] · show <id> · accept <id> [--only key] · reject <id>
 apm reconcile [--retarget]       mark nodes done whose work is on the default branch; report
                                  (or retarget) stacked PRs whose base has landed
-apm check                        validate invariants, report warnings (exit code 1 on errors)
+apm check                        validate invariants and apm.yaml, report warnings (exit 1 on errors)
 apm commit                       validate and commit edits made by hand in .apm/
 apm link --remote <url>          set the plan repo remote and record it in .apm-link
 apm clone                        clone the plan repo named in .apm-link (for a fresh checkout)
@@ -677,6 +707,7 @@ apm plugin-path                  where the Claude Code plugin is
 | **M7** | Reconciling, stack-aware | Work reaching the default branch moves its node to `done`, with no manual step and no early `done` for stacked PRs | **Built** as `apm reconcile` (§7.5), with "ready, stacked" (§2.3). Tested against local repos and a stand-in for `gh` |
 | **M8** | Archives: `apm export` / `apm import`, Export archive… in the UI (§3.8) | A project, with its history and optionally its runs, round-trips through one `.apm.zip` | **Built**; round trip, refusals and the download are tested |
 | **M9** | Review steps, feature branches and the feature reviewer (§2.5, §7.6) | A feature's tasks merge into its branch; its review step checks the branch against the description and opens the PR on | **Built**; tested with stand-ins for `claude` and `gh` |
+| **M10** | Feature settings and feature-level actions (§7.8) | Settings changed from the UI or the CLI land in `apm.yaml` with its comments kept; the task limit reaches the agents; Review all tasks and Implement all never fail on `max_concurrent` | **Built**, except eager mode and the feature report, whose settings are in place; tested with a stand-in for `claude` |
 
 ---
 
