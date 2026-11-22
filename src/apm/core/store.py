@@ -73,6 +73,25 @@ CREATE TABLE IF NOT EXISTS task_reviews(
 );
 CREATE INDEX IF NOT EXISTS task_reviews_node ON task_reviews(node_id, created);
 CREATE TABLE IF NOT EXISTS follow_ups(node_id TEXT PRIMARY KEY, proposal_id TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS acceptances(
+    proposal_id TEXT PRIMARY KEY,
+    children TEXT,
+    created_nodes TEXT NOT NULL,
+    accepted REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS reports(
+    node_id TEXT NOT NULL,
+    run_id TEXT,
+    branch TEXT NOT NULL,
+    path TEXT NOT NULL,
+    sha TEXT,
+    error TEXT,
+    markdown TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    detail TEXT NOT NULL,
+    created REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS reports_node ON reports(node_id, created);
 """
 
 
@@ -127,6 +146,41 @@ class TaskReview:
     data: dict[str, Any]
     """What the reviewer returned with its verdict."""
     run_id: str | None = None
+    created: float = field(default_factory=time.time)
+
+
+@dataclass(frozen=True, slots=True)
+class Acceptance:
+    """What you accepted from a proposal: the children as you left them, and the nodes made."""
+
+    proposal_id: str
+    children: list[dict[str, Any]] | None
+    """The children you accepted, if you passed a list (edited or trimmed, or as proposed);
+    None when the proposal was accepted whole without one.
+    """
+    created: tuple[NodeId, ...]
+    accepted: float
+
+
+@dataclass(frozen=True, slots=True)
+class FeatureReport:
+    """A feature report APM wrote (see `apm.core.report`). The latest one per feature counts."""
+
+    node_id: NodeId
+    """The feature."""
+    run_id: str | None
+    branch: str
+    """The feature branch it was committed to."""
+    path: str
+    """Where it is in the code repo, e.g. `docs/features/search-1c0b9a44.md`."""
+    sha: str | None
+    """The commit that added it to the branch; None if it couldn't be committed (see `error`)."""
+    error: str | None
+    markdown: str
+    """The file, as committed (or as it would have been)."""
+    summary: str
+    detail: str
+    """`brief`, `standard` or `detailed`."""
     created: float = field(default_factory=time.time)
 
 
@@ -385,6 +439,51 @@ class Store:
     def follow_ups(self) -> set[NodeId]:
         with self._db() as db:
             return {row["node_id"] for row in db.execute("SELECT node_id FROM follow_ups")}
+
+    # --- what was accepted from a proposal (not archived, like task reviews) ---
+
+    def record_acceptance(
+        self,
+        proposal_id: str,
+        children: list[dict[str, Any]] | None,
+        created: Iterable[NodeId],
+    ) -> None:
+        """Remembers what was accepted, so a feature report can say what you changed first."""
+        with self._db() as db:
+            db.execute(
+                "INSERT OR REPLACE INTO acceptances VALUES(?, ?, ?, ?)",
+                (
+                    proposal_id,
+                    None if children is None else json.dumps(children, ensure_ascii=False),
+                    json.dumps(list(created)),
+                    time.time(),
+                ),
+            )
+
+    def acceptance(self, proposal_id: str) -> Acceptance | None:
+        with self._db() as db:
+            row = db.execute(
+                "SELECT * FROM acceptances WHERE proposal_id = ?", (proposal_id,)
+            ).fetchone()
+        if row is None:
+            return None
+        children = None if row["children"] is None else json.loads(row["children"])
+        created = tuple(json.loads(row["created_nodes"]))
+        return Acceptance(proposal_id, children, created, row["accepted"])
+
+    # --- feature reports (not archived: the report itself is committed to the feature branch) ---
+
+    def add_report(self, report: FeatureReport) -> None:
+        with self._db() as db:
+            db.execute("INSERT INTO reports VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", astuple(report))
+
+    def latest_report(self, node_id: NodeId) -> FeatureReport | None:
+        with self._db() as db:
+            row = db.execute(
+                "SELECT * FROM reports WHERE node_id = ? ORDER BY created DESC, rowid DESC",
+                (node_id,),
+            ).fetchone()
+        return None if row is None else FeatureReport(**dict(row))
 
     # --- restoring (from an archive, see `apm.core.archive`) ---
 

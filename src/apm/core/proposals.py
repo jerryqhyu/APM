@@ -5,6 +5,7 @@ turns the children into real nodes in one `decompose` commit.
 """
 
 import contextlib
+import sqlite3
 from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -222,7 +223,7 @@ def accept_proposal(
         if children is not None:
             data["children"] = children
         run = store.get_run(proposal.run_id) if proposal.run_id else None
-        return accept_decomposition(
+        result = accept_decomposition(
             project,
             proposal.node_id,
             parse_decomposition(data),
@@ -232,6 +233,11 @@ def accept_proposal(
     except BaseException:
         store.reopen_proposal(proposal_id)
         raise
+    # What you changed before accepting is a decision a feature report tells. It is a record
+    # only: the plan is already committed, so failing to keep it mustn't undo the accept.
+    with contextlib.suppress(sqlite3.Error):
+        store.record_acceptance(proposal_id, children, result.created)
+    return result
 
 
 def reject_proposal(store: Store, proposal_id: str) -> Proposal:
