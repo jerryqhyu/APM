@@ -12,6 +12,7 @@ APM is a project planner you run on your own machine. You keep a plan as a graph
 - [Task review: keeping tasks small](#task-review-keeping-tasks-small)
 - [Having Claude build a node](#having-claude-build-a-node)
 - [Finishing a feature: the review step](#finishing-a-feature-the-review-step)
+- [Feature reports](#feature-reports)
 - [From the terminal](#from-the-terminal)
 - [In your own Claude Code session](#in-your-own-claude-code-session)
 - [Settings](#settings)
@@ -273,12 +274,51 @@ Claude then:
 
 It changes no files. Its verdict goes into the review step's description under **Feature review**, as a table you can read later. Then:
 
-- **Complete**: APM opens the feature branch's pull request into your default branch (or into the enclosing feature's branch), titled after the feature and with the review in its description. The step stays **In progress** until that pull request merges; **Reconcile** then marks the step and the feature done.
+- **Complete**: APM opens the feature branch's pull request into your default branch (or into the enclosing feature's branch), titled after the feature and with the review in its description. Then it writes the feature's report, adds it to that branch and links it from the pull request (see [Feature reports](#feature-reports)). The step stays **In progress** until that pull request merges; **Reconcile** then marks the step and the feature done.
 - **Incomplete**: the step goes back to **To do**, and the gaps come back as **follow-up tasks**, waiting under **Proposals**, the same way a breakdown does. Accept them, build them, and press **Review feature** again once they're merged. You can also reply in the review's conversation ("look again at error handling"); a new verdict replaces the old one.
 
 Claude says "complete" only when every criterion is met and nothing major is wrong. APM holds it to that: a "complete" with a missing criterion or a major issue is recorded as incomplete.
 
 **To review another branch**, type it in the **Branch** field when you start the review. **To skip a review**, set the step to **Dropped**. You can't delete or move a review step: APM keeps it waiting on exactly the feature's tasks, adding the ones you add later and dropping the ones you drop.
+
+## Feature reports
+
+A feature report tells people who weren't there what a feature is and why it exists, the decisions you made along the way and your reasons, and how it was built. It is a markdown file in your repository, `docs/features/<title>-<handle>.md`, committed on the feature's branch, so it lands with the feature, and the feature's pull request links it at the top of its description.
+
+**What it is written from.** The reporter (the `apm-feature-reporter` agent) reads the feature branch's code, and a **record** that APM gathers for it, so it doesn't have to dig:
+
+- the feature's description, its decision nodes, and every task: its description, status, pull request and the size its task review gave it;
+- what you said and chose: every message you typed in a conversation about the feature or anything in it (chats, and the guidance you gave Decompose, Implement and Review feature), your answers to Claude's questions, and the commands you refused, with your reason. A chat about the whole plan counts for the turns that changed this feature;
+- the proposals you accepted or rejected, and what you changed in one before accepting it (a renamed task, a criterion added, a child left out);
+- the plan's history of the feature, with who made each change and the note that came with it, like the reason you gave for dropping a task;
+- every turn of the feature's reviews: what was missing, and the follow-up tasks that fixed it;
+- what the feature branch changes, file by file.
+
+A long record is kept to a sensible size: Claude's replies in long conversations are shortened, then left out, and what you typed is never left out, only shortened.
+
+**It doesn't make things up.** The reporter may report a decision only if the record shows it, and give only the reason the record gives. Where you made a decision without saying why, the report says "No reason was recorded." It cites the pull requests and files behind what it says. So the more you say *why* (in a chat, in a guidance box, in a decision node or a status note), the better your reports get.
+
+**What it says**, by `report_detail`:
+
+| Detail | What is in it |
+| --- | --- |
+| **Brief** | About a page: what it is and why, the key decisions with one-line reasons, and the pull requests. |
+| **Standard** (the default) | Also each decision with its rationale and the alternatives that were rejected, how the feature is put together (modules, data flow), a paragraph per task, how it was tested, and what was left for later. |
+| **Detailed** | Also notes file by file, what each feature review found and how it was fixed, risks and follow-ups, and a timeline. |
+
+**When it is written.** On its own, once the feature's review passes: APM opens the feature's pull request first, then writes the report, commits it to the feature branch (a new commit, pushed without force, so it joins the open pull request) and links it from the pull request's description. The pull request never waits for the report. If the report fails or takes more than 30 minutes, the review's conversation says so and how to write it by hand. A feature inside a feature gets its report on its own branch, which goes into the enclosing feature's branch with it.
+
+**By hand**, press **Write report** on a feature (in the Actions panel, under **Review all tasks** and **Implement all**), or run `apm report <feature>`. It works whenever the feature branch has work on it, before or after the review, and whether or not reports are on. You can add guidance ("say more about the file format"). Each time, APM rewrites the report and adds a new commit. A reply in the report's conversation rewrites it too.
+
+**Where to see it.** A feature's **Details** show its report: not written yet, being written, or written at a commit, with a link to the file on GitHub, and **Show** displays it. `apm report <feature> --show` prints it. Claude's work on it is in the feature's conversation.
+
+**Turning it off, or changing the detail.** In **Settings…** (or `features:` in `apm.yaml`), **Feature report** turns automatic reports on or off and **Report detail** sets how much they say, for the whole project. A feature can have its own in its **Details → Settings**, for itself and the features inside it. In the terminal:
+
+```bash
+apm settings set report=off                          # no automatic reports in this project
+apm settings set report_detail=brief                 # shorter reports
+apm settings set --node 3f9e2a10 report_detail=detailed   # this feature says more
+```
 
 ## From the terminal
 
@@ -313,6 +353,7 @@ apm run feature-reviewer 3f9e2a10                          # review a finished f
 apm run task-reviewer 7d2e0f11                             # check a task is small enough to build
 apm review-tasks 3f9e2a10                                  # review every To do task of a feature
 apm implement 3f9e2a10                                     # build every ready, reviewed task of it
+apm report 3f9e2a10 -m "Say more about the format."        # write the feature's report (--show prints it)
 apm proposal accept <id>                                    # or: apm proposal reject <id>
 apm reconcile                                               # mark merged work done
 apm reconcile --retarget                                    # ...and retarget stacked PRs
@@ -382,7 +423,7 @@ features:                    # how features are built and reported (see below)
 | --- | --- | --- |
 | `eager` | `false` | Eager mode: build a feature in one run on one branch, then split it into one pull request per task. Not built yet: saved for when it is. |
 | `task_max_lines` | `50` | The task size limit, in real lines of code (see [Task review](#task-review-keeping-tasks-small)). At least 5. |
-| `report` | `true` | Write a feature report once a feature's review passes: what it is, the decisions made and why, and how it was built. Not built yet. |
+| `report` | `true` | Write a feature report once a feature's review passes: what it is, the decisions made and why, and how it was built (see [Feature reports](#feature-reports)). Off, you can still write one with **Write report**. |
 | `report_detail` | `standard` | How much that report says: `brief`, `standard` or `detailed`. |
 
 **A feature's own settings.** Under `overrides:`, by the feature's id, a feature can set any of these for itself and everything inside it. A feature inside it can override them again: the innermost one wins. In the UI, select a feature and open **Details**: its **Settings** show what applies, where each value comes from (the project, an enclosing feature, or set here), and let you pick a value of its own or **Inherit**. **Inherit all** removes its own settings.
@@ -471,6 +512,8 @@ Imported runs are history only: you can read them, but nothing starts again. A r
 | A setting is refused, e.g. `features.task_max_lines: Input should be greater than or equal to 5` | The message names the setting and what it accepts. Nothing was changed. |
 | "APM couldn't make this change without touching other settings" | Something in `apm.yaml` can't be written back exactly as it is. Make the change by hand in `.apm/apm.yaml`. |
 | Implement is greyed out | Hover over it: the node has children, is blocked, or is already done. |
+| "No feature report: …" after a review passed | The pull request is open without it. Fix what the line says, then press **Write report** on the feature, or run `apm report <feature>`. |
+| "APM couldn't commit the report to `feature/…`" | The report is kept: the feature's **Details** show it. Once you can push to that branch again, press **Write report**. |
 | "No pull request yet: `gh` is not installed" | Install the GitHub CLI and run `gh auth login`, then send any reply in the node's conversation: after that turn, APM tries again. |
 | "couldn't tell which GitHub repository … is" | Set the repo's `remote: https://github.com/<owner>/<repo>` in `.apm/apm.yaml`. |
 | A change is refused with a code like `I2` | It would break a rule of the plan. The message says which nodes are involved. |
