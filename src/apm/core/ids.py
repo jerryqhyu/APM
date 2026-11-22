@@ -75,12 +75,20 @@ class HandleError(ApmError, ValueError):
         """For `ambiguous`: every matching ID."""
 
 
+def could_name_a_node(value: str) -> bool:
+    """True if `value` has the form of a handle or an id: at least 4 hex characters, hyphens
+    allowed. Whether a node has it is `resolve_handle`'s question.
+    """
+    needle = value.strip().lower().replace("-", "")
+    return _HEX_RE.fullmatch(needle) is not None and MIN_HANDLE_INPUT <= len(needle) <= 32
+
+
 def resolve_handle(value: str, ids: Iterable[NodeId]) -> NodeId:
     """Resolves user input to one of `ids`. Accepts any unambiguous hex suffix of at least 4 chars,
     or a full ID with or without hyphens, in any case.
     """
     needle = value.strip().lower().replace("-", "")
-    if _HEX_RE.fullmatch(needle) is None or not MIN_HANDLE_INPUT <= len(needle) <= 32:
+    if not could_name_a_node(value):
         raise HandleError(
             "invalid",
             value,

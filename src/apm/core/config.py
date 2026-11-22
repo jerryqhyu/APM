@@ -10,6 +10,7 @@ from pydantic import AfterValidator, BaseModel, ConfigDict, Field, ValidationErr
 
 from apm.core.errors import ApmError, format_issue
 from apm.core.files import CONFIG_FILE, config_path, read_file_if_exists
+from apm.core.ids import could_name_a_node
 
 
 class ConfigError(ApmError, ValueError):
@@ -81,6 +82,63 @@ class RunnerConfig(_Model):
     agents: dict[Key, AgentConfig] = Field(default_factory=dict)
 
 
+MIN_TASK_LINES = 5
+"""The smallest task size limit: below it, hardly any change fits in one task."""
+type ReportDetail = Literal["brief", "standard", "detailed"]
+TaskLines = Annotated[int, Field(ge=MIN_TASK_LINES)]
+
+
+def _check_node_key(key: str) -> str:
+    if not could_name_a_node(key):
+        raise ValueError("must be a node id or handle")
+    return key
+
+
+NodeKey = Annotated[str, AfterValidator(_check_node_key)]
+
+
+class FeatureOverride(_Model):
+    """One feature's own settings. Each one left out is inherited from the feature around it, or
+    from the project.
+    """
+
+    eager: bool | None = None
+    task_max_lines: TaskLines | None = None
+    report: bool | None = None
+    report_detail: ReportDetail | None = None
+
+
+class FeaturesConfig(_Model):
+    """How features are built and reported: the project's defaults, and per-feature overrides.
+    `apm.core.settings.feature_settings` works out what applies to a node.
+    """
+
+    eager: bool = False
+    """Build a feature in one run on one branch, then split it into one pull request per task."""
+    task_max_lines: TaskLines = 50
+    """The size limit a task review applies, in real lines of source code."""
+    report: bool = True
+    """Write a feature report once the feature's review passes."""
+    report_detail: ReportDetail = "standard"
+    """How much that report says."""
+    overrides: dict[NodeKey, FeatureOverride] = Field(default_factory=dict)
+    """Per feature, by node id (a handle works too, typed by hand): the settings that differ from
+    the defaults above. They apply to everything inside the feature, unless a feature inside it
+    overrides them in turn.
+    """
+
+    @field_validator("overrides", mode="before")
+    @classmethod
+    def _keys_are_text(cls, overrides: Any) -> Any:
+        # YAML reads an unquoted handle of digits only as a number, and one starting with 0 as an
+        # octal number: the handle it meant is lost, so say how to write it.
+        if isinstance(overrides, dict):
+            for key in overrides:
+                if not isinstance(key, str):
+                    raise ValueError(f"put the handle {key} in quotes, or use the full node id")
+        return overrides
+
+
 class AutomationConfig(_Model):
     """What `apm serve` does on its own. Each step has its own switch; all are on by default."""
 
@@ -97,6 +155,10 @@ class AutomationConfig(_Model):
     """Build those follow-ups once their task review passes."""
     feature_pr: bool = True
     """Open the feature's pull request into its home once its feature review passes."""
+    eager_redo: bool = True
+    """When a task pull request of an eager feature changes, rebuild and re-split the tasks after
+    it. For eager mode (`features.eager`), which isn't built yet: until it is, this does nothing.
+    """
 
 
 class ApmConfig(_Model):
@@ -104,6 +166,7 @@ class ApmConfig(_Model):
     code: CodeConfig
     runner: RunnerConfig = Field(default_factory=RunnerConfig)
     automation: AutomationConfig = Field(default_factory=AutomationConfig)
+    features: FeaturesConfig = Field(default_factory=FeaturesConfig)
 
 
 def parse_config(text: str, source: str = CONFIG_FILE) -> ApmConfig:

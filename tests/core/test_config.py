@@ -21,6 +21,14 @@ DEFAULT_AUTOMATION = {
     "accept_follow_ups": True,
     "implement_follow_ups": True,
     "feature_pr": True,
+    "eager_redo": True,
+}
+DEFAULT_FEATURES = {
+    "eager": False,
+    "task_max_lines": 50,
+    "report": True,
+    "report_detail": "standard",
+    "overrides": {},
 }
 
 
@@ -56,6 +64,7 @@ def test_parses_the_example_from_plans_md() -> None:
             },
         },
         "automation": DEFAULT_AUTOMATION,
+        "features": DEFAULT_FEATURES,
     }
 
 
@@ -64,6 +73,7 @@ def test_fills_defaults_and_a_single_repo_is_the_default() -> None:
     assert config.code.repos["app"].model_dump() == {"path": "..", "remote": None, "default": True}
     assert config.runner.model_dump() == DEFAULT_RUNNER
     assert config.automation.model_dump() == DEFAULT_AUTOMATION
+    assert config.features.model_dump() == DEFAULT_FEATURES
     assert default_repo(config) == "app"
 
 
@@ -73,6 +83,31 @@ def test_each_automation_switch_can_be_set_alone() -> None:
     )
     expected = {**DEFAULT_AUTOMATION, "feature_pr": False, "reconcile_interval_s": 60.0}
     assert config.automation.model_dump() == expected
+
+
+def test_reads_feature_defaults_and_overrides() -> None:
+    config = parse_config(
+        f"{MINIMAL}features:\n  eager: true\n  task_max_lines: 80\n  report_detail: brief\n"
+        "  overrides:\n    0199aaaa-bbbb-7ccc-8ddd-eeeeffff0000: { report: false }\n"
+        "    '01a1fe93':\n      task_max_lines: 30\n    12e45678:\n"
+    )
+    assert config.features.model_dump(exclude={"overrides"}) == {
+        "eager": True,
+        "task_max_lines": 80,
+        "report": True,
+        "report_detail": "brief",
+    }
+    overrides = {k: v.model_dump(exclude_none=True) for k, v in config.features.overrides.items()}
+    # An override with nothing in it is no override, like any other empty key.
+    assert overrides == {
+        "0199aaaa-bbbb-7ccc-8ddd-eeeeffff0000": {"report": False},
+        "01a1fe93": {"task_max_lines": 30},
+    }
+
+
+def test_eager_redo_is_an_automation_switch() -> None:
+    config = parse_config(f"{MINIMAL}automation: {{ eager_redo: false }}\n")
+    assert config.automation.eager_redo is False
 
 
 def test_fills_defaults_inside_a_partial_runner_section() -> None:
@@ -151,6 +186,27 @@ REPOS = "name: x\ncode: { repos: { a: { path: a } } }\n"
             "name: x\ncode: { repos: { 'My Repo': { path: a } } }",
             r"code\.repos\.My Repo: invalid key: must be lowercase",
         ),
+        (f"{REPOS}features: {{ eager: 'yes' }}", r"features\.eager: "),
+        (f"{REPOS}features: {{ task_max_lines: 4 }}", r"features\.task_max_lines: .* 5"),
+        (f"{REPOS}features: {{ task_max_lines: 50.5 }}", r"features\.task_max_lines: "),
+        (f"{REPOS}features: {{ report_detail: huge }}", r"features\.report_detail: .*'brief'"),
+        (f"{REPOS}features: {{ eagr: true }}", r"features\.eagr: "),
+        (
+            f"{REPOS}features: {{ overrides: {{ my-feature: {{ eager: true }} }} }}",
+            r"features\.overrides\.my-feature: invalid key: must be a node id or handle",
+        ),
+        (
+            f"{REPOS}features: {{ overrides: {{ 01a1fe93: {{ eagr: true }} }} }}",
+            r"features\.overrides\.01a1fe93\.eagr: ",
+        ),
+        (
+            f"{REPOS}features: {{ overrides: {{ 01a1fe93: {{ task_max_lines: 2 }} }} }}",
+            r"features\.overrides\.01a1fe93\.task_max_lines: ",
+        ),
+        (
+            f"{REPOS}features: {{ overrides: {{ 12345678: {{ eager: true }} }} }}",
+            r'features\.overrides: put the handle 12345678 in quotes, or use the full node id',
+        ),
         ("code: { repos: { a: { path: a } } }", r"^name: "),
         ("", r"^name: "),
         ("- just\n- a list\n", r"valid dictionary"),
@@ -169,6 +225,15 @@ REPOS = "name: x\ncode: { repos: { a: { path: a } } }\n"
         "a quoted automation switch",
         "a number for an automation switch",
         "a zero reconcile interval",
+        "a quoted boolean for eager",
+        "a task limit below 5",
+        "a fractional task limit",
+        "an unknown report detail",
+        "an unknown features setting",
+        "an override key that is no handle",
+        "an unknown setting in an override",
+        "a too small limit in an override",
+        "an unquoted handle of digits",
         "a bad repo key",
         "a missing name",
         "an empty file",

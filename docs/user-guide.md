@@ -341,6 +341,7 @@ While `apm serve` is up it can take a feature from review to pull request on its
 | `accept_follow_ups` | `true` | Accept the follow-up tasks a feature review proposes. |
 | `implement_follow_ups` | `true` | Build those follow-ups once their task review passes. Only follow-ups from a feature review are built automatically, never other tasks. |
 | `feature_pr` | `true` | Open the feature's pull request once its feature review passes. With it off, the passing review is recorded and no pull request is opened. |
+| `eager_redo` | `true` | For eager mode (`features.eager`), which isn't built yet: when a task pull request of an eager feature changes, rebuild and re-split the tasks after it. Until eager mode lands, it does nothing. |
 
 Automation never runs more than `runner.max_concurrent` agents at once (the rest wait their turn) and gives each run its agent's `budget_usd`.
 

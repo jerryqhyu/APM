@@ -174,6 +174,7 @@ automation:                  # what `apm serve` does on its own (§7.7); every s
   accept_follow_ups: true
   implement_follow_ups: true
   feature_pr: true
+  eager_redo: true           # for eager mode (§7.8); does nothing until it is built
 ```
 
 ### 3.5 Commit format (plan repo)
