@@ -26,6 +26,7 @@ from apm.core.reconcile import reconcile
 from apm.core.split import commit_tree, tree_of
 from apm.core.store import EagerBuild
 from apm.runner.agents import EAGER_BUILDER, SPLITTER, RunRefused
+from apm.runner.auto import AutoQueue
 from apm.runner.feature_runs import IMPLEMENTER, implement_feature
 from apm.runner.queue import RunQueue
 from apm.runner.runner import Runner
@@ -581,3 +582,66 @@ async def test_a_task_merged_as_split_is_left_alone_when_a_later_one_changes(
     slices = {s.node_id: s for s in harness.store.eager_slices(feature)}
     assert slices[parse].landed == old[parse].commit
     assert load_graph(project)[parse].status is Status.DONE
+
+
+# --- redo in `apm serve`: after each reconcile, with `automation.eager_redo` ---
+
+
+async def test_apm_serve_redoes_a_changed_task_on_its_own(
+    code_repo: CodeRepo, eager: tuple[Harness, Agents], fake_gh: FakeGh
+) -> None:
+    harness, agents = eager
+    feature, (parse, index, rank) = await split_three(code_repo, harness, agents)
+    old = {s.node_id: s for s in harness.store.eager_slices(feature)}
+    fix = push_on(code_repo, old[parse].branch, "src/fix.py", "fixed = True\n", "Review fix")
+    agents.build = rebuild_per_task(agents)
+    queue = AutoQueue(harness.runner, debounce_s=0)
+
+    assert queue.reconcile()
+    pending = harness.store.eager_build(feature).pending  # ty: ignore[possibly-missing-attribute]
+    assert pending is not None
+    assert (pending["node_id"], pending["tasks"]) == (parse, [index, rank])
+    queue.scan()
+    queue.pump()
+    await settle(harness)
+
+    build = harness.store.eager_build(feature)
+    assert build is not None
+    assert (build.state, build.round, build.pending) == ("split", 2, None)
+    tip = git_out(code_repo, "rev-parse", f"origin/{old[rank].branch}")
+    assert tip != old[rank].commit
+    assert harness.store.eager_slices(feature)[0].commit == fix
+    # The same change isn't redone again.
+    queue.next_reconcile = 0
+    assert queue.reconcile()
+    queue.scan()
+    queue.pump()
+    assert not harness.runner.active()
+
+
+async def test_with_eager_redo_off_nothing_starts_but_redo_by_hand_works(
+    code_repo: CodeRepo, eager: tuple[Harness, Agents], fake_gh: FakeGh
+) -> None:
+    harness, agents = eager
+    configure(code_repo.project, "automation:\n  eager_redo: false\n")
+    feature, (parse, _, rank) = await split_three(code_repo, harness, agents)
+    old = {s.node_id: s for s in harness.store.eager_slices(feature)}
+    push_on(code_repo, old[parse].branch, "src/fix.py", "fixed = True\n", "Review fix")
+    agents.build = rebuild_per_task(agents)
+    queue = AutoQueue(harness.runner, debounce_s=0)
+
+    assert queue.reconcile()
+    queue.scan()
+    queue.pump()
+    assert not harness.runner.active()
+    build = harness.store.eager_build(feature)
+    assert build is not None
+    assert build.pending is not None  # shown as stale in the UI
+    assert build.round == 1
+
+    await harness.runner.eager.redo(feature)
+    await settle(harness)
+    build = harness.store.eager_build(feature)
+    assert build is not None
+    assert (build.state, build.round) == ("split", 2)
+    assert git_out(code_repo, "rev-parse", f"origin/{old[rank].branch}") != old[rank].commit
