@@ -112,8 +112,7 @@ class EagerRuns:
         graph, config = load_graph(self.project), read_config(self.project.apm_dir)
         if eager_feature(config, graph, feature) != feature:
             raise RunRefused("eager mode is off for this feature: turn it on in its settings")
-        build = store.eager_build(feature)
-        if is_running(store, build):
+        if is_running(store, feature):
             raise RunRefused("the eager build of this feature is already running")
         if store.eager_slices(feature):
             raise RunRefused(
@@ -143,7 +142,7 @@ class EagerRuns:
         build = store.eager_build(feature)
         if build is None:
             raise RunRefused("nothing to redo: this feature hasn't been built eagerly")
-        if is_running(store, build):
+        if is_running(store, feature):
             raise RunRefused("the eager build of this feature is already running")
         mode = check_mode(mode, config)
         if state_of(store, build) == "split_failed" and build.sha is not None:

@@ -5,6 +5,8 @@ It answers the REST calls APM makes:
 - `gh api -X GET repos/<o>/<r>/pulls ...`: the open pull requests, from FAKE_GH_OPEN (JSON, `[]`
   by default).
 - `gh api -X POST repos/<o>/<r>/pulls ...`: a new pull request, `https://github.com/o/r/pull/7`.
+  With FAKE_GH_NUMBERED (`FakeGh.numbered`), each one gets its own number from 101 up and is kept
+  in FAKE_GH_PRS, open, with its base and head.
 - `gh api [--hostname H] repos/<o>/<r>/pulls/<n>`: one pull request, from the JSON file at
   FAKE_GH_PRS (see `FakeGh.add`); 404 if it isn't there.
 - `gh api -X PATCH repos/<o>/<r>/pulls/<n> -f base=<branch>`: retargets it in that file.
@@ -40,10 +42,39 @@ def main() -> int:
         print(os.environ.get("FAKE_GH_OPEN", "[]"))
         return 0
     if args[:3] == ["api", "-X", "POST"]:
+        if os.environ.get("FAKE_GH_NUMBERED"):
+            print(json.dumps(_new_numbered_pr(args)))
+            return 0
         print(json.dumps({"html_url": NEW_PR, "number": 7}))
         return 0
     print(f"fake gh: unexpected call {args}", file=sys.stderr)
     return 1
+
+
+def _new_numbered_pr(args: list[str]) -> dict:
+    """With FAKE_GH_NUMBERED: a new open pull request numbered from 101 up, kept in FAKE_GH_PRS
+    with its head and base, so it can be read and retargeted afterwards.
+    """
+    fields = dict(a.partition("=")[::2] for a in args if "=" in a and not a.startswith("repos/"))
+    repo = args[3].removeprefix("repos/").removesuffix("/pulls")
+    store = Path(os.environ["FAKE_GH_PRS"])
+    prs = json.loads(store.read_text()) if store.exists() else {}
+    number = 101 + sum(1 for pr in prs.values() if pr.get("created"))
+    pr = {
+        "number": number,
+        "html_url": f"https://github.com/{repo}/pull/{number}",
+        "state": "open",
+        "merged": False,
+        "merge_commit_sha": None,
+        "base": {"ref": fields.get("base", "")},
+        "head": {"ref": fields.get("head", "")},
+        "title": fields.get("title", ""),
+        "body": fields.get("body", ""),
+        "created": True,
+    }
+    prs[f"repos/{repo}/pulls/{number}"] = pr
+    store.write_text(json.dumps(prs))
+    return pr
 
 
 _ONE_PR = re.compile(r"^repos/[^/]+/[^/]+/pulls/\d+$")
@@ -100,6 +131,20 @@ class FakeGh:
 
     def fail(self) -> None:
         self._monkeypatch.setenv("FAKE_GH", "fail")
+
+    def numbered(self) -> None:
+        """Each new pull request gets its own number (101, 102, …) and can be read back."""
+        self._monkeypatch.setenv("FAKE_GH_NUMBERED", "1")
+
+    def merge(self, number: int, merge_commit: str, repo: str = "o/r") -> None:
+        """Marks pull request `number` merged by `merge_commit`, into the base it has now."""
+        prs = json.loads(self.prs.read_text())
+        prs[f"repos/{repo}/pulls/{number}"] |= {
+            "state": "closed",
+            "merged": True,
+            "merge_commit_sha": merge_commit,
+        }
+        self.prs.write_text(json.dumps(prs))
 
     def open_prs(self, *urls: str) -> None:
         self._monkeypatch.setenv("FAKE_GH_OPEN", json.dumps([{"html_url": u} for u in urls]))

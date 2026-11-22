@@ -179,21 +179,23 @@ def gate_refusal(graph: Graph, feature: NodeId, blockers: Sequence[tuple[NodeId,
 # --- the build's state ---
 
 
-def is_running(store: Store, build: EagerBuild | None) -> bool:
-    """True while a build or a redo is going: its run is still running."""
-    if build is None or build.state not in BUSY or build.run_id is None:
-        return False
-    try:
-        return store.get_run(build.run_id).status == "running"
-    except KeyError:
-        return False
+EAGER_RUNS = ("apm-eager-builder", "apm-splitter")
+"""The agents of an eager pipeline (`apm.runner.agents`)."""
+
+
+def is_running(store: Store, feature: NodeId) -> bool:
+    """True while a build, a redo or a split of `feature` is going: one of its runs is. Its runs
+    are recorded as soon as it starts, before its build is.
+    """
+    running = store.list_runs(node_id=feature, status="running")
+    return any(run.agent in EAGER_RUNS for run in running)
 
 
 def state_of(store: Store, build: EagerBuild | None) -> str | None:
     """The build's state, with a build whose run was cut off (APM stopped) as `failed`."""
     if build is None:
         return None
-    if build.state in BUSY and not is_running(store, build):
+    if build.state in BUSY and not is_running(store, build.feature_id):
         return "failed"
     return build.state
 
@@ -207,7 +209,7 @@ def task_refusal(store: Store, config: ApmConfig, graph: Graph, task: NodeId) ->
     feature = eager_feature(config, graph, task)
     if feature is None or feature == task:
         return None
-    if is_running(store, store.eager_build(feature)):
+    if is_running(store, feature):
         return "the eager build of its feature is running: its tasks come from that build"
     if task in split_tasks(store, feature):
         return (
@@ -662,7 +664,7 @@ def detect_redos(project: Project, store: Store, *, read: PrReader = read_pr) ->
     graph = load_graph(project)
     for build in store.eager_builds():
         feature = build.feature_id
-        if feature not in graph or is_running(store, build) or not store.eager_slices(feature):
+        if feature not in graph or is_running(store, feature) or not store.eager_slices(feature):
             continue
         pending: dict[str, Any] | None = None
         try:
@@ -835,7 +837,7 @@ def redo_hint(
     state = state_of(store, build)
     if build is None:
         return {"action": None, "why": "nothing has been built eagerly yet: press Implement"}
-    if is_running(store, build):
+    if is_running(store, build.feature_id):
         return {"action": None, "why": "the eager build is running"}
     if state == "split_failed":
         return {"action": "split", "why": "split the build again"}

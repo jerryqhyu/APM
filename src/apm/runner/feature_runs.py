@@ -108,7 +108,7 @@ def eager_builds(
         tasks = build_tasks(graph, feature)
         covered |= set(tasks)
         name = f"{handle(feature)} ({graph[feature].title})"
-        if is_running(store, store.eager_build(feature)):
+        if is_running(store, feature):
             skipped += [Skipped(t, f"the eager build of {name} is running") for t in tasks]
         elif blockers := dict(build_blockers(graph, store, config, tasks, body, locked)):
             waits = f"waits for the eager build of {name}, which can't start until every task can"
