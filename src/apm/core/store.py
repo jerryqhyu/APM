@@ -1,7 +1,8 @@
 """The local database (plans.md §4): `.apm/.cache/apm.db`, never committed.
 
 It holds what only matters on this machine: agent runs, their event logs, proposals waiting
-for a decision, and task reviews. Deleting it loses those and nothing about the plan itself.
+for a decision, task reviews, and the state of eager builds. Deleting it loses those and nothing
+about the plan itself.
 """
 
 import hashlib
@@ -92,6 +93,34 @@ CREATE TABLE IF NOT EXISTS reports(
     created REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS reports_node ON reports(node_id, created);
+CREATE TABLE IF NOT EXISTS eager_builds(
+    feature_id TEXT PRIMARY KEY,
+    round INTEGER NOT NULL,
+    branch TEXT NOT NULL,
+    base TEXT NOT NULL,
+    base_sha TEXT NOT NULL,
+    sha TEXT,
+    state TEXT NOT NULL,
+    tasks TEXT NOT NULL,
+    run_id TEXT,
+    error TEXT,
+    warnings TEXT NOT NULL,
+    pending TEXT,
+    updated REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS eager_slices(
+    feature_id TEXT NOT NULL,
+    node_id TEXT NOT NULL,
+    position INTEGER NOT NULL,
+    branch TEXT NOT NULL,
+    commit_sha TEXT NOT NULL,
+    parent_sha TEXT NOT NULL,
+    tree TEXT NOT NULL,
+    patch_id TEXT,
+    lines INTEGER,
+    landed TEXT,
+    PRIMARY KEY(feature_id, node_id)
+);
 """
 
 
@@ -182,6 +211,61 @@ class FeatureReport:
     detail: str
     """`brief`, `standard` or `detailed`."""
     created: float = field(default_factory=time.time)
+
+
+type EagerState = Literal["building", "splitting", "split", "failed", "split_failed"]
+
+
+@dataclass(frozen=True, slots=True)
+class EagerBuild:
+    """The latest eager build of a feature (see `apm.core.eager`)."""
+
+    feature_id: NodeId
+    round: int
+    """1 for the first build, then one more for every rebuild: each has its own eager branch."""
+    branch: str
+    """The eager branch the builder works on."""
+    base: str
+    """The branch the build starts from and the chain of task pull requests goes into: the
+    feature branch."""
+    base_sha: str
+    """The commit the eager branch started from."""
+    sha: str | None
+    """The eager branch's tip that was split, once it was."""
+    state: EagerState
+    tasks: tuple[NodeId, ...]
+    """The tasks this round builds, in the order of the chain."""
+    run_id: str | None = None
+    error: str | None = None
+    warnings: tuple[str, ...] = ()
+    """What the split couldn't do as asked, e.g. a slice over its task's size limit."""
+    pending: dict[str, Any] | None = None
+    """A task pull request that changed since the split, as redo detection last saw it."""
+    updated: float = field(default_factory=time.time)
+
+
+@dataclass(frozen=True, slots=True)
+class EagerSlice:
+    """One task's part of an eager build: the commit APM put on the task's branch."""
+
+    feature_id: NodeId
+    node_id: NodeId
+    position: int
+    """Its place in the chain, from 0: each task's branch is built on the one before."""
+    branch: str
+    commit: str
+    """The task branch's tip as APM left it (after a redo, the commit that rebuilt it)."""
+    parent: str
+    """The commit it is built on: the previous task's, or the base for the first."""
+    tree: str
+    """`commit`'s tree: the code as it is once this task and every one before it are in."""
+    patch_id: str | None
+    """The patch id of the slice's own change (`parent` to `commit`), to recognise it once it is
+    squashed or rebased into the feature branch."""
+    lines: int | None = None
+    """Roughly how many lines of source the slice changes."""
+    landed: str | None = None
+    """The commit that brought it into the feature branch as split, once it did."""
 
 
 def content_fingerprint(node: Node, body: str) -> str:
@@ -485,6 +569,58 @@ class Store:
             ).fetchone()
         return None if row is None else FeatureReport(**dict(row))
 
+    # --- eager builds (not archived: they describe branches in this machine's clone) ---
+
+    def save_eager_build(self, build: EagerBuild) -> EagerBuild:
+        """Records a feature's eager build, replacing the one before."""
+        values = list(astuple(build))
+        values[7] = json.dumps(list(build.tasks))
+        values[10] = json.dumps(list(build.warnings), ensure_ascii=False)
+        values[11] = (
+            None if build.pending is None else json.dumps(build.pending, ensure_ascii=False)
+        )
+        with self._db() as db:
+            db.execute(
+                "INSERT OR REPLACE INTO eager_builds VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                values,
+            )
+        return build
+
+    def eager_build(self, feature_id: NodeId) -> EagerBuild | None:
+        with self._db() as db:
+            row = db.execute(
+                "SELECT * FROM eager_builds WHERE feature_id = ?", (feature_id,)
+            ).fetchone()
+        return None if row is None else _eager_build(row)
+
+    def eager_builds(self) -> list[EagerBuild]:
+        with self._db() as db:
+            rows = db.execute("SELECT * FROM eager_builds ORDER BY feature_id").fetchall()
+        return [_eager_build(row) for row in rows]
+
+    def save_eager_slices(self, slices: Iterable[EagerSlice]) -> None:
+        """Records task slices, replacing what was recorded for the same tasks."""
+        with self._db() as db:
+            db.executemany(
+                "INSERT OR REPLACE INTO eager_slices VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (astuple(s) for s in slices),
+            )
+
+    def eager_slices(self, feature_id: NodeId) -> list[EagerSlice]:
+        """A feature's slices in chain order."""
+        with self._db() as db:
+            rows = db.execute(
+                "SELECT * FROM eager_slices WHERE feature_id = ? ORDER BY position",
+                (feature_id,),
+            ).fetchall()
+        return [EagerSlice(*row) for row in rows]
+
+    def eager_slice_of(self, node_id: NodeId) -> EagerSlice | None:
+        """The slice a task was delivered as, if an eager build split it."""
+        with self._db() as db:
+            row = db.execute("SELECT * FROM eager_slices WHERE node_id = ?", (node_id,)).fetchone()
+        return None if row is None else EagerSlice(*row)
+
     # --- restoring (from an archive, see `apm.core.archive`) ---
 
     def restore(
@@ -548,6 +684,24 @@ def _where(**filters: object) -> tuple[str, tuple[object, ...]]:
 
 def _run(row: sqlite3.Row) -> Run:
     return Run(**{key: row[key] for key in row.keys()})  # noqa: SIM118 (Row isn't a dict)
+
+
+def _eager_build(row: sqlite3.Row) -> EagerBuild:
+    return EagerBuild(
+        feature_id=row["feature_id"],
+        round=row["round"],
+        branch=row["branch"],
+        base=row["base"],
+        base_sha=row["base_sha"],
+        sha=row["sha"],
+        state=row["state"],
+        tasks=tuple(json.loads(row["tasks"])),
+        run_id=row["run_id"],
+        error=row["error"],
+        warnings=tuple(json.loads(row["warnings"])),
+        pending=None if row["pending"] is None else json.loads(row["pending"]),
+        updated=row["updated"],
+    )
 
 
 def _proposal(row: sqlite3.Row) -> Proposal:

@@ -7,6 +7,7 @@ import {
   download,
   implementAll,
   query,
+  redoEager,
   reviewAllTasks,
   saveNodeSettings,
   writeReport,
@@ -317,6 +318,11 @@ export function App() {
       await clearNodeSettings(detail.id);
       await refresh();
     },
+    // Errors show next to the Redo button.
+    eagerRedo: async () => {
+      showRun(await redoEager(detail.id));
+      await refresh();
+    },
   };
 
   if (fatal === "token") {
@@ -534,9 +540,13 @@ export function App() {
                     body: { agent: dialog.agent, node_id: dialog.node, message, critic, mode, branch: branch || null },
                   });
             setDialog(null);
-            setRoute({ ...route, selected: [dialog.node] });
-            setFocusRun(run.id);
-            setTab("chat");
+            // Implement on a task of an eager feature builds the feature: follow that run there.
+            if (run.node_id && run.node_id !== dialog.node) showRun(run);
+            else {
+              setRoute({ ...route, selected: [dialog.node] });
+              setFocusRun(run.id);
+              setTab("chat");
+            }
             await refresh();
           }}
         />

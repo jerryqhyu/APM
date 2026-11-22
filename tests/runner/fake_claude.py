@@ -22,6 +22,10 @@ What it does is steered by FAKE_CLAUDE (a comma-separated set of words):
   says "rewritten" when resumed). `report-fails`: it exits 1; `report-hangs`: it hangs;
   `report-bad`: its markdown is empty.
 
+The eager splitter (`apm-splitter`) returns the JSON in the file FAKE_CLAUDE_SPLIT names: the
+test makes the chain with real git, as the agent would, and writes its answer there. The eager
+builder writes no code either: tests commit to the eager branch themselves.
+
 Every call's arguments, working directory and prompt are appended to FAKE_CLAUDE_LOG as one JSON
 line.
 """
@@ -231,6 +235,10 @@ def main() -> int:
                 "summary": "Looks fine." if verdict == "accept" else "Needs work.",
                 "issues": [issue] if verdict == "revise" else [],
             }
+        elif agent == "apm-splitter":
+            # Eager mode: the test made the chain with real git and wrote the answer down.
+            split = os.environ.get("FAKE_CLAUDE_SPLIT")
+            answer = json.loads(Path(split).read_text()) if split else {"summary": "", "tasks": []}
         elif "bad-proposal" in modes:
             answer = {"rationale": "nothing to do", "children": [], "warnings": []}
         else:

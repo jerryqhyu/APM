@@ -1,10 +1,17 @@
 // The actions panel: every way to change the graph directly, for whatever is selected. One node,
 // several nodes, or (with nothing selected) the plan as a whole.
 
+import { eagerFeature, eagerTask } from "./Eager";
 import { FeatureControls } from "./FeatureControls";
 import { WriteReportRow } from "./FeatureReport";
 import type { Batch, NodeDetail, NodeView, Status } from "./types";
 import { STATUS_LABEL, cx, stackedName } from "./util";
+
+/** True for an eager feature that hasn't been split yet: Implement all is its eager build. */
+function unsplitEager(detail: NodeDetail | null): boolean {
+  const eager = eagerFeature(detail);
+  return !!eager?.applies && eager.tasks.length === 0;
+}
 
 export interface ActionHandlers {
   open: (id: string) => void;
@@ -53,13 +60,21 @@ export function Actions({
   // The server says whether a task is under review and why Implement can't start; the UI follows it.
   const mine = one && detail?.id === one.id ? detail : null;
   const locked = selected.some((n) => n.id === detail?.id && detail.under_review);
-  const canImplement = one !== null && one.children === 0 && (one.ready || one.status === "in_progress");
+  // A task of an eager feature is built with its whole feature, or comes from its split.
+  const eager = eagerTask(mine);
+  const eagerBuilds = one !== null && one.status === "todo" && !!eager?.redirect;
+  const canImplement =
+    one !== null && one.children === 0 && (one.ready || one.status === "in_progress" || eagerBuilds) && !eager?.blocker;
   const implementHint = !one
     ? ""
     : locked
       ? "Under review: wait for its review to finish"
+      : eager?.blocker
+        ? `Not on its own: ${eager.blocker}`
       : mine?.implement_blocker
         ? `Not yet: ${mine.implement_blocker}`
+      : eagerBuilds
+        ? `Eager mode: Claude builds every To do task of ${eager?.feature?.title ?? "its feature"} in one run, then APM splits it into one pull request per task`
     : one.children > 0
       ? "Only a node with nothing inside it can be built directly"
       : one.blocked
@@ -239,7 +254,13 @@ export function Actions({
             </div>
           )}
           {one && one.children > 0 && !isStep && (
-            <FeatureControls feature={one} nodes={nodes} onReviewTasks={handlers.reviewTasks} onImplementAll={handlers.implementAll} />
+            <FeatureControls
+              feature={one}
+              nodes={nodes}
+              eager={unsplitEager(mine)}
+              onReviewTasks={handlers.reviewTasks}
+              onImplementAll={handlers.implementAll}
+            />
           )}
           {one && one.children > 0 && !isStep && (
             <WriteReportRow feature={one} step={step} onWrite={() => handlers.runAgent("apm-feature-reporter", one.id)} />

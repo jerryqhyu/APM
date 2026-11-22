@@ -154,3 +154,10 @@ export function getReport(id: string): Promise<ReportStatus> {
 export function writeReport(id: string, body: { message?: string; mode?: string }): Promise<Run> {
   return api<Run>(`/api/nodes/${id}/report`, { method: "POST", body });
 }
+
+// --- eager mode ---
+
+/** Redo on an eager feature: rebuild the tasks after one that changed, or split again. */
+export function redoEager(id: string): Promise<Run> {
+  return api<Run>(`/api/nodes/${id}/eager/redo`, { method: "POST", body: {} });
+}

@@ -415,13 +415,15 @@ def ensure_pull_request(
     run: str | None = None,
     title: str | None = None,
     body: str | None = None,
+    base: str | None = None,
 ) -> PrOutcome:
     """Makes sure a delivered leaf has a pull request, and that it's recorded on the node.
 
     If the delivery has a branch but no pull request, it looks for an open one for that branch,
     and opens one if there is none: title the node's title, body the node's body and its
     `APM-Node` line, base from `choose_base` (its PR target: a feature's task goes into the
-    feature branch even when it starts from a sibling's). Nothing is marked done either way.
+    feature branch even when it starts from a sibling's) unless `base` names one: an eager
+    build's task targets the task before it. Nothing is marked done either way.
     """
     graph = load_graph(project)
     if node_id not in graph:
@@ -437,7 +439,7 @@ def ensure_pull_request(
     if repo is None:
         return PrOutcome(problem=f'repo "{delivery.repo}" is not in apm.yaml', branch=branch)
     repo_dir = (project.apm_dir / repo.path).resolve()
-    base = choose_base(project, node_id, repo_key=delivery.repo).pr_base
+    base = base or choose_base(project, node_id, repo_key=delivery.repo).pr_base
     if base is None:
         return PrOutcome(
             problem="the code repo has no default branch to open it against", branch=branch
