@@ -29,6 +29,7 @@ v1 = a Python backend with a TypeScript web UI, one user on one machine, one cod
 | Packaging | Agents + skills + MCP ship as one Claude Code plugin | The same plugin serves spawned runs and your own terminal sessions |
 | Sharing a project | One `.apm.zip` archive (`apm export` / `apm import`, §3.8): the plan files plus a git bundle of the plan repo; runs only if asked | A whole project, history included, moves as one file with no remote to set up. Machine-specific state stays behind, and runs stay out by default because transcripts can hold secrets |
 | Finishing a feature | Every node with children ends in a review step (kind `review`) that waits on its other children; tasks merge into a feature branch; the feature reviewer checks that branch against the feature's description before its PR goes on (§2.5, §7.6) | "All tasks merged" isn't "the feature works": a review against the spec catches the gaps between tasks. As a node in the graph, the review is ordered, visible and tracked like any work, and the feature branch keeps unreviewed work off `main` |
+| Feature reports | When a feature's review passes, an agent writes its report from a **record** APM gathers (the plan, its history, what people typed and chose, the proposals they changed or rejected, the review verdicts); APM commits it to the feature branch as `docs/features/<slug>-<handle>.md` and links it from the feature's PR (§7.9) | The decisions and their reasons are scattered over chats, proposals and plan commits that only this machine has; a report on the branch carries them into the repository with the feature. Gathering the record in plain code, and forbidding the agent any reason the record doesn't give, keeps the report from inventing a rationale |
 | Scope | Single user, single machine, one code repo (config already shaped for many repos) | Fastest route to a working slice |
 
 ---
@@ -260,7 +261,14 @@ run_events(run_id, seq, ts, json)             -- the stream-json events a transc
 proposals(id PK, node_id, run_id, json, review, status, created, resolved)
 task_reviews(node_id, fingerprint, verdict, data, run_id, created)
                                               -- one row per task review (§7.7)
+follow_ups(node_id PK, proposal_id)           -- tasks a feature review's proposal created on its own
+acceptances(proposal_id PK, children, created_nodes, accepted)
+                                              -- what was accepted from a proposal (§7.9)
+reports(node_id, run_id, branch, path, sha, error, markdown, summary, detail, created)
+                                              -- every feature report APM wrote (§7.9)
 ```
+
+`acceptances.children` is the list of children you accepted when you passed one (the dialog always does: edited, trimmed, or as proposed), so a feature report can say what you changed before accepting; `created_nodes` are the nodes it became. `reports` keeps each report as committed, with its commit (`sha`), or with `error` when it couldn't be committed; the latest one per feature is what the UI shows. Neither is archived: the report itself is in the code repo.
 
 `task_reviews.fingerprint` is the SHA-256 of the task's title, kind and body (`content_fingerprint`), so a review applies to exactly one version of the content and a status change or delivery doesn't invalidate it. `verdict` is `pass`, `too_big`, `unclear` or `error`; `data` is what the reviewer returned with it. Task reviews are not archived: an imported project's tasks are simply reviewed again.
 
@@ -340,6 +348,7 @@ Inside `core`, each module is one concern, and nothing is computed in two places
 | `mutate`, `ops` | the one way to write; the operations built on it; committing hand edits |
 | `views` | the one way to read: outline text, JSON views, search, a node's history |
 | `proposals`, `reconcile`, `store` | proposals; marking merged work done; the local database |
+| `feature_review`, `report`, `report_branch` | the code around the feature reviewer (§7.6); a feature report's record and prompt, and getting the report onto the feature branch and into its PR (§7.9) |
 
 - **Backend:** Python 3.14, one distribution with an `apm` console script, managed with **uv** (committed `uv.lock`, `uv_build` backend, src layout). **ruff** lints and formats, **ty** type-checks, **pytest** + **Hypothesis** test. Names follow PEP 8: snake_case for modules, functions, variables and fields, PascalCase for classes; ruff's pep8-naming rules enforce it.
 - **Libraries:** networkx (the in-memory graph: `Graph.tree` and `Graph.deps` are `networkx.DiGraph`s), pydantic (validating `graph.ndjson` lines, `apm.yaml`, and API and MCP inputs), PyYAML, Typer, FastAPI + uvicorn, and the `mcp` SDK. The standard library covers UUIDv7 (`uuid.uuid7()`), SQLite with FTS5 (`sqlite3`) and git (`subprocess`).
@@ -390,6 +399,8 @@ PATCH  /api/nodes/:id/settings  { eager?, task_max_lines?, report?, report_detai
 DELETE /api/nodes/:id/settings      a feature's own settings, cleared
 POST   /api/nodes/:id/review-tasks · POST /api/nodes/:id/implement   { mode?, message? }
                             Review all tasks · Implement all: { started, waiting, skipped }
+GET    /api/nodes/:id/report        the feature's report: state, the latest one, its GitHub link
+POST   /api/nodes/:id/report        { mode?, message? }   Write report: starts the reporter (§7.9)
 GET    /api/runs?node_id=&scope=project&status= · GET /api/runs/:id?after=<seq>
 POST   /api/runs            { agent, node_id?, message?, critic?, mode? }   no node_id = the project
 POST   /api/runs/:id/continue   { message, mode? }    the next turn of a conversation
@@ -401,6 +412,7 @@ POST   /api/proposals/:id/accept   { children? }   the edited or trimmed list, i
 POST   /api/proposals/:id/reject
 WS     /ws   graph.changed · run.started · run.event · run.finished
              · run.request · run.request_resolved · proposal.created · proposal.resolved
+             · report.written
 ```
 
 Node ids in the API can be full ids or handles.
@@ -487,6 +499,7 @@ Limits: `max_concurrent` pipelines in total. One conversation takes one turn at 
 | `apm-decomposer` | `read` | Read, Grep, Glob, the read tools | returns a decomposition (JSON schema); file-editing tools are disallowed |
 | `apm-critic` | `read` | Read, Grep, Glob, the read tools | returns a review (JSON schema); only started by the pipeline; `dontAsk` |
 | `apm-implementer` | `node:<id>` | Read, Grep, Glob, Edit, Write, `Bash(git *)`, `Bash(gh pr *)`, its node's tools | `--worktree`; its first message names the base branch (§7.4) |
+| `apm-feature-reporter` | `read` | Read, Grep, Glob, `git log/diff/show/grep`, the read tools | returns a report (JSON schema); file-editing tools are disallowed; APM commits what it returns (§7.9) |
 
 Give the implementer the commands that run your tests, e.g. `allowed_tools: ["Bash(uv run *)"]` under `runner.agents.apm-implementer`, or it has to ask (or, in `dontAsk`, cannot run them).
 
@@ -572,7 +585,7 @@ The plain code around it (`apm.core.feature_review`):
 - **Where**: a detached checkout of that commit in `.claude/worktrees/apm-review-<handle>`, replaced by the next review of the feature, so the agent reads the code as built and your checkout is never touched. Its first message names the branch, the commit, and every task with whether its work is in that commit.
 - **The verdict** is held to its own evidence: "complete" with a missing or partial criterion, or a blocker or major issue, is recorded as incomplete.
 - **Recording**: the verdict, a table of the criteria and the issues go into the **review step's** description under `## Feature review` (the feature's description, the spec, is untouched). Follow-ups become a proposal on the **feature**, so accepting them adds tasks that the step then waits on. A later turn of the same conversation replaces its earlier pending proposal.
-- **After**: incomplete sends the step back to `todo`. Complete opens the feature branch's PR into its home (title: the feature's; body: the feature's description and the review) and leaves the step `in_progress` until reconcile sees it merge; if the reviewed branch already is the home, the step and feature are done at once.
+- **After**: incomplete sends the step back to `todo`. Complete opens the feature branch's PR into its home (title: the feature's; body: the feature's description and the review) and leaves the step `in_progress` until reconcile sees it merge; if the reviewed branch already is the home, the step and feature are done at once. Once the PR is open, the same pipeline writes the **feature report** (§7.9), commits it to the feature branch, so the PR contains it, and links it from the PR's description; a report that fails never holds the PR back.
 
 ### 7.7 Task review and the automation loop
 
@@ -599,13 +612,39 @@ Automated runs share `runner.max_concurrent` with everything else, waiting in th
 **Settings.** `features:` in `apm.yaml` (§3.4) holds the project's defaults for every feature and per-feature overrides. `apm.core.settings.feature_settings(config, graph, node)` is the one place that works out what applies to a node: the defaults, then each enclosing feature's override from the outside in, then the node's own. A task gets its features' settings. The task review, the decomposer and the implementer read `task_max_lines` through it.
 
 - `eager`: build a feature in one run on one branch, then split it into one pull request per task. Not built yet: `apm.runner.feature_runs.implement_feature` is where it plugs in, and `automation.eager_redo` (rebuild and re-split the tasks after a task PR that changed) is read by it.
-- `report`, `report_detail`: write a feature report once the feature review passes. Not built yet.
+- `report`, `report_detail`: write a feature report once the feature review passes, and how much it says (§7.9).
 
 **Changing them.** `set_defaults`, `set_override` and `clear_override` edit `apm.yaml` in place with ruamel.yaml's round trip (`apm.core.config_edit`): comments, indentation and the spelling of untouched values stay. The result must differ from the original by exactly the change asked for, read the way `parse_config` reads it, and must pass `parse_config`; otherwise nothing is written. Each change is one `settings` commit under the write lock (§3.5). Hand edits to `apm.yaml`, which `apm commit` doesn't take, are committed with it, and the commit says so. A change of the limit doesn't undo passed task reviews: Review all tasks reviews a feature's tasks again.
 
 **Review all tasks** (`apm review-tasks <feature>`) starts a task review on every To do task in the feature, nested features included, but not review steps; tasks under review are skipped. **Implement all** (`apm implement <feature>`) starts the implementer on every task that is ready now, stacked ones included, and passes the Implement gate; blocked tasks, and tasks that fail the gate or are under review, are skipped with the reason. On a task, either covers that task.
 
 Both go through a `RunQueue` (`apm.runner.queue`): what fits under `max_concurrent` starts at once, the rest waits, oldest first. In `apm serve` the automation loop pumps it ahead of its own queue; it is separate from that queue, so a run asked for by hand never counts as the automatic run of a version. A queued run that can no longer start when its turn comes (the node is gone or changed, or it is already running) is dropped. In the terminal, the command pumps the queue itself and follows every run, each line tagged with its node's handle.
+
+### 7.9 Feature reports
+
+A feature report tells people who weren't there what a feature is and why it exists, the **human decisions** made along the way with their **rationale**, and how it was **implemented**. The feature reporter (`apm-feature-reporter`, label **Write report**) writes it; it is read-only (read scope, `--disallowedTools Write,Edit,NotebookEdit`, `git log/diff/show/grep`) and returns JSON (`REPORT_SCHEMA`: `{summary, markdown}`). APM writes the file and makes the commit.
+
+**The record** (`apm.core.report.gather_record`, `render_record`) goes into the reporter's first message, so the agent doesn't dig for decisions, or invent them:
+
+- the feature's description; its decision-kind descendants with their descriptions; every task with its description, status, PR, branch and its task review's estimate; nested features with theirs;
+- **what people said and chose**: every message typed in a conversation about the feature or a node inside it, taken from the runs' prompts without what APM wrote around them (`typed_text`: a chat's message, the "Guidance from the user" of Decompose, Implement, Review feature and Review task, the next turn of any conversation); answers to `AskUserQuestion`, plans approved, and refusals with their reason (`apm_request_resolved` events); Claude's replies around them; and, from conversations elsewhere (a chat about the whole plan), the turns whose `APM-Run` changed the feature's nodes, with the turn before each;
+- **proposals** on the feature and inside it: their source, rationale, the critic's verdict, the children proposed, and whether they were rejected, accepted as proposed, accepted after changes (from `acceptances`: renamed, retyped, intent or criteria or dependencies changed, left out, added) or accepted by APM on its own (`automation.accept_follow_ups`);
+- **the plan's history** (`git log` of the plan repo, with each commit's note): changes the user made, breakdowns accepted, settings, and changes Claude made in a chat; commits that record no decision (the agents' and APM's bookkeeping) are only counted;
+- **every feature review turn** of the feature and the features inside it: verdict, criteria, issues, and the follow-up tasks it led to with their status and PR;
+- **what the branch changes**: `git diff --stat` against its home, and its first-parent commits.
+
+It stays within `RECORD_LIMIT` (60,000 characters): Claude's replies are cut to 800, then 300 characters, then left out; typed messages are cut to 2,000, then 600 characters. A message a person typed is never left out.
+
+**Detail levels** (`report_detail`) choose the outline the prompt and the agent's markdown give: *brief* (about a page: what and why, the key decisions with one-line reasons, the PRs); *standard* (also each decision with its rationale and the rejected alternatives, how it is put together, a paragraph per task, testing, what was left for later); *detailed* (also file-by-file notes, the review findings and their fixes, risks and follow-ups, a timeline). **Accuracy rules**, in both: every human decision comes from the record and no rationale is invented; a decision with no recorded reason says so; PRs and files are cited.
+
+**Where it lands** (`apm.core.report_branch`): `docs/features/<title-slug>-<handle>.md` on the feature's branch (`feature_branch`), so it reaches its home with the feature. The handle is always in the name: two feature branches can't see each other's files, so "only if it collides" can't be decided on one branch; it also names the node. A file already on the branch for this feature (ending in `-<handle>.md`) keeps its name, so a renamed feature doesn't leave two reports. APM commits it in a detached checkout of the branch's tip (`.claude/worktrees/apm-report-<handle>`, which the agent read from), with an `APM-Node: <feature>` trailer, and pushes with a plain push. If the branch moved meanwhile, it starts again from the new tip, once; it never force-pushes. Identical content makes no commit. Without `origin`, the local branch is moved with a compare-and-swap `update-ref`. A report that can't be committed is still stored, with why.
+
+**When it is written**:
+
+- **After a passing review**, if `feature_settings(...).report` is on for the feature and the reviewed branch isn't already its home. The order is: `conclude` opens the feature's PR as before, *then* the report is written in the same pipeline (in `dontAsk` mode, at most `REPORT_TIMEOUT_S`, 30 minutes), committed to the feature branch, which the open PR picks up, and linked at the top of the PR's description (`gh api` GET, then `-X PATCH ... -f body=`, replacing an earlier link). Opening the PR first is the robust order: the PR is the critical path and the report is optional, can take minutes, fail, or be cut off by a restart, and with this order none of those can hold the PR back; a pushed commit joins an open PR on its own, so the only extra step is the description. A report that fails, answers badly or times out leaves a line in the review's conversation saying the report is missing and how to write it by hand. A nested feature's PR goes into its parent's branch, and so does its report, which travels up with it.
+- **By hand**: **Write report** on a feature, `POST /api/nodes/:id/report`, `apm report <feature>` (or `apm run feature-reporter`). It needs a feature whose branch has work on it (refused at once on a leaf or a feature with nothing delivered; the run fails with the reason when the branch is missing or empty), before or after the review, with `report` on or off. On a review step it reports on its feature. One report per feature at a time. Each write is a new commit; a reply in its conversation rewrites it from the same checkout.
+
+**Seeing it**: the `reports` table (§4) keeps every report; `GET /api/nodes/:id/report` gives the state (`none`, `writing`, `written`, `not_committed`), the latest report and its GitHub link (`https://github.com/<owner>/<repo>/blob/<branch>/<path>`, from the PR's URL or the repo's remote). The UI shows it in the feature's Details; `apm report <feature> --show` prints it.
 
 ---
 
@@ -623,6 +662,8 @@ src/apm/plugin/
     apm-feature-reviewer.md  review step → checks the feature branch against the feature's
                           description, criterion by criterion (read-only, json-schema)
     apm-task-reviewer.md  task → pass, too_big (with a split) or unclear (read-only, json-schema)
+    apm-feature-reporter.md  feature + the record APM gathers → its report, at a detail level;
+                          only decisions and reasons the record shows (read-only, json-schema)
   skills/
     apm-node-format/      node fields, body sections, handles, the rules, what follows from them
     apm-decompose/        what a good breakdown looks like: 3–7 children, no overlap,
@@ -647,9 +688,9 @@ The conversation is the main interface; the graph is what it is about. The [user
   - **Edges:** lifted edges show a count badge. Edges that leave the level show as dashed stubs naming the outside node. Entangled nodes are outlined under a banner.
   - **Proposals** show as dashed ghost nodes and edges on the level they would land in.
 - **Right panel**, always there: an action bar on top, then two tabs, Chat and Details:
-  - **Actions:** every operation as a button, for what is selected. One node: status, open, add child, add sibling, rename, switch kind, move, link, delete, Decompose, Implement. Several nodes: status, **merge**, delete. A feature: also **Review all tasks** and **Implement all**, with what started, what waits for room and what was skipped. Nothing selected: add node, check plan, reconcile, commit hand edits, **export archive** (a download; including runs shows the secrets warning first), and **Settings…**: the `features:` defaults and the `automation:` switches, saved to `apm.yaml`.
+  - **Actions:** every operation as a button, for what is selected. One node: status, open, add child, add sibling, rename, switch kind, move, link, delete, Decompose, Implement. Several nodes: status, **merge**, delete. A feature: also **Review all tasks** and **Implement all**, with what started, what waits for room and what was skipped, and **Write report** (§7.9). Nothing selected: add node, check plan, reconcile, commit hand edits, **export archive** (a download; including runs shows the secrets warning first), and **Settings…**: the `features:` defaults and the `automation:` switches, saved to `apm.yaml`.
   - **Chat:** the conversation with Claude, about the selected node or the whole plan, turn by turn. Past conversations are tabs. Every agent run appears here, so it is also where a decomposition or an implementation is followed. A question or permission prompt shows as a card with its options, or Allow and Deny (with a reason). The permission mode is picked under the message box.
-  - **Details:** title (edited in place), state, description (markdown, with an editor), for a feature its settings (each with where it comes from: the project, an enclosing feature, or set here; Inherit, or a value of its own), what it waits on, depends on (add and remove), is needed by and contains, delivery, and history. With nothing selected, a summary of the plan: progress, what is in progress, what is ready, problems.
+  - **Details:** title (edited in place), state, description (markdown, with an editor), for a feature its settings (each with where it comes from: the project, an enclosing feature, or set here; Inherit, or a value of its own) and its report (not written, writing, or written at a commit, with its GitHub link and the report itself), what it waits on, depends on (add and remove), is needed by and contains, delivery, and history. With nothing selected, a summary of the plan: progress, what is in progress, what is ready, problems.
 - **Proposal review:** the rationale, the critic's review and the agent's warnings; you can edit any child, leave children out, and accept or reject.
 - **Live:** every view refreshes when the plan changes, whoever changed it.
 - **Look:** GitHub / VS Code. System font, neutral greys, one blue accent, 6px corners, hairline borders; colour only for state. Light, dark, or following the system.
@@ -671,6 +712,7 @@ apm ready [--root h] · apm search <query>
 apm run <assistant|decomposer|implementer|feature-reviewer> [h] [-m "..."] [--mode m] [--no-critic] [--branch b]
 apm review-tasks <h> [--mode m]  a task review on every To do task in a feature
 apm implement <h> [-m "..."] [--mode m]   the implementer on every ready, reviewed task in a feature
+apm report <h> [-m "..."] [--mode m] [--show]   write the feature's report onto its branch (§7.9)
 apm settings show [h] · set NAME=VALUE... [--node h] · clear <h>   apm.yaml's settings (§7.8)
 apm proposal ls [--all] · show <id> · accept <id> [--only key] · reject <id>
 apm reconcile [--retarget]       mark nodes done whose work is on the default branch; report
@@ -707,7 +749,8 @@ apm plugin-path                  where the Claude Code plugin is
 | **M7** | Reconciling, stack-aware | Work reaching the default branch moves its node to `done`, with no manual step and no early `done` for stacked PRs | **Built** as `apm reconcile` (§7.5), with "ready, stacked" (§2.3). Tested against local repos and a stand-in for `gh` |
 | **M8** | Archives: `apm export` / `apm import`, Export archive… in the UI (§3.8) | A project, with its history and optionally its runs, round-trips through one `.apm.zip` | **Built**; round trip, refusals and the download are tested |
 | **M9** | Review steps, feature branches and the feature reviewer (§2.5, §7.6) | A feature's tasks merge into its branch; its review step checks the branch against the description and opens the PR on | **Built**; tested with stand-ins for `claude` and `gh` |
-| **M10** | Feature settings and feature-level actions (§7.8) | Settings changed from the UI or the CLI land in `apm.yaml` with its comments kept; the task limit reaches the agents; Review all tasks and Implement all never fail on `max_concurrent` | **Built**, except eager mode and the feature report, whose settings are in place; tested with a stand-in for `claude` |
+| **M10** | Feature settings and feature-level actions (§7.8) | Settings changed from the UI or the CLI land in `apm.yaml` with its comments kept; the task limit reaches the agents; Review all tasks and Implement all never fail on `max_concurrent` | **Built**, except eager mode, whose settings are in place; tested with a stand-in for `claude` |
+| **M11** | Feature reports (§7.9) | A passing review puts a report of the feature, its decisions and their recorded reasons on the feature branch, linked from its PR; Write report does it by hand | **Built**; the record, the commit and the PR link are tested with stand-ins for `claude` and `gh`, real git and a local `origin` |
 
 ---
 
