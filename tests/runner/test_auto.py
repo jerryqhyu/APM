@@ -230,3 +230,64 @@ def test_the_review_is_queued_again_once_reconcile_finishes_the_follow_ups(
     queue.scan()
     queue.pump()
     assert started == [(FEATURE_REVIEWER, step), (FEATURE_REVIEWER, step)]
+
+
+async def cycle(queue: AutoQueue, harness: Harness, clock: Clock, times: int = 3) -> None:
+    for _ in range(times):
+        clock.now += 10
+        queue.scan()
+        queue.pump()
+        await settle(harness)
+
+
+async def test_an_errored_task_review_is_retried_once_without_a_restart(
+    project: Project, fake_claude: FakeClaude
+) -> None:
+    (task,) = tasks(project, "Parse")
+    harness, clock = Harness(project), Clock()
+    queue = AutoQueue(harness.runner, debounce_s=0, clock=clock)
+    fake_claude.mode("fail")
+    await cycle(queue, harness, clock, times=5)
+    assert [r.status for r in harness.store.list_runs()] == ["failed", "failed"]
+    assert queue.queued == {}
+    # A review started by hand after two errors still runs.
+    by_hand = harness.runner.start(TASK_REVIEWER, task)
+    await harness.runner.wait(by_hand.id)
+    assert len(harness.store.list_runs()) == 3
+    await cycle(queue, harness, clock)
+    assert len(harness.store.list_runs()) == 3
+    # An edit is new content: it gets a review of its own.
+    update_node(project, task, title="Parse the input")
+    await cycle(queue, harness, clock, times=5)
+    runs = harness.store.list_runs()
+    assert len(runs) == 5
+    assert '("Parse the input")' in fake_claude.calls[-1]["prompt"]
+
+
+async def test_a_successful_task_review_is_not_run_again(
+    project: Project, fake_claude: FakeClaude
+) -> None:
+    tasks(project, "Parse")
+    harness, clock = Harness(project), Clock()
+    queue = AutoQueue(harness.runner, debounce_s=0, clock=clock)
+    await cycle(queue, harness, clock, times=5)
+    assert [r.status for r in harness.store.list_runs()] == ["succeeded"]
+
+
+async def test_drive_rescans_when_a_run_finishes(
+    project: Project, fake_claude: FakeClaude, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tasks(project, "Parse")
+    harness = Harness(project)
+    events: asyncio.Queue[dict[str, object]] = asyncio.Queue()
+    monkeypatch.setattr(harness.runner, "_on_event", events.put_nowait)
+    fake_claude.mode("fail")
+    queue = AutoQueue(harness.runner, debounce_s=0)
+    driver = asyncio.create_task(queue.drive(events, tick_s=60))  # only events wake it
+    for _ in range(500):
+        if len(harness.store.list_runs(status="failed")) == 2:
+            break
+        await asyncio.sleep(0.01)
+    driver.cancel()
+    await settle(harness)
+    assert len(harness.store.list_runs()) == 2
