@@ -11,6 +11,8 @@ lands with the feature, and the feature's pull request links it. Plain code arou
   branch: a plain push, never a force-push. It is kept in the store either way, so the UI can show
   it, with why it couldn't be committed if it couldn't.
 - `link_report`: puts a link to the report at the top of the feature's pull request description.
+- `report_status`: where a feature's report stands (not written, writing, written at a commit),
+  with its link on GitHub, for the UI and the terminal.
 """
 
 import contextlib
@@ -19,7 +21,7 @@ import re
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from apm.core.config import ReportDetail, default_repo, read_config
 from apm.core.delivery import (
@@ -34,12 +36,14 @@ from apm.core.delivery import (
     home_branch,
     parse_pr_url,
 )
+from apm.core.errors import ApmError
 from apm.core.git import CommitMessage, GitError, commit, git
 from apm.core.graph import Graph
 from apm.core.ids import handle
 from apm.core.model import NodeId, Status
 from apm.core.project import Project, load_graph
 from apm.core.report import (
+    REPORTER,
     BranchChanges,
     ReportAnswer,
     ReportRefused,
@@ -49,7 +53,7 @@ from apm.core.report import (
     report_prompt,
 )
 from apm.core.settings import feature_settings
-from apm.core.store import FeatureReport, Store
+from apm.core.store import FeatureReport, Run, Store
 
 REPORT_DIR = "docs/features"
 WORKTREE_PREFIX = "apm-report-"
@@ -339,6 +343,46 @@ def report_url(project: Project, branch: str, path: str, pr: str | None = None) 
     if slug is None or match is None or "github" not in match[1]:
         return None
     return f"https://{match[1]}/{slug[0]}/{slug[1]}/blob/{branch}/{path}"
+
+
+@dataclass(frozen=True, slots=True)
+class ReportStatus:
+    """Where a feature's report stands, for the UI and `apm report --show`."""
+
+    feature: NodeId
+    state: Literal["none", "writing", "written", "not_committed"]
+    report: FeatureReport | None
+    """The latest one APM wrote, even while a new one is being written."""
+    running: Run | None
+    url: str | None
+    """The report's page on GitHub, once it is committed."""
+    pr: str | None
+    automatic: bool
+    """`features.report`: whether it is written on its own once the review passes."""
+    detail: ReportDetail
+
+
+def report_status(project: Project, store: Store, node_id: NodeId) -> ReportStatus:
+    graph = load_graph(project)
+    feature = report_subject(graph, node_id)
+    report = store.latest_report(feature)
+    running = store.list_runs(node_id=feature, status="running")
+    writing = next((run for run in running if run.agent == REPORTER), None)
+    pr = feature_pr(graph, feature)
+    url = None
+    if report is not None and report.sha is not None:
+        with contextlib.suppress(ApmError):  # no link is better than no status
+            url = report_url(project, report.branch, report.path, pr)
+    if writing is not None:
+        state = "writing"
+    elif report is None:
+        state = "none"
+    else:
+        state = "written" if report.sha is not None else "not_committed"
+    settings = feature_settings(read_config(project.apm_dir), graph, feature)
+    return ReportStatus(
+        feature, state, report, writing, url, pr, settings.report, settings.report_detail
+    )
 
 
 def feature_pr(graph: Graph, feature: NodeId) -> str | None:

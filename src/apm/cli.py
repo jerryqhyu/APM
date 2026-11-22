@@ -747,6 +747,46 @@ def implement(
     run_batch(handle, implement_feature, empty, mode=mode, message=message)
 
 
+@app.command("report")
+@command
+def report_(
+    handle: Annotated[str, typer.Argument(help="The feature.")],
+    message: Annotated[
+        str, typer.Option("--message", "-m", "--guidance", "-g", help="Guidance for the report.")
+    ] = "",
+    mode: Mode = None,
+    show: Annotated[
+        bool, typer.Option("--show", help="Print the latest report instead of writing one.")
+    ] = False,
+) -> None:
+    """Write the feature's report and commit it to its branch as docs/features/<name>.md, or show
+    the latest one. Its pull request, if open, links it.
+    """
+    from apm.core.report import REPORTER
+    from apm.core.report_branch import report_status
+
+    project, _, node_id = locate(handle)
+    if show:
+        status = report_status(project, Store(project.apm_dir), node_id)
+        report = status.report
+        if report is None:
+            typer.echo("no report yet" + (": one is being written" if status.running else ""))
+            return
+        where = f"commit {report.sha[:7]}" if report.sha else f"not committed: {report.error}"
+        typer.echo(f"{report.path} on {report.branch}, {where} ({report.detail})")
+        if status.url:
+            typer.echo(status.url)
+        typer.echo(f"\n{report.markdown.rstrip()}")
+        return
+
+    async def work(runner: Runner) -> None:
+        started = runner.start(REPORTER, node_id, message, mode=mode)
+        await runner.wait(started.id)
+
+    if follow_runs(project, work):
+        raise typer.Exit(1)
+
+
 POLL_S = 0.2
 """How often `run_batch` looks for room to start a waiting run."""
 

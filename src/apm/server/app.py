@@ -32,6 +32,8 @@ from apm.core.mutate import commit_hand_edits
 from apm.core.project import Project, load_graph
 from apm.core.proposals import accept_proposal, close_orphaned, reject_proposal
 from apm.core.reconcile import Report, describe, reconcile
+from apm.core.report import REPORTER
+from apm.core.report_branch import report_status
 from apm.core.review_lock import under_review
 from apm.core.settings import (
     ResolvedSettings,
@@ -474,6 +476,19 @@ def create_app(
         body = body or StartBatch()
         batch = implement_feature(queue, node_id, mode=body.mode, message=body.message)
         return batch_view(graph, batch)
+
+    # --- the feature report ---
+
+    @app.get("/api/nodes/{node}/report")
+    def get_report(node: str) -> dict[str, Any]:
+        """The feature's latest report, and whether one is being written."""
+        return asdict(report_status(project, store, locate(node)[1]))
+
+    @app.post("/api/nodes/{node}/report", status_code=201)
+    async def write_report(node: str, body: StartBatch | None = None) -> dict[str, Any]:
+        """Write report: (re)writes the feature's report and commits it to its branch."""
+        body = body or StartBatch()
+        return asdict(runner.start(REPORTER, locate(node)[1], body.message, mode=body.mode))
 
     # --- runs: one turn of an agent ---
 
