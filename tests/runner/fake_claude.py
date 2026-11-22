@@ -15,6 +15,7 @@ What it does is steered by FAKE_CLAUDE (a comma-separated set of words):
 - `ask-multi`: ask a question that takes several options, and report the answer.
 - `other-control`: send a control request that isn't a permission prompt.
 - `review-gaps`: the feature reviewer finds the feature incomplete, with one follow-up task.
+- `review-stacked-gaps`: the same, with a second follow-up that depends on the first.
 - `too-big`, `unclear`, `bad-verdict`: the task reviewer's verdict (else `pass`); `bad-verdict` is
   `too_big` with no split.
 
@@ -198,6 +199,10 @@ def main() -> int:
                 answer |= {"verdict": "too_big"}
         elif agent == "apm-feature-reviewer":
             answer = json.loads(json.dumps(GAPS if "review-gaps" in modes else FEATURE_REVIEW))
+            if "review-stacked-gaps" in modes:
+                then = {"key": "f", "title": "Report errors", "depends_on_keys": ["e"]}
+                answer = json.loads(json.dumps(GAPS))
+                answer["follow_ups"].append(answer["follow_ups"][0] | then)
         elif agent == "apm-critic":
             verdict = "revise" if "revise" in modes else "accept"
             issue = {"severity": "major", "child_key": "a", "problem": "Too big.", "suggestion": ""}

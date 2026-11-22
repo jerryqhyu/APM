@@ -9,7 +9,7 @@ from apm.core.ops import NewNode, create_nodes, decompose, set_status
 from apm.core.project import load_graph
 from apm.runner.agents import RunRefused
 from tests.conftest import CodeRepo
-from tests.core.test_feature_review import built
+from tests.core.test_feature_review import accept_follow_ups, built
 from tests.fake_gh import FakeGh
 from tests.runner.fake import FakeClaude
 from tests.runner.test_runner import Harness, option
@@ -64,6 +64,7 @@ async def test_gaps_become_follow_up_tasks_and_a_reply_replaces_them(
     code_repo: CodeRepo, fake_claude: FakeClaude, fake_gh: FakeGh
 ) -> None:
     project = code_repo.project
+    accept_follow_ups(project, on=False)  # proposals wait for you
     feature, step, _tasks, _ = built(code_repo, project, "Write")
     fake_claude.mode("review-gaps")
     harness = Harness(project)

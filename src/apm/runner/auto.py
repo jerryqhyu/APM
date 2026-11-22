@@ -7,7 +7,8 @@ there is room under `runner.max_concurrent`; a run that can't start yet stays qu
 gets one automatic run per server: a run that errored is tried again after an edit or a restart.
 
 It also reconciles (retargeting open PRs) every `reconcile_interval_s`, and queues a feature
-review whenever a review step becomes ready, again after its follow-ups are done.
+review whenever a review step becomes ready, again after its follow-ups are done. The follow-ups
+that review proposed (and APM accepted) are built once their task review passes.
 """
 
 import asyncio
@@ -25,11 +26,12 @@ from apm.core.graph import Graph
 from apm.core.model import Kind, NodeId
 from apm.core.project import load_graph
 from apm.core.reconcile import reconcile
-from apm.core.store import content_fingerprint
+from apm.core.store import Store, content_fingerprint
 from apm.core.task_review import due_task_reviews
 from apm.runner.runner import FEATURE_REVIEWER, Runner, RunnerBusy
 
 TASK_REVIEWER = "apm-task-reviewer"
+IMPLEMENTER = "apm-implementer"
 DEBOUNCE_S = 3.0
 """How long a run waits after the last change to what it works on."""
 
@@ -77,6 +79,9 @@ class AutoQueue:
         if automation.feature_review:
             for step in due_feature_reviews(graph):
                 due[FEATURE_REVIEWER, step] = ",".join(sorted(graph.dependencies(step)))
+        if automation.implement_follow_ups:
+            for node_id in passing_follow_ups(graph, self.runner.store, body):
+                due[IMPLEMENTER, node_id] = content_fingerprint(graph[node_id], body(node_id))
         for key in [k for k in self.queued if k not in due]:
             del self.queued[key]
         for (agent, node_id), version in due.items():
@@ -118,3 +123,17 @@ def due_feature_reviews(graph: Graph) -> list[NodeId]:
     waits on new follow-ups is reviewed again once those are done.
     """
     return [n for n in graph.nodes if graph[n].kind is Kind.REVIEW and graph.states[n].ready]
+
+
+def passing_follow_ups(graph: Graph, store: Store, body: Callable[[NodeId], str]) -> list[NodeId]:
+    """The ready follow-ups of feature reviews whose current content passed its task review.
+    Tasks created any other way are left to you.
+    """
+    due = []
+    for node_id in sorted(store.follow_ups() & set(graph.nodes)):
+        latest = store.latest_task_review(node_id)
+        if not graph.states[node_id].ready or latest is None or latest.verdict != "pass":
+            continue
+        if latest.fingerprint == content_fingerprint(graph[node_id], body(node_id)):
+            due.append(node_id)
+    return due
