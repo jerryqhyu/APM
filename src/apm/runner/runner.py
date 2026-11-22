@@ -522,7 +522,10 @@ class Runner:
                 f"**Incomplete**: {met} of {len(review.criteria)} criteria met on {where}. The"
                 " verdict is in the review step's description, under Feature review."
             )
-            if recorded.proposal is not None:
+            if recorded.accepted:
+                count = len(recorded.accepted)
+                text += f" APM added {count} follow-up task{'s' if count > 1 else ''} to it."
+            elif recorded.proposal is not None:
                 count = len(recorded.proposal.data.get("children", []))
                 waiting = "task waits" if count == 1 else "tasks wait"
                 text += f" {count} follow-up {waiting} under Proposals."

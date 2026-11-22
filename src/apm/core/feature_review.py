@@ -47,7 +47,7 @@ from apm.core.ids import handle
 from apm.core.model import Delivery, NodeId, Status
 from apm.core.ops import attach_delivery, edit_body, set_status
 from apm.core.project import Project, load_graph
-from apm.core.proposals import DECOMPOSITION_SCHEMA, Decomposition, ProposedChild
+from apm.core.proposals import DECOMPOSITION_SCHEMA, Decomposition, ProposedChild, accept_proposal
 from apm.core.store import Proposal, Store
 
 AGENT = "apm-feature-reviewer"
@@ -447,6 +447,8 @@ class Recorded:
     proposal: Proposal | None
     replaced: tuple[str, ...]
     """Pending follow-up proposals from earlier turns of the same review, now rejected."""
+    accepted: tuple[NodeId, ...] = ()
+    """The follow-up tasks created at once, with `automation.accept_follow_ups` on."""
 
 
 def record_review(
@@ -464,7 +466,8 @@ def record_review(
     """Writes the verdict into `node_id`'s description (the review step's), under
     `## Feature review` (replacing the last one), and turns the follow-ups into a proposal on
     `feature` (default: `node_id`), where accepting them adds tasks. A newer turn of the same
-    review replaces its earlier, still pending, proposal.
+    review replaces its earlier, still pending, proposal. With `automation.accept_follow_ups` on,
+    the proposal is accepted at once and its tasks recorded as follow-ups in the store.
     """
     where = feature or node_id
     body = read_body(project.apm_dir, node_id)
@@ -489,7 +492,12 @@ def record_review(
             warnings=[_issue_line(issue) for issue in review.issues],
         ).model_dump(mode="json")
         proposal = store.create_proposal(node_id=where, data=data, run_id=run)
-    return Recorded(review.complete, proposal, tuple(replaced))
+    accepted: tuple[NodeId, ...] = ()
+    if proposal is not None and read_config(project.apm_dir).automation.accept_follow_ups:
+        accepted = accept_proposal(project, store, proposal.id).created
+        store.add_follow_ups(accepted, proposal.id)
+        proposal = store.get_proposal(proposal.id)
+    return Recorded(review.complete, proposal, tuple(replaced), accepted)
 
 
 @dataclass(frozen=True, slots=True)

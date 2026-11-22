@@ -72,6 +72,7 @@ CREATE TABLE IF NOT EXISTS task_reviews(
     created REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS task_reviews_node ON task_reviews(node_id, created);
+CREATE TABLE IF NOT EXISTS follow_ups(node_id TEXT PRIMARY KEY, proposal_id TEXT NOT NULL);
 """
 
 
@@ -371,6 +372,19 @@ class Store:
                 " WHERE node_id = ? AND fingerprint = ? AND verdict = 'error'",
                 (node_id, fingerprint),
             ).fetchone()[0]
+
+    # --- follow-ups: the tasks a feature review's proposal created when accepted on its own ---
+
+    def add_follow_ups(self, node_ids: Iterable[NodeId], proposal_id: str) -> None:
+        with self._db() as db:
+            db.executemany(
+                "INSERT OR IGNORE INTO follow_ups VALUES(?, ?)",
+                ((node_id, proposal_id) for node_id in node_ids),
+            )
+
+    def follow_ups(self) -> set[NodeId]:
+        with self._db() as db:
+            return {row["node_id"] for row in db.execute("SELECT node_id FROM follow_ups")}
 
     # --- restoring (from an archive, see `apm.core.archive`) ---
 
