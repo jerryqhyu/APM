@@ -144,7 +144,7 @@ class AutoQueue:
 
     def _start(self, agent: str, node_id: NodeId) -> Run:
         if agent == EAGER_REDO:
-            return self.runner.eager.start_redo(node_id, self.redos.pop(node_id, None))
+            return self.runner.eager.start_redo(node_id, self.redos.get(node_id))
         return self.runner.start(agent, node_id, critic=False)
 
     async def drive(self, events: asyncio.Queue[dict[str, Any]], tick_s: float = 0.5) -> None:
