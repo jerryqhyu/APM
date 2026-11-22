@@ -13,15 +13,18 @@ plan repo like any other change to the plan: one commit each, under the write lo
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Literal
 
 from apm.core.config import (
     ApmConfig,
     AutomationConfig,
+    ConfigError,
     FeatureOverride,
     FeaturesConfig,
     ReportDetail,
     parse_config,
+    read_config,
 )
 from apm.core.config_edit import KeyPath, Scalar, edit_yaml
 from apm.core.files import CONFIG_FILE, read_file_if_exists
@@ -125,6 +128,17 @@ def override_problems(config: ApmConfig, graph: Graph) -> list[str]:
             )
         seen.add(node_id)
     return problems
+
+
+def check_config(apm_dir: Path, graph: Graph) -> tuple[list[str], list[str]]:
+    """What `apm check` says about apm.yaml: its errors, or else the overrides that apply to
+    nothing, each line starting with the file's name.
+    """
+    try:
+        config = read_config(apm_dir)
+    except ConfigError as err:
+        return [f"{CONFIG_FILE}: {issue}" for issue in err.issues], []
+    return [], [f"{CONFIG_FILE}: {problem}" for problem in override_problems(config, graph)]
 
 
 def _named(graph: Graph, key: str) -> NodeId | None:

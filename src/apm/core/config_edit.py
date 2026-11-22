@@ -44,23 +44,25 @@ class ConfigEditError(ApmError, ValueError):
 
 
 def edit_yaml(text: str, changes: Mapping[KeyPath, Scalar | None]) -> str:
-    """`text` with each path set to its value, or removed where the value is None. Missing
-    mappings on the way are added at the end of their parent. A mapping a removal leaves empty is
-    removed too, so clearing the last override leaves no empty `overrides:` behind.
+    """`text` with each path set to its value, or removed where the value is None. A value the
+    file already has, however it is spelled, is left alone. A new plain value goes after the other
+    plain values of its mapping; a missing mapping goes at the end of its parent. A mapping a
+    removal leaves empty is removed too, so clearing the last override leaves no empty
+    `overrides:` behind.
     """
     yaml = _yaml(text)
     try:
         doc = yaml.load(text)
         before = pyyaml.safe_load(text)
     except (YAMLError, pyyaml.YAMLError) as err:
-        raise ConfigEditError(f"apm.yaml can't be read: {err}") from None
+        raise ConfigEditError(f"apm.yaml can't be read: {_problem(err)}") from None
     if not isinstance(doc, CommentedMap) or not isinstance(before, dict):
         raise ConfigEditError("apm.yaml must be a mapping")
     for path, value in changes.items():
         if value is None:
             _remove(doc, path)
             _remove_data(before, path)
-        else:
+        elif not _holds(before, path, value):
             _set(doc, path, _scalar(value))
             _set_data(before, path, value)
     out = io.StringIO()
@@ -71,6 +73,22 @@ def edit_yaml(text: str, changes: Mapping[KeyPath, Scalar | None]) -> str:
             " file by hand"
         )
     return out.getvalue()
+
+
+def _problem(err: Exception) -> str:
+    """A YAML error as one line, with where it is: `2:1: found duplicate key "name" …`."""
+    problem = getattr(err, "problem", None) or str(err).strip().splitlines()[0]
+    mark = getattr(err, "problem_mark", None)
+    return f"{mark.line + 1}:{mark.column + 1}: {problem}" if mark else problem
+
+
+def _holds(data: Any, path: KeyPath, value: Scalar) -> bool:
+    """True if `data` has `value` at `path` already (`yes` for true, `300` for 300.0)."""
+    for key in path:
+        if not isinstance(data, dict) or key not in data:
+            return False
+        data = data[key]
+    return data == value and isinstance(data, bool) == isinstance(value, bool)
 
 
 def _set_data(data: dict[str, Any], path: KeyPath, value: Scalar) -> None:

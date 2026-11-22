@@ -23,7 +23,7 @@ import yaml
 
 from apm import __version__
 from apm.core import ops
-from apm.core.config import ConfigError, read_config
+from apm.core.config import read_config
 from apm.core.errors import ApmError
 from apm.core.files import CONFIG_FILE, read_body, render_body
 from apm.core.git import git, log
@@ -49,8 +49,8 @@ from apm.core.proposals import (
 from apm.core.reconcile import describe, reconcile
 from apm.core.settings import (
     SETTINGS,
+    check_config,
     clear_override,
-    override_problems,
     resolve_settings,
     set_defaults,
     set_override,
@@ -155,14 +155,9 @@ def check() -> None:
     """Validate the plan and apm.yaml: errors (exit code 1) and warnings."""
     project, graph = plan()
     result = check_all(graph)
-    errors = [f"{issue.code}: {issue.message}" for issue in result.errors]
-    warnings = [f"{issue.code}: {issue.message}" for issue in result.warnings]
-    try:
-        warnings += [
-            f"{CONFIG_FILE}: {p}" for p in override_problems(read_config(project.apm_dir), graph)
-        ]
-    except ConfigError as err:
-        errors += [f"{CONFIG_FILE}: {issue}" for issue in err.issues]
+    config_errors, config_warnings = check_config(project.apm_dir, graph)
+    errors = [*(f"{i.code}: {i.message}" for i in result.errors), *config_errors]
+    warnings = [*(f"{i.code}: {i.message}" for i in result.warnings), *config_warnings]
     for line in errors:
         typer.echo(f"error {line}")
     for line in warnings:
@@ -779,13 +774,16 @@ def run_batch(
         while queue.waiting or runner.active():
             await asyncio.sleep(POLL_S)
             for dropped in queue.pump().dropped:
-                typer.echo(f"skipped {graph.handles[dropped.item.node_id]}: {dropped.reason}")
+                # By handle alone: the node may be gone, which is often why it was dropped.
+                typer.echo(f"skipped {short_handle(dropped.item.node_id)}: {dropped.reason}")
 
     if follow_runs(project, work, tag=True):
         raise typer.Exit(1)
 
 
 def describe_batch(graph: Graph, batch: Batch) -> list[str]:
+    """What a feature-level action started, queued and skipped, one line each."""
+
     def named(node_id: NodeId) -> str:
         return f"{graph.handles[node_id]} {graph[node_id].title}"
 

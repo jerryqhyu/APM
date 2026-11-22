@@ -3,6 +3,7 @@
 import pytest
 import yaml
 
+from apm.core import config_edit
 from apm.core.config_edit import ConfigEditError, edit_yaml
 
 ID = "0199aaaa-bbbb-7ccc-8ddd-eeeeffff0000"
@@ -135,6 +136,15 @@ def test_values_are_written_as_what_they_are() -> None:
     }
 
 
+def test_a_value_the_file_already_has_is_left_as_spelled() -> None:
+    text = "name: x\nautomation:\n  reconcile: yes\n  reconcile_interval_s: 300\n"
+    same = edit_yaml(
+        text, {("automation", "reconcile"): True, ("automation", "reconcile_interval_s"): 300.0}
+    )
+    assert same == text
+    assert "reconcile: false" in edit_yaml(text, {("automation", "reconcile"): False})
+
+
 def test_values_are_left_as_spelled_even_where_yaml_versions_disagree() -> None:
     # PyYAML reads `no` as false and `12e45678` as text; a YAML 1.2 reader wouldn't.
     text = "name: x\nautomation:\n  reconcile: no\nfeatures:\n  overrides:\n    12e45678: {}\n"
@@ -164,3 +174,12 @@ def test_removing_what_is_not_there_changes_nothing() -> None:
 def test_unreadable_yaml_is_refused() -> None:
     with pytest.raises(ConfigEditError, match="can't be read"):
         edit_yaml("name: [\n", {("features", "eager"): True})
+    with pytest.raises(ConfigEditError, match=r"can't be read: 2:1: found duplicate key \"name\""):
+        edit_yaml("name: x\nname: y\n", {("features", "eager"): True})
+
+
+def test_a_result_that_means_more_than_asked_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Stands in for a quirk of the round trip: the value written isn't the value asked for.
+    monkeypatch.setattr(config_edit, "_scalar", lambda value: "maybe")
+    with pytest.raises(ConfigEditError, match="without touching other settings"):
+        edit_yaml("name: x\n", {("features", "eager"): True})
