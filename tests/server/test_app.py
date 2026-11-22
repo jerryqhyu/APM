@@ -11,12 +11,14 @@ from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
 from apm.core.archive import MANIFEST_FILE, PROPOSALS_FILE, RUNS_FILE, import_archive
+from apm.core.files import read_body
 from apm.core.git import log
 from apm.core.ids import handle
 from apm.core.model import Status
 from apm.core.ops import NewNode, attach_delivery, create_nodes, set_status
 from apm.core.project import Project, load_graph
-from apm.core.store import Store
+from apm.core.review_lock import take_review_lock
+from apm.core.store import Store, TaskReview, content_fingerprint
 from apm.server.app import archive_name, create_app
 from apm.server.security import host_is_loopback, origin_allowed
 from tests.conftest import tasks_of
@@ -137,6 +139,7 @@ def test_build_and_read_a_plan(client: TestClient, project: Project) -> None:
     ).json()
     assert commits(project) == 4  # init + one per node
     assert "Make it." in build["body"]
+    assert "not been reviewed" in build["implement_blocker"]  # the API reports the gate
     assert test["blocked"]
     assert test["links"]["waiting_on"][0]["title"] == "Build"
     assert [a["title"] for a in test["ancestors"]] == ["Ship v1"]
@@ -151,6 +154,7 @@ def test_build_and_read_a_plan(client: TestClient, project: Project) -> None:
         ("apm-decomposer", "Decompose", True),
         ("apm-implementer", "Implement", True),
         ("apm-feature-reviewer", "Review feature", True),
+        ("apm-task-reviewer", "Review task", True),
     ]
     assert info["default_mode"] == "auto"
     assert [m["name"] for m in info["modes"]] == [
@@ -584,3 +588,37 @@ def test_archive_names_are_safe_file_names() -> None:
     assert archive_name("My App/v2") == "My-App-v2.apm.zip"
     assert archive_name("../..") == "plan.apm.zip"
     assert archive_name("café") == "café.apm.zip"
+
+
+def test_a_task_under_review_is_refused_with_409(client: TestClient, project: Project) -> None:
+    node = client.post("/api/nodes", json={"title": "Task"}).json()["id"]
+    take_review_lock(project.apm_dir, load_graph(project).resolve(node), "run-1")
+    refused = client.patch(f"/api/nodes/{node}", json={"title": "X"})
+    assert refused.status_code == 409
+    assert "is under review" in refused.json()["error"]
+    assert client.patch(f"/api/nodes/{node}", json={"status": "in_progress"}).status_code == 200
+
+
+def test_node_detail_reports_the_task_review(client: TestClient, project: Project) -> None:
+    node = client.post("/api/nodes", json={"title": "Task"}).json()["id"]
+    detail = client.get(f"/api/nodes/{node}").json()
+    assert detail["review"] == {"state": "none"}
+    assert detail["under_review"] is False
+    fingerprint = content_fingerprint(load_graph(project)[node], read_body(project.apm_dir, node))
+    data = {"summary": "about 120 lines", "children": [], "missing": []}
+    Store(project.apm_dir).add_task_review(TaskReview(node, fingerprint, "too_big", data))
+    detail = client.get(f"/api/nodes/{node}").json()
+    assert detail["review"] == {**data, "state": "too_big", "verdict": "too_big"}
+    assert "too_big" in detail["implement_blocker"]
+    client.patch(f"/api/nodes/{node}", json={"title": "Smaller task"})
+    assert client.get(f"/api/nodes/{node}").json()["review"]["state"] == "stale"
+    take_review_lock(project.apm_dir, node, "run-1")
+    detail = client.get(f"/api/nodes/{node}").json()
+    assert detail["under_review"] is True
+    assert detail["review"] == {"state": "running"}
+
+    config = project.apm_dir / "apm.yaml"
+    config.write_text(config.read_text() + "automation:\n  task_review: false\n")
+    detail = client.get(f"/api/nodes/{node}").json()
+    assert detail["review"] == {"state": "running"}  # the review state stays when it is off
+    assert "not been reviewed" in detail["implement_blocker"]  # and so does the gate

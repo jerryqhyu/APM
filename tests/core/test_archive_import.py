@@ -21,7 +21,7 @@ from apm.core.git import git
 from apm.core.lifting import check_all
 from apm.core.ops import NewNode, create_nodes
 from apm.core.project import LINK_FILE, Project, load_graph, open_project
-from apm.core.store import SCHEMA_VERSION, Store
+from apm.core.store import SCHEMA_VERSION, Store, TaskReview
 from apm.core.views import outline
 from apm.runner import runner
 
@@ -127,12 +127,15 @@ def test_runs_events_and_proposals_come_back(
     pending = store.create_proposal(node_id="", data={"children": []}, run_id=done.id)
     accepted = store.create_proposal(node_id="", data={"children": [1]}, review={"v": "ok"})
     accepted = store.resolve_proposal(accepted.id, "accepted")
+    store.add_task_review(TaskReview("n", "f", "pass", {}))
     archive = tmp_path / "plan.apm.zip"
     export_archive(plan, archive, with_runs=True)
 
     project = import_archive(archive, target).project
 
     restored = Store(project.apm_dir)
+    # Task reviews are deliberately left behind: the imported tasks get reviewed again.
+    assert restored.latest_task_review("n") is None
     assert restored.get_run(done.id) == done
     assert restored.get_run(live.id) == replace(live, status="cancelled", pid=None)
     assert [r.id for r in restored.list_runs()] == [r.id for r in store.list_runs()]

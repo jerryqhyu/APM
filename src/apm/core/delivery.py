@@ -184,6 +184,15 @@ class Base:
     """
     feature: NodeId | None = None
     """The feature whose branch this is, when the work goes into a feature branch."""
+    target: str | None = None
+    """Where the pull request goes, when that isn't `branch`: a task of a feature stacked on a
+    sibling's open branch starts from that branch, but its pull request goes into the feature's.
+    """
+
+    @property
+    def pr_base(self) -> str | None:
+        """The branch the pull request targets."""
+        return self.target or self.branch
 
 
 # --- feature branches ---
@@ -305,11 +314,11 @@ def choose_base(project: Project, node_id: NodeId, *, repo_key: str | None = Non
                 open_branches.append((dep, branch))
     if len(open_branches) == 1:
         (dep, branch), *_ = open_branches
-        return Base(branch, stacked_on=dep, feature=feature)
+        return Base(branch, stacked_on=dep, feature=feature, target=home)
     # Several, but one was built on the others (it depends on them): its branch holds them all.
     # The same rule decides whether the node is ready, stacked (`Graph.stack_top`).
     if (top := graph.stack_top(dep for dep, _ in open_branches)) is not None:
-        return Base(dict(open_branches)[top], stacked_on=top, feature=feature)
+        return Base(dict(open_branches)[top], stacked_on=top, feature=feature, target=home)
     return Base(name, unmerged=tuple(open_branches) if open_branches else (), feature=feature)
 
 
@@ -411,7 +420,8 @@ def ensure_pull_request(
 
     If the delivery has a branch but no pull request, it looks for an open one for that branch,
     and opens one if there is none: title the node's title, body the node's body and its
-    `APM-Node` line, base from `choose_base`. Nothing is marked done either way.
+    `APM-Node` line, base from `choose_base` (its PR target: a feature's task goes into the
+    feature branch even when it starts from a sibling's). Nothing is marked done either way.
     """
     graph = load_graph(project)
     if node_id not in graph:
@@ -427,7 +437,7 @@ def ensure_pull_request(
     if repo is None:
         return PrOutcome(problem=f'repo "{delivery.repo}" is not in apm.yaml', branch=branch)
     repo_dir = (project.apm_dir / repo.path).resolve()
-    base = choose_base(project, node_id, repo_key=delivery.repo).branch
+    base = choose_base(project, node_id, repo_key=delivery.repo).pr_base
     if base is None:
         return PrOutcome(
             problem="the code repo has no default branch to open it against", branch=branch

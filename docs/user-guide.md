@@ -193,6 +193,23 @@ Nothing is written yet. Press **Review** to see the reasoning, the reviewer's no
 
 Decompose versus conversation: use Decompose when you want a reviewed proposal to look over before anything changes. Use the conversation when you want to shape things back and forth.
 
+## Task review: keeping tasks small
+
+A task should be small enough to read and understand in about five minutes: at most **50 lines of real source code**. Blank lines, comments, imports, tests, docs and agent or skill markdown don't count. They can come on top, as long as they stay in proportion.
+
+APM checks this before a task is built. A **task review** (the `apm-task-reviewer` agent, with the `apm-task-sizing` skill) reads the task and the code it will touch, estimates the real lines it needs, and gives one verdict:
+
+- **Pass**: small enough. Implement is allowed.
+- **Too big**: it comes with a proposed split, waiting under **Proposals**. Accepting it turns the task into a small feature with those children and its own review step, and each new child is reviewed in turn.
+- **Unclear**: too vague to estimate. It says what is missing; add it to the description.
+- **Error**: the review failed or was cut off (for example, `apm serve` was stopped). The task is unlocked and shows the error. APM tries once more for the same content, then waits until you edit the task or start a review yourself.
+
+**When it runs.** While `apm serve` is up, a review is queued whenever a task is created or its title, kind or description changes, from anywhere: the UI, the terminal, MCP or an agent. A burst of edits becomes one review, of the final content. Changing only the status or recording a delivery doesn't count. When `apm serve` starts, it reviews every To do task that has no review for its current content. To start one yourself, press **Review task** on the task, or run `apm run task-reviewer <handle>`.
+
+**The lock.** While its review runs, a task can't be edited, moved, merged, deleted, decomposed or implemented. The UI shows **Under review** and disables those actions; the API, the terminal and MCP refuse with "under review". The lock ends when the review finishes, fails or is cancelled, and a lock left behind by a run that died doesn't count.
+
+**The gate.** Implement on a To do task needs a **Pass** for its current content. Edit a passed task's title, kind or description and it needs a new review. Tasks already In progress or Done aren't gated, and neither are review steps. The gate holds even with `automation.task_review` off; that switch only stops the reviews `apm serve` starts on its own (see [Automation](#automation)).
+
 ## Having Claude build a node
 
 **Implement** is available on a leaf that is Ready (stacked or not) or already In progress. Claude then:
@@ -266,6 +283,7 @@ apm run assistant 1c0b9a44 -m "Is this well specified?"    # chat about one node
 apm run decomposer 1c0b9a44 -m "Three steps at most."      # then: apm proposal show <id>
 apm run implementer 7d2e0f11 --mode manual                 # build, asking before each change
 apm run feature-reviewer 3f9e2a10                          # review a finished feature (--branch to pick one)
+apm run task-reviewer 7d2e0f11                             # check a task is small enough to build
 apm proposal accept <id>                                    # or: apm proposal reject <id>
 apm reconcile                                               # mark merged work done
 apm reconcile --retarget                                    # ...and retarget stacked PRs
@@ -302,11 +320,29 @@ runner:
       model: opus
       budget_usd: 5.00
       allowed_tools: ["Bash(uv run *)", "Bash(npm test*)"]
+automation:                  # what `apm serve` does on its own (see below)
+  implement_follow_ups: false
 ```
 
 - `permission_mode` is what agents start in unless you pick another setting for a run.
 - `allowed_tools` are commands an agent may run without asking. Give the implementer the commands that run your tests.
 - `budget_usd` stops a run that would cost more.
+
+### Automation
+
+While `apm serve` is up it can take a feature from review to pull request on its own: it reviews tasks as they change, reconciles every few minutes (retargeting stacked pull requests), starts a feature's review once its review step is Ready, accepts the follow-up tasks that review proposes, builds them once their task review passes (one pull request each, into the feature branch), reviews the feature again once they merge, and opens the feature's pull request when it passes. Each step has its own switch under `automation:`, and turning one off stops only that step:
+
+| Key | Default | What it does |
+| --- | --- | --- |
+| `task_review` | `true` | Review a task when it is created or its title, kind or description changes, and review unreviewed To do tasks when `apm serve` starts. Turning it off stops only these automatic reviews: the Implement gate, the review state and the **Review task** button stay, so you review a task by hand before building it. |
+| `reconcile` | `true` | Reconcile, and retarget open pull requests, every `reconcile_interval_s` seconds. |
+| `reconcile_interval_s` | `300` | Seconds between those reconciles. Must be above 0. |
+| `feature_review` | `true` | Start a feature's review once its review step becomes Ready. |
+| `accept_follow_ups` | `true` | Accept the follow-up tasks a feature review proposes. |
+| `implement_follow_ups` | `true` | Build those follow-ups once their task review passes. Only follow-ups from a feature review are built automatically, never other tasks. |
+| `feature_pr` | `true` | Open the feature's pull request once its feature review passes. With it off, the passing review is recorded and no pull request is opened. |
+
+Automation never runs more than `runner.max_concurrent` agents at once (the rest wait their turn) and gives each run its agent's `budget_usd`.
 
 ## Where the plan lives
 

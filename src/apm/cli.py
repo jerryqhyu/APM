@@ -540,7 +540,10 @@ def free_port(preferred: int) -> int:
 @command
 def run(
     agent: Annotated[
-        str, typer.Argument(help="assistant, decomposer, implementer or feature-reviewer.")
+        str,
+        typer.Argument(
+            help="assistant, decomposer, implementer, feature-reviewer or task-reviewer."
+        ),
     ],
     handle: Annotated[
         str | None, typer.Argument(help="The node. Omit to chat about the whole project.")

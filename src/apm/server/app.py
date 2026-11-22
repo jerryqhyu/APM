@@ -7,6 +7,7 @@ import shutil
 import tempfile
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from dataclasses import asdict
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -30,9 +31,12 @@ from apm.core.mutate import commit_hand_edits
 from apm.core.project import Project, load_graph
 from apm.core.proposals import accept_proposal, close_orphaned, reject_proposal
 from apm.core.reconcile import Report, describe, reconcile
+from apm.core.review_lock import under_review
 from apm.core.store import PROJECT, Store
+from apm.core.task_review import implement_blocker, review_state
 from apm.core.views import all_nodes_view, level_json, node_history, node_ref, node_view, search
 from apm.runner.agents import AGENTS, MODES
+from apm.runner.auto import AutoQueue
 from apm.runner.runner import Runner
 from apm.server.security import bearer, host_is_loopback, origin_allowed, token_matches
 
@@ -151,10 +155,12 @@ def create_app(
     async def lifespan(_: FastAPI) -> AsyncGenerator[None]:
         hub.bind(asyncio.get_running_loop())
         watcher = asyncio.create_task(_watch_head(project, hub))
+        auto = asyncio.create_task(AutoQueue(runner).drive(hub.subscribe()))
         try:
             yield
         finally:
             watcher.cancel()
+            auto.cancel()
             await runner.shutdown()
 
     app = FastAPI(
@@ -194,9 +200,16 @@ def create_app(
 
     def node_detail(graph: Graph, node_id: NodeId) -> dict[str, Any]:
         state = graph.states[node_id]
+        config, body = read_config(project.apm_dir), read_body(project.apm_dir, node_id)
+        locked = under_review(project.apm_dir, node_id)
         return {
             **node_view(graph, node_id),
-            "body": read_body(project.apm_dir, node_id),
+            "body": body,
+            "under_review": locked,
+            "review": review_state(graph, store, node_id, body, locked),
+            "implement_blocker": implement_blocker(
+                graph, store, config, node_id, partial(read_body, project.apm_dir)
+            ),
             "ancestors": [node_ref(graph, a) for a in reversed(graph.ancestors(node_id))],
             "links": {
                 "depends_on": [node_ref(graph, n) for n in graph.dependencies(node_id)],

@@ -1,10 +1,48 @@
 import sqlite3
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
-from apm.core.store import Store
-from tests.core.build import A, B
+from apm.core.model import Delivery, Kind, Status
+from apm.core.store import Store, TaskReview, content_fingerprint
+from tests.core.build import A, B, node
+
+
+def test_the_fingerprint_follows_title_kind_and_body_only() -> None:
+    base = node(A)
+    print_ = content_fingerprint(base, "body")
+    assert content_fingerprint(base, "body") == print_
+    assert content_fingerprint(node(A, status=Status.DONE), "body") == print_
+    assert content_fingerprint(node(A, delivery=Delivery(repo="r", branch="b")), "body") == print_
+    assert content_fingerprint(base, "body!") != print_
+    assert content_fingerprint(node(A, kind=Kind.DECISION), "body") != print_
+    assert content_fingerprint(replace(base, title="other"), "body") != print_
+
+
+def test_task_reviews_give_the_latest_and_count_errors(tmp_path: Path) -> None:
+    store = Store(tmp_path)
+    assert store.latest_task_review(A) is None
+    store.add_task_review(TaskReview(A, "f1", "error", {}, created=1.0))
+    store.add_task_review(TaskReview(A, "f1", "error", {}, run_id="r1", created=2.0))
+    store.add_task_review(TaskReview(A, "f2", "error", {}, created=3.0))
+    latest = TaskReview(A, "f2", "too_big", {"split": ["é"]}, run_id="r2", created=4.0)
+    store.add_task_review(latest)
+    store.add_task_review(TaskReview(B, "f9", "pass", {}, created=5.0))
+    assert Store(tmp_path).latest_task_review(A) == latest
+    assert store.count_errors(A, "f1") == 2
+    assert store.count_errors(A, "f2") == 1
+    assert store.count_errors(B, "f9") == 0
+
+
+def test_an_existing_database_gains_the_task_reviews_table(tmp_path: Path) -> None:
+    run = Store(tmp_path).create_run(node_id=A, agent="a")
+    with sqlite3.connect(tmp_path / ".cache" / "apm.db") as db:
+        db.execute("DROP TABLE task_reviews")
+    store = Store(tmp_path)
+    assert store.get_run(run.id) == run
+    store.add_task_review(TaskReview(A, "f", "unclear", {"why": "?"}))
+    assert store.latest_task_review(A) is not None
 
 
 def test_runs_are_recorded_and_finished(tmp_path: Path) -> None:

@@ -17,6 +17,7 @@ import os
 import signal
 from collections.abc import Callable, Coroutine
 from dataclasses import asdict, dataclass
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -33,12 +34,22 @@ from apm.core.feature_review import (
     review_subject,
 )
 from apm.core.feature_review import parse_review as parse_feature_review
+from apm.core.files import read_body
+from apm.core.ids import handle
 from apm.core.lock import CACHE_DIR, pid_alive
 from apm.core.model import NodeId, Status
 from apm.core.ops import set_status
 from apm.core.project import Project, load_graph
 from apm.core.proposals import ProposalError, parse_decomposition, parse_review
-from apm.core.store import PROJECT, Proposal, Run, RunStatus, Store
+from apm.core.review_lock import (
+    read_review_lock,
+    release_review_lock,
+    take_review_lock,
+    under_review,
+)
+from apm.core.store import PROJECT, Proposal, Run, RunStatus, Store, TaskReview, content_fingerprint
+from apm.core.task_review import implement_blocker
+from apm.core.task_verdict import TaskVerdict, VerdictRefused, parse_task_verdict
 from apm.runner.agents import (
     AGENTS,
     AgentSpec,
@@ -55,6 +66,7 @@ from apm.runner.agents import (
 )
 
 FEATURE_REVIEWER = "apm-feature-reviewer"
+TASK_REVIEWER = "apm-task-reviewer"
 
 # Kept from the stream: what a transcript needs. Token deltas, rate-limit notices and the like
 # are dropped.
@@ -129,10 +141,17 @@ class Runner:
         if spec.name == FEATURE_REVIEWER and node_id in graph:
             # Started on a feature, it reviews through the feature's review step.
             node_id = review_subject(graph, node_id)[1] or node_id
-        check_startable(spec, graph, node_id)
+        # Under review says more than "not reviewed yet", so the lock is checked before the gate.
+        locked = spec.name in ("apm-implementer", "apm-decomposer")
+        if locked and under_review(self.project.apm_dir, node_id):
+            raise RunRefused(f"{handle(node_id)} is under review: wait for its review to finish")
+        config = read_config(self.project.apm_dir)
+        body = partial(read_body, self.project.apm_dir)
+        check_startable(
+            spec, graph, node_id, partial(implement_blocker, graph, self.store, config, body=body)
+        )
         if spec.name == FEATURE_REVIEWER:
             check_reviewable(graph, node_id, branch)
-        config = read_config(self.project.apm_dir)
         mode = check_mode(mode, config)
         prompt = build_prompt(spec, graph, node_id, message)
         run = self._create_run(spec, node_id, prompt, mode=mode, config=config)
@@ -140,6 +159,9 @@ class Runner:
         pipeline = self._pipeline(
             spec, config, run, critic=critic, worktree=worktree, message=message, branch=branch
         )
+        if spec.name == TASK_REVIEWER:
+            # Held for the pipeline's whole life: `_schedule` releases it however that ends.
+            take_review_lock(self.project.apm_dir, node_id, run.id)
         self._schedule(run, pipeline)
         return run
 
@@ -272,6 +294,8 @@ class Runner:
 
         def finished(_: asyncio.Task[None]) -> None:
             self._tasks.pop(slot, None)
+            if run.agent == TASK_REVIEWER:
+                self._release_review_lock(run)
             for run_id in [r for r, s in self._slots.items() if s == slot]:
                 del self._slots[run_id]
             # A pipeline cancelled before its first step never got to record how it ended.
@@ -309,6 +333,9 @@ class Runner:
             if prepared is None:
                 return
             run, cwd = prepared
+        if spec.name == TASK_REVIEWER:
+            await self._review_task(spec, config, run, resume=resume)
+            return
         answer = await self._execute(spec, config, run, resume=resume, worktree=worktree, cwd=cwd)
         if implementer and answer is not None:
             await self._ensure_pr(run)
@@ -495,7 +522,10 @@ class Runner:
                 f"**Incomplete**: {met} of {len(review.criteria)} criteria met on {where}. The"
                 " verdict is in the review step's description, under Feature review."
             )
-            if recorded.proposal is not None:
+            if recorded.accepted:
+                count = len(recorded.accepted)
+                text += f" APM added {count} follow-up task{'s' if count > 1 else ''} to it."
+            elif recorded.proposal is not None:
                 count = len(recorded.proposal.data.get("children", []))
                 waiting = "task waits" if count == 1 else "tasks wait"
                 text += f" {count} follow-up {waiting} under Proposals."
@@ -553,6 +583,50 @@ class Runner:
                 )
             self._notice(run.id, "warning", text)
 
+    # --- a task review ---
+
+    async def _review_task(self, spec: AgentSpec, config: ApmConfig, run: Run, **kw: Any) -> None:
+        """Runs the task reviewer and saves its verdict for the content it was shown: the
+        fingerprint is taken before it starts, so an edit made meanwhile gets a review of its own.
+        A `too_big` split becomes a proposal, accepted like a decomposer's.
+        """
+        node = load_graph(self.project)[run.node_id]
+        fingerprint = content_fingerprint(node, read_body(self.project.apm_dir, run.node_id))
+        said: list[tuple[str, str]] = []
+
+        def conclude(answer: Any, error: str | None) -> str | None:
+            """Stores the verdict and releases the lock before the run is reported finished, so
+            nothing sees a finished review on a task still under review. Returns why the run
+            failed, if its answer is no verdict.
+            """
+            try:
+                if answer is None:
+                    raise VerdictRefused(error or "the run failed")
+                verdict = parse_task_verdict(answer)
+            except VerdictRefused as err:
+                review = TaskReview(run.node_id, fingerprint, "error", {"error": str(err)}, run.id)
+                self.store.add_task_review(review)
+                self._release_review_lock(run)
+                said.append(("warning", f"APM couldn't record a task verdict: {err}"))
+                return str(err)
+            data = verdict.model_dump(mode="json")
+            self.store.add_task_review(
+                TaskReview(run.node_id, fingerprint, verdict.verdict, data, run.id)
+            )
+            self._release_review_lock(run)
+            if verdict.verdict == "too_big":
+                split = {"rationale": verdict.summary, "children": data["children"], "warnings": []}
+                proposal = self.store.create_proposal(
+                    node_id=run.node_id, data=split, run_id=run.id
+                )
+                self._emit({"type": "proposal.created", "proposal": proposal_dict(proposal)})
+            said.append(("warning" if verdict.verdict != "pass" else "info", _said(verdict)))
+            return None
+
+        await self._execute(spec, config, run, conclude=conclude, **kw)
+        for level, text in said:
+            self._notice(run.id, level, text)
+
     def _notice(self, run_id: str, level: str, text: str) -> None:
         """A line from APM itself in a run's conversation."""
         self._record(run_id, {"type": "apm_notice", "level": level, "text": text})
@@ -568,9 +642,11 @@ class Runner:
         resume: bool = False,
         worktree: str | None = None,
         cwd: Path | None = None,
+        conclude: Callable[[Any, str | None], str | None] | None = None,
     ) -> dict[str, Any] | None:
         """Runs one `claude` process to the end. Returns its structured answer, if it has one and
-        the run succeeded.
+        the run succeeded. `conclude`, if given, sees the answer (None if the run failed) and the
+        error before the run is finished, and returns why the run fails, if it should.
         """
         status: RunStatus = "failed"
         error: str | None = None
@@ -630,6 +706,12 @@ class Runner:
                 del self._requests[request.id]
             if stderr_task is not None:
                 stderr_task.cancel()
+            if conclude is not None and status != "cancelled":
+                answer = result.get("structured_output") if status == "succeeded" else None
+                if status == "succeeded" and not isinstance(answer, dict):
+                    answer, error = None, "the agent returned no structured answer"
+                if refused := conclude(answer, error):
+                    status, error = "failed", refused
             finished = self.store.finish_run(
                 run.id,
                 status,
@@ -781,6 +863,21 @@ class Runner:
                 self.store.finish_run(
                     run.id, "failed", error="interrupted: its host process exited"
                 )
+                if run.agent == TASK_REVIEWER:
+                    self._release_review_lock(run, record_error=True)
+
+    def _release_review_lock(self, run: Run, *, record_error: bool = False) -> None:
+        """Releases the task's review lock if `run` holds it. `record_error` also stores an
+        `error` review of the task's current content, for a run cut off before its verdict.
+        """
+        apm_dir = self.project.apm_dir
+        if (read_review_lock(apm_dir, run.node_id) or {}).get("run") == run.id:
+            release_review_lock(apm_dir, run.node_id)
+        graph = load_graph(self.project) if record_error else None
+        if graph is not None and run.node_id in graph:
+            fingerprint = content_fingerprint(graph[run.node_id], read_body(apm_dir, run.node_id))
+            data = {"error": "interrupted: its host process exited"}
+            self.store.add_task_review(TaskReview(run.node_id, fingerprint, "error", data, run.id))
 
     def _emit(self, event: dict[str, Any]) -> None:
         with contextlib.suppress(Exception):  # a broken listener must not break a run
@@ -789,6 +886,19 @@ class Runner:
 
 def proposal_dict(proposal: Proposal) -> dict[str, Any]:
     return asdict(proposal)
+
+
+def _said(verdict: TaskVerdict) -> str:
+    """What a task verdict means, for the run's conversation."""
+    if verdict.verdict == "pass":
+        return f"**Pass**: the task is small enough to build. {verdict.summary}".strip()
+    if verdict.verdict == "too_big":
+        count = len(verdict.children)
+        return (
+            f"**Too big**: {verdict.summary} A split into {count} tasks waits under Proposals:"
+            " accepting it turns this task into a feature."
+        )
+    return f"**Unclear**: {verdict.summary} Missing: " + "; ".join(verdict.missing)
 
 
 def _user_message(text: str) -> dict[str, Any]:

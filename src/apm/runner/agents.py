@@ -4,6 +4,7 @@ import json
 import os
 import re
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -18,6 +19,7 @@ from apm.core.model import NodeId, Status
 from apm.core.project import Project
 from apm.core.proposals import DECOMPOSITION_SCHEMA, REVIEW_SCHEMA
 from apm.core.store import PROJECT
+from apm.core.task_verdict import TASK_VERDICT_SCHEMA
 
 PLUGIN_DIR = Path(__file__).resolve().parent.parent / "plugin"
 CLAUDE_ENV = "APM_CLAUDE"
@@ -127,6 +129,18 @@ AGENTS: dict[str, AgentSpec] = {
             schema=FEATURE_REVIEW_SCHEMA,
             read_only=True,
         ),
+        AgentSpec(
+            name="apm-task-reviewer",
+            label="Review task",
+            summary="Check that this task is small enough to read in five minutes: at most about"
+            " 50 lines of real code. Too big, and it proposes a split; too vague, and it says what"
+            " is missing.",
+            scope="read",
+            tools=READ_TOOLS,
+            mcp_tools=READ_MCP,
+            schema=TASK_VERDICT_SCHEMA,
+            read_only=True,
+        ),
     )
 }
 
@@ -135,17 +149,27 @@ class RunRefused(ApmError, ValueError):  # noqa: N818 (a refusal, not a failure)
     """The run can't start, for a reason the user can fix."""
 
 
-def check_startable(spec: AgentSpec, graph: Graph, node_id: NodeId) -> None:
-    """Raises `RunRefused` if `spec` shouldn't run on this node now."""
+def check_startable(
+    spec: AgentSpec,
+    graph: Graph,
+    node_id: NodeId,
+    implement_gate: Callable[[NodeId], str | None] | None = None,
+) -> None:
+    """Raises `RunRefused` if `spec` shouldn't run on this node now. `implement_gate` is
+    `implement_blocker` with the project's store, config and bodies bound.
+    """
     if node_id == PROJECT:
         if spec.needs_node:
             raise RunRefused(f"{spec.label} works on a node: pick one first")
         return
     node = graph[node_id]
-    if graph.is_review(node_id) and spec.name in ("apm-implementer", "apm-decomposer"):
+    reviewless = ("apm-implementer", "apm-decomposer", "apm-task-reviewer")
+    if graph.is_review(node_id) and spec.name in reviewless:
         raise RunRefused(
             "this is a feature's review step: run Review feature on it once its tasks are done"
         )
+    if spec.name == "apm-task-reviewer" and not graph.is_leaf(node_id):
+        raise RunRefused("only a task can be reviewed: this node has children")
     if spec.name != "apm-implementer":
         return
     if not graph.is_leaf(node_id):
@@ -157,6 +181,8 @@ def check_startable(spec: AgentSpec, graph: Graph, node_id: NodeId) -> None:
         raise RunRefused(f"not ready: waiting on {waiting}")
     if node.status in (Status.DONE, Status.DROPPED):
         raise RunRefused(f"this node is {node.status}")
+    if implement_gate is not None and (reason := implement_gate(node_id)):
+        raise RunRefused(reason)
 
 
 def check_mode(mode: str | None, config: ApmConfig) -> str:
@@ -200,6 +226,9 @@ def build_prompt(
     if spec.name == "apm-feature-reviewer":
         prompt = f"Review the feature in {where}: is it fully built?"
         return prompt + (f"\n\nGuidance from the user:\n{message}" if message else "")
+    if spec.name == "apm-task-reviewer":
+        prompt = f"Review the task in {where}: size it with the apm-task-sizing skill."
+        return prompt + (f"\n\nGuidance from the user:\n{message}" if message else "")
     if spec.name == "apm-assistant":
         question = message or "Summarise this node: what it is for, its state, and what's next."
         return f"The user is looking at {where}.\n\n{question}"
@@ -212,15 +241,19 @@ def base_instructions(graph: Graph, base: Base | None) -> str:
         return (
             "Start it from the repository's default branch, and open the pull request against it."
         )
-    branch = base.branch
-    target = f"open the pull request against {branch} (`gh pr create --base {branch}`)"
+    branch, into = base.branch, base.pr_base
+    target = f"open the pull request against {into} (`gh pr create --base {into}`)"
     if base.stacked_on is not None:
         dep = base.stacked_on
         title = graph[dep].title if dep in graph else "a dependency"
         return (
             f'It builds on {handle(dep)} ("{title}"), whose branch {branch} is not merged yet, so'
-            f" stack on it: start from origin/{branch} and {target}. The pull request then shows"
-            " only this node's changes."
+            f" stack on it: start from origin/{branch} and {target}."
+            + (
+                " The pull request then shows only this node's changes."
+                if into == branch
+                else f" Until {branch} is merged, the pull request also shows its changes."
+            )
         )
     if base.feature is not None and base.feature in graph:
         feature = graph[base.feature]

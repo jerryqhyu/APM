@@ -81,10 +81,29 @@ class RunnerConfig(_Model):
     agents: dict[Key, AgentConfig] = Field(default_factory=dict)
 
 
+class AutomationConfig(_Model):
+    """What `apm serve` does on its own. Each step has its own switch; all are on by default."""
+
+    task_review: bool = True
+    """Review a task's size whenever it is created or its title, kind or description changes."""
+    reconcile: bool = True
+    """Reconcile (and retarget open PRs) every `reconcile_interval_s` seconds."""
+    reconcile_interval_s: Positive = 300.0
+    feature_review: bool = True
+    """Start a feature's review once its review step becomes ready."""
+    accept_follow_ups: bool = True
+    """Accept the follow-up tasks a feature review proposes."""
+    implement_follow_ups: bool = True
+    """Build those follow-ups once their task review passes."""
+    feature_pr: bool = True
+    """Open the feature's pull request into its home once its feature review passes."""
+
+
 class ApmConfig(_Model):
     name: NonEmpty
     code: CodeConfig
     runner: RunnerConfig = Field(default_factory=RunnerConfig)
+    automation: AutomationConfig = Field(default_factory=AutomationConfig)
 
 
 def parse_config(text: str, source: str = CONFIG_FILE) -> ApmConfig:

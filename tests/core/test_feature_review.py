@@ -196,6 +196,7 @@ def test_the_section_is_a_table_and_replaces_only_itself() -> None:
 def test_recording_writes_the_step_and_proposes_follow_ups_on_the_feature(
     project: Project,
 ) -> None:
+    accept_follow_ups(project, on=False)
     node, step, _ = feature(project, "Write")
     edit_body(project, node, "## Intent\n\nThe spec.\n")
     store = Store(project.apm_dir)
@@ -228,6 +229,40 @@ def test_recording_writes_the_step_and_proposes_follow_ups_on_the_feature(
     assert store.get_proposal(first.proposal.id).status == "rejected"
     assert read_body(project.apm_dir, step).count("## Feature review") == 1
     assert "`bbbbbbb`" in read_body(project.apm_dir, step)
+
+
+def accept_follow_ups(project: Project, *, on: bool) -> None:
+    config = project.apm_dir / "apm.yaml"
+    config.write_text(config.read_text() + f"automation:\n  accept_follow_ups: {str(on).lower()}\n")
+
+
+def test_with_auto_accept_on_the_follow_ups_become_tasks_at_once(project: Project) -> None:
+    node, step, (write,) = feature(project, "Write")
+    store = Store(project.apm_dir)
+    recorded = record_review(
+        project, store, step, parse_review(GAPS), branch="feature/x", sha="a" * 40, feature=node
+    )
+    (task,) = recorded.accepted
+    graph = load_graph(project)
+    assert (graph[task].title, graph[task].parent) == ("Import", node)
+    assert recorded.proposal is not None
+    assert recorded.proposal.status == "accepted"
+    assert store.list_proposals(status="pending") == []
+    assert store.follow_ups() == {task}  # only the review's tasks count as follow-ups
+    assert write not in store.follow_ups()
+
+
+def test_with_auto_accept_off_the_proposal_waits(project: Project) -> None:
+    accept_follow_ups(project, on=False)
+    node, step, _ = feature(project, "Write")
+    store = Store(project.apm_dir)
+    recorded = record_review(
+        project, store, step, parse_review(GAPS), branch="feature/x", sha="a" * 40, feature=node
+    )
+    assert recorded.accepted == ()
+    assert recorded.proposal is not None
+    assert recorded.proposal.status == "pending"
+    assert store.follow_ups() == set()
 
 
 def test_gaps_send_the_step_back_to_do(code_repo: CodeRepo) -> None:
@@ -272,6 +307,25 @@ def test_a_pass_opens_the_feature_s_pull_request(code_repo: CodeRepo, fake_gh: F
     assert delivery is not None
     assert delivery.pr == "https://github.com/o/r/pull/7"
     assert delivery.commits == (target.sha,)  # what was reviewed, for reconcile without a PR
+
+
+def test_with_feature_pr_off_a_pass_opens_no_pull_request(
+    code_repo: CodeRepo, fake_gh: FakeGh
+) -> None:
+    project = code_repo.project
+    config = project.apm_dir / "apm.yaml"
+    config.write_text(config.read_text() + "automation:\n  feature_pr: false\n")
+    node, step, _, _ = built(code_repo, project, "Write")
+    target = find_target(project, node)
+    concluded = conclude(project, target, parse_review(COMPLETE))
+
+    assert (concluded.status, concluded.pr) == (Status.IN_PROGRESS, None)
+    assert not any(call[:3] == ["api", "-X", "POST"] for call in fake_gh.calls)
+    graph = load_graph(project)
+    assert graph[step].status is Status.IN_PROGRESS
+    delivery = graph[step].delivery
+    assert delivery is not None
+    assert (delivery.pr, delivery.commits) == (None, (target.sha,))
 
 
 def test_a_pass_on_the_destination_itself_finishes_the_feature(code_repo: CodeRepo) -> None:

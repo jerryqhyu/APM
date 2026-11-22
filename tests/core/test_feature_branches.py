@@ -5,9 +5,10 @@ takes the branch on, to the enclosing feature's branch or the default branch.
 from apm.core.delivery import Base, choose_base, ensure_pull_request, feature_branch
 from apm.core.git import git
 from apm.core.model import Status
-from apm.core.ops import NewNode, attach_delivery, create_nodes, decompose, set_status
+from apm.core.ops import NewNode, attach_delivery, create_nodes, decompose, link, set_status
 from apm.core.project import Project, load_graph
 from apm.core.reconcile import reconcile
+from apm.runner.agents import base_instructions
 from tests.conftest import CodeRepo
 from tests.fake_gh import FakeGh
 
@@ -66,6 +67,31 @@ def test_a_review_step_never_stacks_on_its_own_tasks(code_repo: CodeRepo) -> Non
     set_status(project, first, Status.DONE)
     set_status(project, second, Status.DONE)
     assert choose_base(project, step) == Base("main")
+
+
+def test_a_task_stacked_on_a_sibling_s_branch_opens_its_pr_into_the_feature_branch(
+    code_repo: CodeRepo, fake_gh: FakeGh
+) -> None:
+    project = code_repo.project
+    feature, _, first, second = feature_with_tasks(project, "First", "Second")
+    link(project, second, first)
+    name = choose_base(project, first).branch
+    assert name is not None
+    code_repo.push_branch("apm/first", base=f"origin/{name}")
+    attach_delivery(project, first, branch="apm/first")
+
+    base = choose_base(project, second)
+    assert base == Base("apm/first", stacked_on=first, feature=feature, target=name)
+    assert base.pr_base == name
+    prompt = base_instructions(load_graph(project), base)
+    assert "start from origin/apm/first" in prompt
+    assert f"`gh pr create --base {name}`" in prompt
+
+    code_repo.push_branch("apm/second", base="apm/first")
+    attach_delivery(project, second, branch="apm/second")
+    outcome = ensure_pull_request(project, second)
+    assert (outcome.action, outcome.base) == ("opened", name)
+    assert fake_gh.field(fake_gh.calls[-1], "base") == name
 
 
 def test_a_task_is_done_once_merged_into_its_feature_branch(
