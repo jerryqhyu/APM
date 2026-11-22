@@ -384,3 +384,200 @@ async def test_eager_off_changes_nothing(
     await settle(harness)
     assert harness.store.eager_builds() == []
     assert all(c["agent"] == IMPLEMENTER for c in fake_claude.calls)
+
+
+# --- redo: rebuilding the tasks after one that changed ---
+
+
+async def split_three(
+    code_repo: CodeRepo, harness: Harness, agents: Agents
+) -> tuple[NodeId, list[NodeId]]:
+    """A feature built eagerly and split into a chain of three pull requests (#101-#103)."""
+    feature, tasks = three_tasks(code_repo.project, harness)
+    agents.build = per_task(agents, tasks)
+    harness.runner.start(EAGER_BUILDER, feature)
+    await settle(harness)
+    return feature, tasks
+
+
+def push_on(repo: CodeRepo, branch: str, name: str, content: str, message: str) -> str:
+    """Someone pushes a commit to `branch` (on `origin`): a review fix, say."""
+    git(repo.dir, ["fetch", "--quiet", "origin"])
+    git(repo.dir, ["checkout", "--quiet", "-B", "someone", f"origin/{branch}"])
+    path = repo.dir / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content)
+    git(repo.dir, ["add", name])
+    git(repo.dir, ["commit", "--quiet", "-m", message])
+    git(repo.dir, ["push", "--quiet", "origin", f"HEAD:refs/heads/{branch}"])
+    sha = git_out(repo, "rev-parse", "HEAD")
+    git(repo.dir, ["checkout", "--quiet", "main"])
+    return sha
+
+
+def rebuild_per_task(agents: Agents) -> Callable[[EagerBuild], object]:
+    """A redo's builder: commits each task it is given again, with new content."""
+    return lambda b: agents.commit_on(
+        b, [(f"src/{t[-6:]}.py", f"# {t}\nx = 2  # rebuilt\n", t) for t in b.tasks]
+    )
+
+
+async def test_redo_rebuilds_only_the_tasks_after_a_change_and_never_rewrites_a_branch(
+    code_repo: CodeRepo, eager: tuple[Harness, Agents], fake_gh: FakeGh, fake_claude: FakeClaude
+) -> None:
+    harness, agents = eager
+    project = code_repo.project
+    feature, (parse, index, rank) = await split_three(code_repo, harness, agents)
+    old = {s.node_id: s for s in harness.store.eager_slices(feature)}
+    fix = push_on(code_repo, old[parse].branch, "src/fix.py", "fixed = True\n", "Review fix")
+
+    plan = plan_redo(project, harness.store, feature)
+    assert plan is not None
+    assert (plan.change.node_id, plan.change.kind, plan.change.tip) == (parse, "pushed", fix)
+    assert (plan.base, plan.base_branch, plan.tasks) == (fix, old[parse].branch, (index, rank))
+    assert "src/fix.py" in plan.diff
+
+    agents.build = rebuild_per_task(agents)
+    run = await harness.runner.eager.redo(feature)
+    assert (run.agent, run.node_id) == (EAGER_BUILDER, feature)
+    await settle(harness)
+
+    build = harness.store.eager_build(feature)
+    assert build is not None
+    assert (build.state, build.round, build.base_sha) == ("split", 2, fix)
+    assert build.branch.endswith("-2")
+    prompt = fake_claude.calls[-1]["prompt"]
+    assert prompt.startswith(f"Rebuild part of feature {handle(feature)}")
+    assert "fixed = True" in prompt  # what changed upstream
+    assert parse not in prompt.split("The tasks, in the order to build them:")[1]
+
+    new = {s.node_id: s for s in harness.store.eager_slices(feature)}
+    assert git_out(code_repo, "rev-parse", f"origin/{old[parse].branch}") == fix  # untouched
+    assert new[parse].commit == fix  # the change is accepted as the task's new state
+    below = fix
+    for task in (index, rank):
+        tip = git_out(code_repo, "rev-parse", f"origin/{old[task].branch}")
+        assert tip == new[task].commit
+        # Moved forward, never rewritten: the old tip and the task before it are its parents.
+        assert git_out(code_repo, "rev-list", "--parents", "-n", "1", tip).split()[1:] == [
+            old[task].commit,
+            below,
+        ]
+        assert "x = 2  # rebuilt" in git_out(code_repo, "show", f"{tip}:src/{task[-6:]}.py")
+        delivery = load_graph(project)[task].delivery
+        assert delivery is not None
+        assert delivery.commits == (old[task].commit, tip)
+        below = tip
+    assert tree_of(code_repo.dir, new[rank].commit) == tree_of(code_repo.dir, build.sha or "")
+    # The pull requests stay where they were, chained: no new ones.
+    assert len(posted(fake_gh)) == 3
+    assert fake_gh.pr(102)["base"]["ref"] == old[parse].branch
+    assert fake_gh.pr(103)["base"]["ref"] == old[index].branch
+    assert plan_redo(project, harness.store, feature) is None
+
+
+async def test_redo_after_a_merge_with_changes_starts_from_the_feature_branch(
+    code_repo: CodeRepo, eager: tuple[Harness, Agents], fake_gh: FakeGh
+) -> None:
+    harness, agents = eager
+    project = code_repo.project
+    feature, (parse, index, rank) = await split_three(code_repo, harness, agents)
+    old = {s.node_id: s for s in harness.store.eager_slices(feature)}
+    build = harness.store.eager_build(feature)
+    assert build is not None
+    # #101 is squash-merged with an edit made during review.
+    git(code_repo.dir, ["checkout", "--quiet", "-B", "squash", f"origin/{build.base}"])
+    git(code_repo.dir, ["checkout", "--quiet", old[parse].commit, "--", "."])
+    (code_repo.dir / "src" / "edited.py").write_text("edited = True\n")
+    git(code_repo.dir, ["add", "-A"])
+    git(code_repo.dir, ["commit", "--quiet", "-m", "Parse (#101)"])
+    git(code_repo.dir, ["push", "--quiet", "origin", f"HEAD:refs/heads/{build.base}"])
+    squashed = git_out(code_repo, "rev-parse", "HEAD")
+    git(code_repo.dir, ["checkout", "--quiet", "main"])
+    fake_gh.merge(101, squashed)
+
+    plan = plan_redo(project, harness.store, feature)
+    assert plan is not None
+    assert (plan.change.kind, plan.base, plan.base_branch) == ("merged", squashed, build.base)
+    assert plan.tasks == (index, rank)
+    agents.build = rebuild_per_task(agents)
+    await harness.runner.eager.redo(feature)
+    await settle(harness)
+
+    assert git_out(code_repo, "rev-parse", f"origin/{old[parse].branch}") == old[parse].commit
+    tip = git_out(code_repo, "rev-parse", f"origin/{old[index].branch}")
+    assert git_out(code_repo, "rev-list", "--parents", "-n", "1", tip).split()[1:] == [
+        old[index].commit,
+        squashed,
+    ]
+    assert fake_gh.pr(102)["base"]["ref"] == build.base  # now on the feature branch
+    assert fake_gh.pr(103)["base"]["ref"] == old[index].branch
+    slices = {s.node_id: s for s in harness.store.eager_slices(feature)}
+    assert slices[parse].landed == squashed
+
+
+async def test_redo_refuses_to_overwrite_commits_apm_didnt_make(
+    code_repo: CodeRepo, eager: tuple[Harness, Agents], fake_gh: FakeGh
+) -> None:
+    harness, agents = eager
+    feature, (parse, index, _) = await split_three(code_repo, harness, agents)
+    old = {s.node_id: s for s in harness.store.eager_slices(feature)}
+    push_on(code_repo, old[parse].branch, "src/fix.py", "fixed = True\n", "Review fix")
+    theirs = push_on(code_repo, old[index].branch, "src/theirs.py", "mine = 1\n", "Someone's")
+
+    with pytest.raises(RunRefused, match="APM won't rebuild over that"):
+        await harness.runner.eager.redo(feature)
+    assert git_out(code_repo, "rev-parse", f"origin/{old[index].branch}") == theirs
+    build = harness.store.eager_build(feature)
+    assert build is not None
+    assert build.round == 1
+
+
+async def test_redo_refuses_when_a_task_after_the_change_has_merged(
+    code_repo: CodeRepo, eager: tuple[Harness, Agents], fake_gh: FakeGh
+) -> None:
+    harness, agents = eager
+    feature, (parse, _, rank) = await split_three(code_repo, harness, agents)
+    old = {s.node_id: s for s in harness.store.eager_slices(feature)}
+    fake_gh.merge(103, old[rank].commit)  # merged into the task before it
+    push_on(code_repo, old[parse].branch, "src/fix.py", "fixed = True\n", "Review fix")
+    with pytest.raises(RunRefused, match="never touches merged work"):
+        await harness.runner.eager.redo(feature)
+    assert git_out(code_repo, "rev-parse", f"origin/{old[rank].branch}") == old[rank].commit
+
+
+async def test_a_task_merged_as_split_is_left_alone_when_a_later_one_changes(
+    code_repo: CodeRepo, eager: tuple[Harness, Agents], fake_gh: FakeGh
+) -> None:
+    harness, agents = eager
+    project = code_repo.project
+    feature, (parse, index, rank) = await split_three(code_repo, harness, agents)
+    old = {s.node_id: s for s in harness.store.eager_slices(feature)}
+    build = harness.store.eager_build(feature)
+    assert build is not None
+    # #101 lands as split (a fast-forward of the feature branch), then #102 gets a review fix.
+    landed = f"{old[parse].commit}:refs/heads/{build.base}"
+    git(code_repo.dir, ["push", "--quiet", "origin", landed])
+    fake_gh.merge(101, old[parse].commit)
+    reconcile(project, retarget=True)
+    assert load_graph(project)[parse].status is Status.DONE
+    assert fake_gh.pr(102)["base"]["ref"] == build.base
+    fix = push_on(code_repo, old[index].branch, "src/fix.py", "fixed = True\n", "Review fix")
+
+    plan = plan_redo(project, harness.store, feature)
+    assert plan is not None
+    assert (plan.change.node_id, plan.tasks) == (index, (rank,))
+    agents.build = rebuild_per_task(agents)
+    await harness.runner.eager.redo(feature)
+    await settle(harness)
+
+    assert git_out(code_repo, "rev-parse", f"origin/{old[parse].branch}") == old[parse].commit
+    assert git_out(code_repo, "rev-parse", f"origin/{old[index].branch}") == fix
+    rebuilt = git_out(code_repo, "rev-parse", f"origin/{old[rank].branch}")
+    assert git_out(code_repo, "rev-list", "--parents", "-n", "1", rebuilt).split()[1:] == [
+        old[rank].commit,
+        fix,
+    ]
+    slices = {s.node_id: s for s in harness.store.eager_slices(feature)}
+    assert slices[parse].landed == old[parse].commit
+    assert load_graph(project)[parse].status is Status.DONE
