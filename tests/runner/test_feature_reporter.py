@@ -41,7 +41,7 @@ async def test_a_passing_review_puts_the_report_in_the_feature_s_pull_request(
     code_repo: CodeRepo, fake_claude: FakeClaude, fake_gh: FakeGh
 ) -> None:
     project = code_repo.project
-    node, step, _, branch = built(code_repo, project, "Write", "Read")
+    node, _, _, branch = built(code_repo, project, "Write", "Read")
     reviewed = tip(code_repo, branch)
     pr = fake_gh.add(7, body="The spec.\n\nAPM-Node: x\n")  # what POST will open
     harness = Harness(project)
