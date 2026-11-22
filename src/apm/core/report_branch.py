@@ -134,6 +134,7 @@ def find_target(project: Project, feature: NodeId) -> ReportTarget:
     report's path. Refuses when the branch doesn't exist or has no work on it.
     """
     graph = load_graph(project)
+    feature = report_subject(graph, feature)
     repo = repo_dir(project)
     fetch_origin(repo)
     branch = feature_branch(graph, feature)

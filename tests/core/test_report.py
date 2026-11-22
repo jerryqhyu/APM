@@ -2,6 +2,7 @@
 and the store, and kept within a size; and what the reporter is asked for at each detail level.
 """
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -79,8 +80,8 @@ def turn(
     prompt: str,
     *,
     parent: Run | None = None,
-    said: tuple[str, ...] = (),
-    events: tuple[dict[str, Any], ...] = (),
+    said: Sequence[str] = (),
+    events: Sequence[dict[str, Any]] = (),
 ) -> Run:
     """A finished run, as the runner would have stored it."""
     run = store.create_run(
