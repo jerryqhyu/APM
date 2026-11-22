@@ -220,11 +220,26 @@ def _remove(doc: CommentedMap, path: KeyPath) -> None:
 
 
 def _append(node: CommentedMap, key: str, value: Any) -> None:
-    """Adds an entry at the end of a mapping, above the comment lines that followed it."""
+    """Adds an entry to a mapping: a plain value after the other plain values, so it doesn't land
+    below a nested mapping (`eager:` under `overrides:`), else at the end, above the comment lines
+    that followed the last entry.
+    """
+    if not _nested(value):
+        plain = [i for i, k in enumerate(node) if not _nested(node[k])]
+        if (at := plain[-1] + 1 if plain else 0) < len(node):
+            node.insert(at, key, value)
+            return
     tail = _detach_tail(node, list(node)[-1]) if len(node) and not _is_flow(node) else None
     node[key] = value
     if tail:
         _attach_tail(node, tail)
+
+
+def _nested(value: Any) -> bool:
+    """A mapping or list written over several lines."""
+    return (
+        isinstance(value, CommentedMap | CommentedSeq) and bool(len(value)) and not _is_flow(value)
+    )
 
 
 def _delete(node: CommentedMap, key: str, carried: str = "") -> str:

@@ -205,7 +205,7 @@ REPOS = "name: x\ncode: { repos: { a: { path: a } } }\n"
         ),
         (
             f"{REPOS}features: {{ overrides: {{ 12345678: {{ eager: true }} }} }}",
-            r'features\.overrides: put the handle 12345678 in quotes, or use the full node id',
+            r"features\.overrides: put the handle 12345678 in quotes, or use the full node id",
         ),
         ("code: { repos: { a: { path: a } } }", r"^name: "),
         ("", r"^name: "),

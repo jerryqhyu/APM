@@ -53,7 +53,9 @@ def test_no_change_gives_the_same_text(text: str) -> None:
 
 
 def test_setting_values_keeps_everything_else_as_written() -> None:
-    edited = edit_yaml(GUIDE, {("automation", "task_review"): False, ("runner", "max_concurrent"): 4})
+    edited = edit_yaml(
+        GUIDE, {("automation", "task_review"): False, ("runner", "max_concurrent"): 4}
+    )
     assert edited == GUIDE.replace(
         "max_concurrent: 2          #", "max_concurrent: 4          #"
     ).replace("  implement_follow_ups: no\n", "  implement_follow_ups: no\n  task_review: false\n")
@@ -76,8 +78,18 @@ def test_added_entries_go_above_the_comments_that_followed() -> None:
     )
     assert edited == HEADINGS.replace(
         "  eager: false\n",
-        f"  eager: false\n  report: false\n  overrides:\n    {ID}:\n      report_detail: detailed\n",
+        f"  eager: false\n  report: false\n  overrides:\n"
+        f"    {ID}:\n      report_detail: detailed\n",
     ).replace("  task_review: true\n", "  task_review: true\n  feature_pr: false\n")
+
+
+def test_a_plain_value_goes_above_the_nested_mappings() -> None:
+    text = f"name: x\nfeatures:\n  eager: true\n  overrides:\n    {ID}:\n      report: false\n"
+    edited = edit_yaml(text, {("features", "task_max_lines"): 80})
+    assert edited == text.replace("  eager: true\n", "  eager: true\n  task_max_lines: 80\n")
+    only_overrides = f"name: x\nfeatures:\n  overrides:\n    {ID}:\n      report: false\n"
+    edited = edit_yaml(only_overrides, {("features", "eager"): True})
+    assert edited == only_overrides.replace("features:\n", "features:\n  eager: true\n")
 
 
 def test_removing_the_last_entries_removes_their_empty_mappings_and_keeps_the_comments() -> None:
