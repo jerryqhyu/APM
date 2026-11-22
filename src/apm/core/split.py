@@ -377,3 +377,71 @@ def rebuilt_commits(
         below = commit_tree(repo_dir, tree, [old_tips[piece.node_id], below], message)
         out.append(below)
     return out
+
+
+# --- the splitter's answer ---
+
+SPLIT_SCHEMA: dict = {
+    "type": "object",
+    "properties": {
+        "summary": {"type": "string"},
+        "tasks": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "node_id": {"type": "string"},
+                    "branch": {"type": "string"},
+                    "commit": {"type": "string"},
+                    "within_limit": {"type": "boolean"},
+                    "note": {"type": "string"},
+                },
+                "required": ["node_id", "branch", "commit", "within_limit", "note"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    "required": ["summary", "tasks"],
+    "additionalProperties": False,
+}
+"""What the splitter returns: its chain, task by task in order, with the branch and commit it
+made for each, whether that part stayed within its task's size limit, and a note."""
+
+
+@dataclass(frozen=True, slots=True)
+class SplitAnswer:
+    pieces: list[Piece]
+    over_limit: list[tuple[NodeId, str]]
+    """Tasks whose part the splitter couldn't keep within the size limit, with its note."""
+    summary: str
+
+
+def parse_split(
+    repo_dir: Path, answer: object, base: str, tasks: Collection[NodeId]
+) -> SplitAnswer:
+    """The chain the splitter says it made, each piece expected on the one before (the first on
+    `base`). Commits are resolved to full SHAs where this clone has them; `check_chain` then
+    verifies all of it. Raises `SplitError` if the answer isn't a chain at all.
+    """
+    if not isinstance(answer, dict) or not isinstance(answer.get("tasks"), list):
+        raise SplitError("the splitter's answer has no list of tasks")
+    pieces: list[Piece] = []
+    over: list[tuple[NodeId, str]] = []
+    parent = base
+    for item in answer["tasks"]:
+        if not isinstance(item, dict) or not item.get("node_id") or not item.get("commit"):
+            raise SplitError("the splitter's answer has a task without its id or commit")
+        node = task_of(str(item["node_id"]), tasks) or str(item["node_id"])
+        commit = _full_sha(repo_dir, str(item["commit"]))
+        pieces.append(Piece(node, commit, parent))
+        if item.get("within_limit") is False:
+            over.append((node, str(item.get("note") or "")))
+        parent = commit
+    return SplitAnswer(pieces, over, str(answer.get("summary") or ""))
+
+
+def _full_sha(repo_dir: Path, commit: str) -> str:
+    try:
+        return rev_parse(repo_dir, commit.strip()) or commit.strip()
+    except GitError:
+        return commit.strip()

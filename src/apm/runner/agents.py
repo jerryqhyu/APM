@@ -19,6 +19,7 @@ from apm.core.model import NodeId, Status
 from apm.core.project import Project
 from apm.core.proposals import DECOMPOSITION_SCHEMA, REVIEW_SCHEMA
 from apm.core.settings import feature_settings
+from apm.core.split import SPLIT_SCHEMA
 from apm.core.store import PROJECT
 from apm.core.task_verdict import TASK_VERDICT_SCHEMA
 
@@ -144,6 +145,35 @@ AGENTS: dict[str, AgentSpec] = {
         ),
     )
 }
+
+# Eager mode (plans.md §7.9): started by Implement on an eager feature, never on their own.
+EAGER_BUILDER = "apm-eager-builder"
+SPLITTER = "apm-splitter"
+EAGER_AGENTS: tuple[AgentSpec, ...] = (
+    AgentSpec(
+        name=EAGER_BUILDER,
+        label="Eager build",
+        summary="Build every To do task of this feature in one run, on one branch. APM then"
+        " splits it into one pull request per task.",
+        scope="read",
+        tools=(*READ_TOOLS, "Edit", "Write", "Bash(git *)"),
+        mcp_tools=READ_MCP,
+        worktree=True,
+        user_startable=False,
+    ),
+    AgentSpec(
+        name=SPLITTER,
+        label="Split",
+        summary="Carve an eager build into one commit per task, each built on the one before.",
+        scope="read",
+        tools=(*READ_TOOLS, "Edit", "Write", "Bash(git *)"),
+        mcp_tools=READ_MCP,
+        schema=SPLIT_SCHEMA,
+        worktree=True,
+        user_startable=False,
+    ),
+)
+AGENTS.update((spec.name, spec) for spec in EAGER_AGENTS)
 
 
 class RunRefused(ApmError, ValueError):  # noqa: N818 (a refusal, not a failure)

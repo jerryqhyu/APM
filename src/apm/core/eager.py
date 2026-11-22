@@ -217,14 +217,14 @@ def task_refusal(store: Store, config: ApmConfig, graph: Graph, task: NodeId) ->
 
 
 def redirect(store: Store, config: ApmConfig, graph: Graph, task: NodeId) -> NodeId | None:
-    """The feature to build eagerly instead of implementing `task` alone: while its eager feature
-    has no split yet. A task that isn't part of an existing split (one added later) is built on
-    its own: None.
+    """The feature to build eagerly instead of implementing a To do `task` alone: while its eager
+    feature has no split yet. A task that isn't part of an existing split (one added later), or
+    one already in progress, is built on its own: None.
     """
     feature = eager_feature(config, graph, task)
-    if feature is None or feature == task or split_tasks(store, feature):
+    if feature is None or feature == task or graph[task].status is not Status.TODO:
         return None
-    return feature
+    return None if split_tasks(store, feature) else feature
 
 
 def code_repo(project: Project) -> Path:

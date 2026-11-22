@@ -23,6 +23,7 @@ from typing import Any
 
 from apm.core.config import ApmConfig, read_config
 from apm.core.delivery import Base, choose_base, ensure_pull_request, note_missing_pr
+from apm.core.eager import redirect, task_refusal
 from apm.core.feature_review import (
     ReviewRefused,
     Target,
@@ -35,6 +36,7 @@ from apm.core.feature_review import (
 )
 from apm.core.feature_review import parse_review as parse_feature_review
 from apm.core.files import read_body
+from apm.core.graph import Graph
 from apm.core.ids import handle
 from apm.core.lock import CACHE_DIR, pid_alive
 from apm.core.model import NodeId, Status
@@ -52,6 +54,8 @@ from apm.core.task_review import implement_blocker
 from apm.core.task_verdict import TaskVerdict, VerdictRefused, parse_task_verdict
 from apm.runner.agents import (
     AGENTS,
+    EAGER_BUILDER,
+    SPLITTER,
     AgentSpec,
     RunRefused,
     build_command,
@@ -64,6 +68,7 @@ from apm.runner.agents import (
     revision_prompt,
     worktree_name,
 )
+from apm.runner.eager import EagerRuns
 
 FEATURE_REVIEWER = "apm-feature-reviewer"
 TASK_REVIEWER = "apm-task-reviewer"
@@ -114,6 +119,8 @@ class Runner:
         self._slots: dict[str, str] = {}  # run id → slot, for every run of an active pipeline
         self._processes: dict[str, asyncio.subprocess.Process] = {}  # by run id
         self._requests: dict[str, Request] = {}  # by request id
+        self.eager = EagerRuns(self)
+        """Eager builds, redos and splits (`apm.runner.eager`)."""
         self._fail_orphans()
 
     # --- starting ---
@@ -133,6 +140,8 @@ class Runner:
 
         `branch` is for the feature reviewer: the branch to review, if APM shouldn't work it out.
         """
+        if agent == EAGER_BUILDER and node_id:  # Implement on an eager feature (feature_runs)
+            return self.eager.start_build(node_id, message, mode=mode)
         spec = AGENTS.get(agent)
         if spec is None or not spec.user_startable:
             raise RunRefused(f"unknown agent {agent!r}")
@@ -141,6 +150,10 @@ class Runner:
         if spec.name == FEATURE_REVIEWER and node_id in graph:
             # Started on a feature, it reviews through the feature's review step.
             node_id = review_subject(graph, node_id)[1] or node_id
+        # A task of an eager feature is built with the whole feature, or comes from its split.
+        implementer = spec.name == "apm-implementer" and node_id in graph
+        if implementer and (feature := self._eager_redirect(graph, node_id)):
+            return self.eager.start_build(feature, message, mode=mode)
         # Under review says more than "not reviewed yet", so the lock is checked before the gate.
         locked = spec.name in ("apm-implementer", "apm-decomposer")
         if locked and under_review(self.project.apm_dir, node_id):
@@ -171,6 +184,10 @@ class Runner:
         """
         previous = self.store.get_run(run_id)
         spec = AGENTS[previous.agent]
+        if spec.name in (EAGER_BUILDER, SPLITTER):
+            raise RunRefused(
+                f"{spec.label} runs as part of an eager build: use Implement or Redo on the feature"
+            )
         if not spec.user_startable:
             raise RunRefused(f"{spec.label} runs on its own: reply in the conversation it reviewed")
         if not message.strip():
@@ -214,6 +231,15 @@ class Runner:
         )
         self._schedule(run, pipeline)
         return run
+
+    def _eager_redirect(self, graph: Graph, task: NodeId) -> NodeId | None:
+        """The eager feature to build instead of implementing `task` alone, or None to implement
+        it as usual. Refuses a task that comes from an eager build (see `apm.core.eager`).
+        """
+        config = read_config(self.project.apm_dir)
+        if reason := task_refusal(self.store, config, graph, task):
+            raise RunRefused(reason)
+        return redirect(self.store, config, graph, task)
 
     def _session_started(self, run_id: str) -> bool:
         """True if any turn of the conversation up to `run_id` got as far as Claude starting."""
