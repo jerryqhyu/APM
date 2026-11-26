@@ -14,7 +14,7 @@ v1 = a Python backend with a TypeScript web UI, one user on one machine, one cod
 |---|---|---|
 | Language | **Python 3.14** for the backend (core, CLI, server, MCP), managed with **uv**; TypeScript only for the web UI | The standard library covers UUIDv7, SQLite with FTS5 and subprocess git; first-class MCP and Claude Agent SDKs; fast, strict tooling (uv, ruff, ty). The UI stays TypeScript because it runs in the browser. Installed with `uvx` / `uv tool install`. Replaces TypeScript-everywhere, before any core code merged |
 | Graph model | Compound graph: containment **tree** + dependency **DAG**; cross-level edges stored once and *lifted* for display | Unlimited depth, zoom into any node, no hand-copying edges between levels |
-| Graph library | **networkx**: containment and dependencies are two digraphs over the same node ids | Traversal, cycle detection and strongly connected components come from a well-tested library instead of hand-written walks |
+| Graph library | **None**: containment and dependencies are two adjacency maps over the same node ids, with a depth-first walk, reachability, strongly connected components (Tarjan, iterative) and tree cycles in `apm.core.graph` | networkx was dropped: it cost about 150 ms and 16 MB on every import, and building a graph on plain dicts takes about 60% of the time and a third of the memory |
 | Plan storage | Separate git repo at `.apm/`, on your machine only, ignored by the code repo and found through `.apm-link` | No CI runs on plan commits; works with a protected `main`; history holds only plan changes |
 | Source of truth | `graph.ndjson` (structure + metadata) + `nodes/<id>.md` (prose only) | Each field lives in exactly one place, so the two can't drift |
 | IDs | UUIDv7; the short handle is the **last** 8 hex chars | Sorts by creation time; new nodes append at the end of the file, so diffs stay small |
@@ -348,7 +348,7 @@ Inside `core`, each module is one concern, and nothing is computed in two places
 | `errors` | `ApmError`, the base of every error the user can cause. The CLI prints it as one line, the MCP returns it as the tool's error, the API maps it to a status |
 | `ndjson`, `files`, `config` | `graph.ndjson`, node bodies, `apm.yaml` |
 | `git`, `lock` | the git wrapper; the cross-process write lock |
-| `graph` | the in-memory graph on networkx, with everything derived from it: handles, blocked, ready, progress |
+| `graph` | the in-memory graph (adjacency maps), with everything derived from it: handles, blocked, ready, progress |
 | `validate`, `lifting` | invariants I1–I7; level views |
 | `project` | `init_project()`, finding a project |
 | `mutate`, `ops` | the one way to write; the operations built on it; committing hand edits |
@@ -357,7 +357,7 @@ Inside `core`, each module is one concern, and nothing is computed in two places
 | `feature_review`, `report`, `report_branch` | the code around the feature reviewer (§7.6); a feature report's record and prompt, and getting the report onto the feature branch and into its PR (§7.10) |
 
 - **Backend:** Python 3.14, one distribution with an `apm` console script, managed with **uv** (committed `uv.lock`, `uv_build` backend, src layout). **ruff** lints and formats, **ty** type-checks, **pytest** + **Hypothesis** test. Names follow PEP 8: snake_case for modules, functions, variables and fields, PascalCase for classes; ruff's pep8-naming rules enforce it.
-- **Libraries:** networkx (the in-memory graph: `Graph.tree` and `Graph.deps` are `networkx.DiGraph`s), pydantic (validating `graph.ndjson` lines, `apm.yaml`, and API and MCP inputs), PyYAML, Typer, FastAPI + uvicorn, and the `mcp` SDK. The standard library covers UUIDv7 (`uuid.uuid7()`), SQLite with FTS5 (`sqlite3`) and git (`subprocess`).
+- **Libraries:** pydantic (validating `graph.ndjson` lines, `apm.yaml`, and API and MCP inputs), PyYAML, Typer, FastAPI + uvicorn, and the `mcp` SDK. The standard library covers UUIDv7 (`uuid.uuid7()`), SQLite with FTS5 (`sqlite3`) and git (`subprocess`).
 - **Core is synchronous** and uses `pathlib` throughout. The server calls it from a worker thread and runs agent subprocesses with `asyncio`.
 - **Python style:** type hints on everything `ty` checks, `pathlib` for paths, frozen dataclasses for value types, and pydantic only at input boundaries (files, API, MCP).
 - **Tests mirror the code:** tests under `tests/` mirror `src/apm/` (`tests/core/test_ids.py` tests `apm/core/ids.py`); shared Hypothesis strategies live in `tests/strategies.py`. End-to-end tests run the `apm` command against throwaway git repos in a temp dir.

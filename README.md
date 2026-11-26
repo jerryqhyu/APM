@@ -60,7 +60,7 @@ In `.apm/` inside your repository: its own small git repository, on your machine
 
 ## Development
 
-The backend is Python 3.14, managed with uv. The in-memory graph is built on [networkx](https://networkx.org/). The UI is TypeScript (React, React Flow, elkjs) under `ui/`.
+The backend is Python 3.14, managed with uv. The in-memory graph is plain Python: two adjacency maps over the node ids. The UI is TypeScript (React, React Flow, elkjs) under `ui/`.
 
 ```bash
 uv sync                  # create .venv with the project and its dev tools
