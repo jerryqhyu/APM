@@ -1,16 +1,8 @@
-"""Eager mode (plans.md §7.9): a feature is built in one agent run on one branch, the *eager
-branch*, then split into one branch and one pull request per task. The task branches form a
-chain, each built on the one before, so each pull request (targeting the task before it, the
-first one the feature branch) shows only its own part. When a task's pull request changes after
-the split, the tasks after it are rebuilt on top of it: a *redo*.
-
-This module is the plain code around the two agents (`apm-eager-builder`, `apm-splitter`): what a
-build covers and the gate before it starts, branch names, recording a verified split, redo
-detection and planning, and what the UI shows. The git side is `apm.core.split`; the runs are
-`apm.runner.eager`.
-
-Its state lives in the store (`eager_builds`, `eager_slices`), not in the plan: it describes
-branches in this machine's clone.
+"""Eager mode (plans.md §7.9): a feature built in one run on an *eager branch*, then split into a
+chain of task branches, one pull request each, every one showing only its own part; a *redo*
+rebuilds the tasks after one whose pull request changed. The plain code around the agents: scope
+and gate, branch names, recording a verified split, redo detection and planning, and the UI's view.
+Git is `apm.core.split`, the runs `apm.runner.eager`, the state the store's eager tables.
 """
 
 import re

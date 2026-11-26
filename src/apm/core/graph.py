@@ -1,13 +1,6 @@
-"""The in-memory graph (plans.md §2): two adjacency maps over the same node ids, containment
-(parent → children) and dependencies (node → what it depends on, and back).
-
-A Graph is read-only. It doesn't check invariants (that's `validate()`), so it stays safe on broken
-input: a reference to a node that doesn't exist is not an edge (`validate()` reports it from the
-node's own fields), and a containment cycle can't make a walk loop forever.
-
-Everything that is computed rather than stored lives here too, worked out once on first use:
-handles, and each node's state (blocked, ready, stacked, progress). It is never stored, so it can't
-go stale.
+"""The in-memory graph (plans.md §2): containment and dependency adjacency over node ids, plus
+what is computed rather than stored (handles, each node's state), worked out once on first use.
+Read-only and safe on broken input: a missing node is not an edge, and a cycle can't loop a walk.
 """
 
 from collections.abc import Callable, Iterable, Mapping

@@ -1,21 +1,7 @@
-"""The git side of eager mode (plans.md §7.9): carving a finished eager build into a chain of task
-commits, checking a chain before anything is recorded, and moving task branches on.
-
-Everything here is plain git, run by APM itself:
-
-- `mechanical_split`: when the builder made its commits task by task (each with an `APM-Node`
-  trailer, in an order the dependencies allow), the split is deterministic: those commits are the
-  chain, a task's several commits squashed into one. No agent is needed. Anything else (one big
-  commit, commits that mix tasks) goes to the splitter agent.
-- `check_chain`: what APM verifies before it believes a split, however it was made: one commit per
-  task, each on the one before, each with its task's trailer, none empty, in dependency order, and
-  the last one's tree exactly the eager branch's.
-- `publish`: pushes task branches without ever rewriting one. A new branch must not exist yet; an
-  existing one only moves forward from the commit APM left it at, so a commit someone else pushed
-  is never overwritten: git refuses the push.
-- `rebuilt_commits`: after a redo, a task's new content goes on top of its branch as a merge
-  commit (its old tip, and the new tip of the task before it), so the branch only moves forward
-  and its pull request still shows only its own part.
+"""The git side of eager mode (plans.md §7.9), all plain git: `mechanical_split` (when the builder
+committed task by task), `check_chain` (what APM verifies before it believes any split),
+`publish` (task branches only ever move forward, never forced) and `rebuilt_commits` (a redo puts
+a task's new content on top of its branch as a merge commit).
 """
 
 import re

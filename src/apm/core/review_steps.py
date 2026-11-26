@@ -1,16 +1,6 @@
-"""Review steps (plans.md §3.9): every node with children ends in one.
-
-A node with children is a feature. Its review step is one more child, of kind `review`, that
-depends on all of its other children, so it becomes ready only once they are done: then the
-feature reviewer checks the feature branch against the feature's description. The step's delivery
-is the feature branch, and its pull request is the feature's way into the branch above it.
-
-`maintain` keeps that true on every change to the plan (`mutate` calls it before validating):
-
-- A node that gets children, and isn't done or dropped, gets a review step.
-- A review step depends on exactly its feature's other children that aren't dropped: added ones
-  are added, removed or dropped ones removed.
-- A review step that is all its feature has left is removed, unless it already holds work.
+"""Review steps (plans.md §3.9): every node with children (a feature) ends in one, a `review` child
+that depends on all its other children. Its delivery is the feature branch. `maintain` keeps that
+true on every change to the plan (`mutate` calls it before validating).
 """
 
 from dataclasses import replace

@@ -1,16 +1,6 @@
-"""Editing apm.yaml in place, keeping its comments and formatting.
-
-`edit_yaml` changes a few values with ruamel.yaml's round-trip mode. Plain scalars are read as the
-text they were written as, never as numbers or booleans, so whatever it doesn't change is written
-back as it was: `no`, `2.00` or a handle like `12e45678` stay exactly that. It follows the file's
-indentation and the spacing inside its `{ … }` mappings, and when it adds or removes an entry it
-keeps the comment lines below a mapping's last entry (often the heading of the next section)
-where they were.
-
-What it can't keep: the spaces before an end-of-line comment on an edited line can shift, and the
-values it writes are spelled its own way. Before handing the text back it reads both versions the
-way `parse_config` does and checks that they differ by exactly the changes asked for, so a quirk
-of the round trip can never quietly change another setting.
+"""Editing apm.yaml in place with ruamel.yaml's round trip, keeping comments, indentation and how
+untouched values were spelled. Before handing the text back it parses both versions like
+`parse_config` and checks they differ by exactly the changes asked for.
 """
 
 import io

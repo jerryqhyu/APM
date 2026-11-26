@@ -1,20 +1,7 @@
-"""Reviewing a finished feature (plans.md §7.6).
-
-A feature is a node with children. Its tasks go into the feature branch, and its review step
-(`apm.core.review_steps`) waits on all of them. Once they are done, the feature reviewer, an
-agent, reads the feature branch and the feature's description and says whether the feature
-really does what the description asks. This module is the plain code around it:
-
-- `find_target`: which branch and commit to review: the feature branch, recorded on the review
-  step. For a plan from before review steps, or when you name one, another branch: the one the
-  tasks' pull requests merged into, the top of their stack, or the default branch.
-- `prepare_worktree`: a checkout of that commit, so the agent reads the feature as built and your
-  own checkout is never touched.
-- `record_review`: the verdict goes into the review step's description under `## Feature review`,
-  and the gaps the reviewer found become a proposal of follow-up tasks on the feature.
-- `conclude`: a complete feature's branch gets its pull request, to the enclosing feature's
-  branch or the default branch, and the review step waits for it to merge (`apm reconcile` then
-  marks the step and the feature done). An incomplete one's step goes back to do.
+"""Reviewing a finished feature (plans.md §7.6): the plain code around the feature reviewer.
+`find_target` picks the branch and commit (the feature branch, recorded on the review step),
+`prepare_worktree` checks it out, `record_review` writes the verdict into the review step and turns
+gaps into follow-ups, and `conclude` opens the feature's pull request or sends the step back.
 """
 
 import contextlib

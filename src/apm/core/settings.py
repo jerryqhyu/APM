@@ -1,14 +1,7 @@
-"""The settings that apply to a feature or a task, and changing them (plans.md §3.4).
-
-`features:` in apm.yaml holds the project's defaults and per-feature overrides. `feature_settings`
-is the one place that works out what applies to a node: the defaults, overridden by each feature
-around it that has an override, the innermost last, and finally by the node's own. The task
-review, the decomposer and the implementer read the task size limit through it; eager mode and the
-feature report read theirs the same way.
-
-The changes below edit apm.yaml in place, keeping its comments and formatting
-(`apm.core.config_edit`), refuse a value `parse_config` wouldn't accept, and commit the file to the
-plan repo like any other change to the plan: one commit each, under the write lock.
+"""The settings that apply to a feature or task, and changing them (plans.md §3.4).
+`feature_settings` is the one place that works them out: project defaults, then each enclosing
+feature's override, innermost last. Changes edit apm.yaml in place (`apm.core.config_edit`) and
+commit it like any other plan change.
 """
 
 from collections.abc import Callable, Mapping
@@ -68,11 +61,8 @@ class ResolvedSettings:
 
 
 def feature_settings(config: ApmConfig, graph: Graph, node_id: NodeId) -> FeatureSettings:
-    """The settings that apply to a node: the project's `features:` defaults, overridden by the
-    nearest enclosing feature (or the node itself) that has an override. Inner overrides win.
-
-    Works for a task (its feature's settings, and those of the features above it) and for a
-    feature. Raises `KeyError` for a node that isn't in `graph`.
+    """The settings that apply to a task or feature: the project's defaults, overridden by each
+    enclosing feature (and the node itself), innermost last. `KeyError` for an unknown node.
     """
     return resolve_settings(config, graph, node_id).settings
 

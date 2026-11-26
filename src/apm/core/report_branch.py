@@ -1,18 +1,6 @@
-"""Where a feature report goes, and getting it there (plans.md §7.9).
-
-The report is committed as `docs/features/<slug>-<handle>.md` on the feature's own branch, so it
-lands with the feature, and the feature's pull request links it. Plain code around the reporter:
-
-- `check_reportable` / `find_target`: which branch the report goes on, and refusing when there is
-  nothing to report on yet. A review step's report is its feature's.
-- `prepare_report`: a checkout of the feature branch for the agent to read, and its first
-  message, with the record (`apm.core.report`).
-- `save_report`: APM itself writes the file, commits it with an `APM-Node` trailer and pushes the
-  branch: a plain push, never a force-push. It is kept in the store either way, so the UI can show
-  it, with why it couldn't be committed if it couldn't.
-- `link_report`: puts a link to the report at the top of the feature's pull request description.
-- `report_status`: where a feature's report stands (not written, writing, written at a commit),
-  with its link on GitHub, for the UI and the terminal.
+"""Where a feature report goes (plans.md §7.10): `docs/features/<slug>-<handle>.md` on the
+feature's branch, linked from the feature's pull request. The plain code around the reporter:
+the target branch, the checkout and first message, committing (never forced), linking, status.
 """
 
 import contextlib

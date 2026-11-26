@@ -108,6 +108,11 @@ def command[**P, R](fn: Callable[P, R]) -> Callable[P, R]:
     return wrapper
 
 
+def cli(group: typer.Typer, name: str | None = None) -> Callable[[Callable[..., Any]], Any]:
+    """Registers a command in `group`, with user errors turned into a message (see `command`)."""
+    return lambda fn: group.command(name)(command(fn))
+
+
 def plan() -> tuple[Project, Graph]:
     """The project you are in, and its plan as it is now."""
     project = find_project()
@@ -150,8 +155,7 @@ def root(
 # --- the project --------------------------------------------------------------------------------
 
 
-@app.command()
-@command
+@cli(app)
 def init(
     name: Annotated[
         str | None, typer.Option(help="Project name. Default: the folder name.")
@@ -163,8 +167,7 @@ def init(
     typer.echo('next: apm serve, or apm node add "My first idea"')
 
 
-@app.command()
-@command
+@cli(app)
 def check() -> None:
     """Validate the plan and apm.yaml: errors (exit code 1) and warnings."""
     project, graph = plan()
@@ -182,8 +185,7 @@ def check() -> None:
         raise typer.Exit(1)
 
 
-@app.command()
-@command
+@cli(app)
 def commit() -> None:
     """Validate and commit edits you made by hand in .apm/."""
     result = commit_hand_edits(find_project())
@@ -193,8 +195,7 @@ def commit() -> None:
 # --- settings (apm.yaml) ------------------------------------------------------------------------
 
 
-@settings_app.command("show")
-@command
+@cli(settings_app, "show")
 def settings_show(
     handle: Annotated[
         str | None, typer.Argument(help="A feature or task: what applies to it, and from where.")
@@ -234,8 +235,7 @@ def settings_show(
         typer.echo(f"warning {CONFIG_FILE}: {problem}")
 
 
-@settings_app.command("set")
-@command
+@cli(settings_app, "set")
 def settings_set(
     pairs: Annotated[
         list[str],
@@ -265,8 +265,7 @@ def settings_set(
     typer.echo(log(project.apm_dir)[0].subject if change.sha else "nothing to change")
 
 
-@settings_app.command("clear")
-@command
+@cli(settings_app, "clear")
 def settings_clear(handle: str) -> None:
     """Remove a feature's own settings, so it inherits them all again."""
     project, graph = plan()
@@ -300,8 +299,7 @@ def setting_text(value: object) -> str:
     return str(value)
 
 
-@app.command("reconcile")
-@command
+@cli(app, "reconcile")
 def reconcile_(
     retarget: Annotated[
         bool,
@@ -318,8 +316,7 @@ def reconcile_(
         typer.echo("nothing to reconcile")
 
 
-@app.command()
-@command
+@cli(app)
 def ready(
     root_: Annotated[str | None, typer.Option("--root", help="Only under this node.")] = None,
     as_json: Json = False,
@@ -334,8 +331,7 @@ def ready(
         typer.echo(node_line(graph, node_id))
 
 
-@app.command("search")
-@command
+@cli(app, "search")
 def search_(query: str, as_json: Json = False) -> None:
     """Search titles and bodies."""
     project, graph = plan()
@@ -348,16 +344,14 @@ def search_(query: str, as_json: Json = False) -> None:
         typer.echo(f"{graph.handles[hit.node_id]} {hit.title}{tail}")
 
 
-@app.command("link-dep")
-@command
+@cli(app, "link-dep")
 def link_dep(src: str, dst: str) -> None:
     """Record that SRC depends on DST."""
     project, graph = plan()
     report(ops.link(project, graph.resolve(src), graph.resolve(dst)), "linked")
 
 
-@app.command("unlink-dep")
-@command
+@cli(app, "unlink-dep")
 def unlink_dep(src: str, dst: str) -> None:
     """Remove the dependency of SRC on DST."""
     project, graph = plan()
@@ -381,8 +375,7 @@ def plugin_path() -> None:
 # --- the plan repo's remote ---------------------------------------------------------------------
 
 
-@app.command()
-@command
+@cli(app)
 def link(remote: Annotated[str, typer.Option(help="URL of the plan repo's remote.")]) -> None:
     """Set the plan repo's remote and record it in .apm-link."""
     if not remote.strip():
@@ -397,8 +390,7 @@ def link(remote: Annotated[str, typer.Option(help="URL of the plan repo's remote
     typer.echo(f"plan repo remote: {remote}")
 
 
-@app.command()
-@command
+@cli(app)
 def clone() -> None:
     """Clone the plan repo named in .apm-link (for a fresh checkout of the code)."""
     here = Path.cwd().resolve()
@@ -415,15 +407,13 @@ def clone() -> None:
     typer.echo(f"cloned {data['remote']} into {target}")
 
 
-@app.command()
-@command
+@cli(app)
 def push() -> None:
     """Push the plan repo."""
     typer.echo(git(find_project().apm_dir, ["push", "--quiet", "-u", "origin", "HEAD"]) or "pushed")
 
 
-@app.command()
-@command
+@cli(app)
 def pull() -> None:
     """Pull the plan repo (fast-forward only)."""
     typer.echo(git(find_project().apm_dir, ["pull", "--quiet", "--ff-only"]) or "up to date")
@@ -437,8 +427,7 @@ RUNS_WARNING = (
 )
 
 
-@app.command("export")
-@command
+@cli(app, "export")
 def export(
     file: Annotated[Path, typer.Argument(help="Where to write the archive, e.g. plan.apm.zip.")],
     with_runs: Annotated[
@@ -455,8 +444,7 @@ def export(
         typer.echo(RUNS_WARNING.format(file=file), err=True)
 
 
-@app.command("import")
-@command
+@cli(app, "import")
 def import_(
     file: Annotated[Path, typer.Argument(help="The .apm.zip archive to restore.")],
 ) -> None:
@@ -479,8 +467,7 @@ def _counts(counts: dict[str, Any]) -> str:
 # --- nodes --------------------------------------------------------------------------------------
 
 
-@node_app.command("add")
-@command
+@cli(node_app, "add")
 def node_add(
     title: str,
     parent: Annotated[str | None, typer.Option("--parent", "-p", help="Parent node.")] = None,
@@ -501,8 +488,7 @@ def node_add(
     typer.echo(f"{result.graph.handles[result.created[0]]} {title}")
 
 
-@node_app.command("ls")
-@command
+@cli(node_app, "ls")
 def node_ls(
     root_: Annotated[str | None, typer.Option("--root", help="Only under this node.")] = None,
     depth: Annotated[int | None, typer.Option(help="How many levels to show.")] = None,
@@ -518,8 +504,7 @@ def node_ls(
     typer.echo(outline(graph, scope, depth) or '(no nodes yet: apm node add "...")')
 
 
-@node_app.command("show")
-@command
+@cli(node_app, "show")
 def node_show(handle: str, as_json: Json = False) -> None:
     """Show one node: its state, links and body."""
     project, graph, node_id = locate(handle)
@@ -529,8 +514,7 @@ def node_show(handle: str, as_json: Json = False) -> None:
     typer.echo(node_text(project, graph, node_id))
 
 
-@node_app.command("set")
-@command
+@cli(node_app, "set")
 def node_set(
     handle: str,
     title: Annotated[str | None, typer.Option(help="New title.")] = None,
@@ -541,8 +525,7 @@ def node_set(
     report(ops.update_node(project, node_id, title=title, kind=kind), "updated")
 
 
-@node_app.command("status")
-@command
+@cli(node_app, "status")
 def node_status(
     handle: str,
     status: Annotated[Status, typer.Argument(case_sensitive=False)],
@@ -553,8 +536,7 @@ def node_status(
     report(ops.set_status(project, node_id, status, note=note), f"{handle}: {status}")
 
 
-@node_app.command("mv")
-@command
+@cli(node_app, "mv")
 def node_mv(
     handle: str,
     parent: Annotated[str | None, typer.Argument(help="The new parent.")] = None,
@@ -568,8 +550,7 @@ def node_mv(
     report(ops.move_node(project, node_id, target), "moved")
 
 
-@node_app.command("merge")
-@command
+@cli(node_app, "merge")
 def node_merge(
     target: Annotated[str, typer.Argument(help="The node that survives.")],
     others: Annotated[list[str], typer.Argument(help="Nodes folded into it, then deleted.")],
@@ -581,8 +562,7 @@ def node_merge(
     report(result, f"merged {len(others) + 1} nodes into {target}")
 
 
-@node_app.command("rm")
-@command
+@cli(node_app, "rm")
 def node_rm(
     handle: str,
     recursive: Annotated[
@@ -594,8 +574,7 @@ def node_rm(
     report(ops.delete_node(project, node_id, recursive=recursive), "deleted")
 
 
-@node_app.command("edit")
-@command
+@cli(node_app, "edit")
 def node_edit(handle: str) -> None:
     """Edit a node's body in $EDITOR and commit it."""
     project, _, node_id = locate(handle)
@@ -619,8 +598,7 @@ def edit_text(text: str, suffix: str = ".md") -> str:
 # --- the server ---------------------------------------------------------------------------------
 
 
-@app.command()
-@command
+@cli(app)
 def serve(
     port: Annotated[
         int, typer.Option(help="Port to listen on. If taken, a free one is used.")
@@ -684,8 +662,7 @@ def free_port(preferred: int) -> int:
 # --- agents -------------------------------------------------------------------------------------
 
 
-@app.command()
-@command
+@cli(app)
 def run(
     agent: Annotated[
         str,
@@ -729,8 +706,7 @@ Mode = Annotated[
 ]
 
 
-@app.command("review-tasks")
-@command
+@cli(app, "review-tasks")
 def review_tasks(
     handle: Annotated[str, typer.Argument(help="The feature (or one task).")],
     mode: Mode = None,
@@ -743,8 +719,7 @@ def review_tasks(
     run_batch(handle, review_all_tasks, "nothing to review: it has no To do tasks", mode=mode)
 
 
-@app.command("implement")
-@command
+@cli(app, "implement")
 def implement(
     handle: Annotated[str, typer.Argument(help="The feature (or one task).")],
     message: Annotated[
@@ -761,8 +736,7 @@ def implement(
     run_batch(handle, implement_feature, empty, mode=mode, message=message)
 
 
-@app.command("report")
-@command
+@cli(app, "report")
 def report_(
     handle: Annotated[str, typer.Argument(help="The feature.")],
     message: Annotated[
@@ -801,8 +775,7 @@ def report_(
         raise typer.Exit(1)
 
 
-@eager_app.command("show")
-@command
+@cli(eager_app, "show")
 def eager_show(handle: Annotated[str, typer.Argument(help="The feature.")]) -> None:
     """Show a feature's eager build: its branch, each task's part and pull request, and what a
     Redo would do.
@@ -851,8 +824,7 @@ def describe_eager(graph: Graph, node_id: NodeId, view: dict[str, Any] | None) -
     return lines
 
 
-@eager_app.command("redo")
-@command
+@cli(eager_app, "redo")
 def eager_redo(
     handle: Annotated[str, typer.Argument(help="The feature.")],
     message: Annotated[
@@ -1036,8 +1008,7 @@ def ask_in_terminal(request: dict[str, Any]) -> tuple[bool, dict[str, str] | Non
 # --- proposals ----------------------------------------------------------------------------------
 
 
-@proposal_app.command("ls")
-@command
+@cli(proposal_app, "ls")
 def proposal_ls(
     everything: Annotated[bool, typer.Option("--all", help="Include resolved ones.")] = False,
 ) -> None:
@@ -1053,8 +1024,7 @@ def proposal_ls(
         typer.echo("no proposals")
 
 
-@proposal_app.command("show")
-@command
+@cli(proposal_app, "show")
 def proposal_show(proposal_id: str) -> None:
     """Show a proposal: the children it would create, and the review."""
     project, graph = plan()
@@ -1083,8 +1053,7 @@ def proposal_show(proposal_id: str) -> None:
             typer.echo(f"    {issue.get('severity')}: {where}{issue.get('problem')}")
 
 
-@proposal_app.command("accept")
-@command
+@cli(proposal_app, "accept")
 def proposal_accept(
     proposal_id: str,
     only: Annotated[list[str] | None, typer.Option("--only", help="Keep only these keys.")] = None,
@@ -1100,8 +1069,7 @@ def proposal_accept(
         typer.echo(f"{result.graph.handles[node_id]} {result.graph[node_id].title}")
 
 
-@proposal_app.command("reject")
-@command
+@cli(proposal_app, "reject")
 def proposal_reject(proposal_id: str) -> None:
     """Reject a proposal. Nothing is written to the plan."""
     reject_proposal(Store(find_project().apm_dir), proposal_id)

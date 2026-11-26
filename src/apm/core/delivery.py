@@ -1,19 +1,7 @@
-"""Getting a leaf's work into a pull request (plans.md §7.3).
-
-Plain code around the implementer, not part of it:
-
-- `choose_base`: where an implementer starts and which branch its pull request targets. A task
-  inside a feature targets the feature's branch (`ensure_feature_branch` creates it). A leaf that
-  depends on unmerged work stacks on it, so its pull request shows only its own changes.
-- `ensure_pull_request`: after an implementer run, opens the pull request itself if the agent
-  pushed a branch but couldn't open one (no `gh`, or `gh pr` refused). It goes through the GitHub
-  REST API (`gh api`), which works where `gh pr`'s GraphQL calls are blocked.
-- `read_pr` / `set_pr_base`: one pull request through the same REST API (state, whether it
-  merged, its base, its merge commit; and retargeting it). `choose_base` and `apm reconcile` use
-  them, never `gh pr view`.
-
-`gh` must be installed and signed in for anything here that talks to GitHub. Without it, every
-function degrades to what local git can tell, and says why when that isn't enough.
+"""Getting a leaf's work into a pull request (plans.md §7.3): `choose_base` (where an implementer
+starts and what its PR targets, feature branches and stacks included), `ensure_pull_request`
+(APM opens the PR itself when the agent couldn't), and `read_pr` / `set_pr_base` through the GitHub
+REST API, which works where `gh pr`'s GraphQL is refused. Without `gh`, it falls back to local git.
 """
 
 import contextlib

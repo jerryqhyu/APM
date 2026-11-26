@@ -1,15 +1,5 @@
-"""Reading the plan: everything the CLI, the MCP server and the HTTP API show.
-
-- Text: the compact outline, and one node in full. People read these in the terminal and agents
-  read them through the MCP, so they stay short.
-- Data: plain dicts for `--json` and the API.
-- Search over titles and bodies, and a node's history.
-
-    1c0b9a44 [work/todo·ready] Stream agent output → 7d2e0f11
-    5e6f7a8b [work/todo·ready·stacked] Tag and publish → 7d2e0f11 · stacked on 7d2e0f11 (#20)
-
-A stacked node builds on its `stack_top`: the delivered, unmerged dependency whose branch holds
-all the work it waits on.
+"""Reading the plan: what the CLI, the MCP server and the HTTP API show (lines, text, JSON views,
+the outline and search).
 """
 
 import re
