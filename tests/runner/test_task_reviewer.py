@@ -74,11 +74,6 @@ def fingerprint(project: Project, task: NodeId) -> str:
     return content_fingerprint(load_graph(project)[task], read_body(project.apm_dir, task))
 
 
-def notices(harness: Harness, run_id: str) -> list[tuple[str, str]]:
-    events = [e.data for e in harness.store.list_events(run_id)]
-    return [(e["level"], e["text"]) for e in events if e["type"] == "apm_notice"]
-
-
 async def review(
     project: Project, fake_claude: FakeClaude, *modes: str
 ) -> tuple[Harness, NodeId, str]:
@@ -99,7 +94,7 @@ async def test_a_pass_is_stored_for_the_content_it_reviewed(
     assert (stored.verdict, stored.run_id) == ("pass", run_id)
     assert stored.fingerprint == fingerprint(project, task)
     assert stored.data["summary"] == "About 20 lines."
-    assert notices(harness, run_id) == [
+    assert harness.notices(run_id) == [
         ("info", "**Pass**: the task is small enough to build. About 20 lines.")
     ]
     assert harness.store.list_proposals() == []
@@ -134,7 +129,7 @@ async def test_too_big_proposes_a_split_that_turns_the_task_into_a_feature(
     (proposal,) = harness.store.list_proposals()
     assert (proposal.node_id, proposal.status, proposal.run_id) == (task, "pending", run_id)
     assert "proposal.created" in harness.types()
-    ((level, text),) = notices(harness, run_id)
+    ((level, text),) = harness.notices(run_id)
     assert level == "warning"
     assert "A split into 2 tasks waits under Proposals" in text
 
@@ -152,7 +147,7 @@ async def test_unclear_says_what_is_missing(project: Project, fake_claude: FakeC
     stored = harness.store.latest_task_review(task)
     assert stored is not None
     assert (stored.verdict, stored.data["missing"]) == ("unclear", ["the format"])
-    assert notices(harness, run_id) == [("warning", "**Unclear**: Too vague. Missing: the format")]
+    assert harness.notices(run_id) == [("warning", "**Unclear**: Too vague. Missing: the format")]
     assert harness.store.list_proposals() == []
 
 
@@ -173,7 +168,7 @@ async def test_malformed_output_or_a_failed_run_is_stored_as_an_error(
     assert (stored.verdict, stored.fingerprint) == ("error", fingerprint(project, task))
     assert reason in stored.data["error"]
     assert harness.store.get_run(run_id).status == "failed"
-    ((level, text),) = notices(harness, run_id)
+    ((level, text),) = harness.notices(run_id)
     assert level == "warning"
     assert reason in text
     assert harness.store.list_proposals() == []

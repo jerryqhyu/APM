@@ -11,23 +11,17 @@ from apm.core.git import git, log
 from apm.core.ids import handle
 from apm.core.model import Status
 from apm.core.ops import NewNode, attach_delivery, create_nodes, decompose, set_status
-from apm.core.project import Project, load_graph
+from apm.core.project import load_graph
 from apm.core.report import REPORTER, ReportRefused
 from apm.runner import runner as runner_module
 from apm.runner.runner import RunnerBusy
-from tests.conftest import CodeRepo
+from tests.conftest import CodeRepo, configure
 from tests.core.test_feature_review import built, feature
 from tests.fake_gh import FakeGh
 from tests.runner.fake import FakeClaude
-from tests.runner.test_feature_reviewer import notices
 from tests.runner.test_runner import Harness, option
 
 REVIEWER = "apm-feature-reviewer"
-
-
-def configure(project: Project, text: str) -> None:
-    config = project.apm_dir / "apm.yaml"
-    config.write_text(config.read_text() + text)
 
 
 def tip(repo: CodeRepo, branch: str) -> str:
@@ -93,11 +87,11 @@ async def test_a_passing_review_puts_the_report_in_the_feature_s_pull_request(
 
     written = reporter_run(harness, node)
     assert harness.store.get_run(written).status == "succeeded"
-    said = [text for _, text in notices(harness, written)]
+    said = [text for _, text in harness.notices(written)]
     assert said[0].startswith(f"Writing the report from `{branch}` at `{reviewed[:7]}`")
     assert f"**Report written**: committed to `{branch}` as `{head[:7]}`" in said[-1]
     assert f"Its pull request links it: {pr}" in said[-1]
-    in_review = [text for _, text in notices(harness, review.id)]
+    in_review = [text for _, text in harness.notices(review.id)]
     assert "APM is writing the feature report" in in_review[-2]
     assert "The feature report is written" in in_review[-1]
     assert "report.written" in harness.types()
@@ -145,7 +139,7 @@ async def test_with_reports_off_a_pass_writes_nothing(
     assert not any("PATCH" in c for c in fake_gh.calls)
     assert tip(code_repo, branch) == reviewed
     assert harness.store.latest_report(node) is None
-    assert not any("report" in text for _, text in notices(harness, run.id))
+    assert not any("report" in text for _, text in harness.notices(run.id))
 
 
 @pytest.mark.parametrize(
@@ -182,7 +176,7 @@ async def test_a_failed_report_never_stops_the_pull_request(
     failed = harness.store.get_run(reporter_run(harness, node))
     assert failed.status == "failed"
     assert failed.error == why
-    level, text = notices(harness, run.id)[-1]
+    level, text = harness.notices(run.id)[-1]
     assert level == "warning"
     assert text == (
         f"No feature report: {why}. The pull request is open without it. Write it by hand with"
@@ -208,7 +202,7 @@ async def test_a_report_written_by_hand_and_rewritten(
     (call,) = fake_claude.calls
     assert "## Guidance from the user\n\nKeep it short." in call["prompt"]
     assert option(call, "--permission-mode") == "auto"  # by hand: the project's default
-    said = notices(harness, run.id)[-1][1]
+    said = harness.notices(run.id)[-1][1]
     assert "The feature's pull request will contain it once it is opened." in said
     assert fake_gh.calls == []  # no pull request yet, so nothing to link
 

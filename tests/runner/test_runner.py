@@ -43,6 +43,19 @@ class Harness:
             await asyncio.sleep(0.01)
         raise AssertionError("no request arrived")
 
+    def notices(self, run_id: str) -> list[tuple[str, str]]:
+        """What APM itself said in a run's conversation: (level, text)."""
+        events = [e.data for e in self.store.list_events(run_id)]
+        return [(e["level"], e["text"]) for e in events if e.get("type") == "apm_notice"]
+
+    async def settle(self) -> None:
+        """Waits until no run is running, including runs started by the ones it waited for."""
+        while running := self.store.list_runs(status="running"):
+            for run in running:
+                await self.runner.wait(run.id)
+            if all(self.store.get_run(r.id).status == "running" for r in running):
+                break  # nothing finished: a run this runner doesn't own
+
     def said(self, run_id: str) -> list[str]:
         """The text the agent said during a run."""
         out = []
@@ -542,14 +555,6 @@ async def test_the_reviewer_cannot_be_replied_to(
 # --- an implementer's base branch and pull request ---
 
 
-def notices(harness: Harness, run_id: str) -> list[tuple[str, str]]:
-    return [
-        (e.data["level"], e.data["text"])
-        for e in harness.store.list_events(run_id)
-        if e.data["type"] == "apm_notice"
-    ]
-
-
 def stacked_pair(code_repo: CodeRepo) -> tuple[str, str]:
     """`first`, done and delivered on an unmerged branch, and `second`, which depends on it."""
     project = code_repo.project
@@ -597,7 +602,7 @@ async def test_after_the_run_apm_opens_the_missing_pull_request(
     assert node.delivery.pr == NEW_PR
     assert node.status is Status.TODO  # opening a PR marks nothing done
     assert fake_gh.field(fake_gh.calls[-1], "base") == "apm/first"
-    assert notices(harness, run.id) == [
+    assert harness.notices(run.id) == [
         ("info", f"APM opened the pull request against apm/first: {NEW_PR}")
     ]
     assert "apm_notice" in [e["event"]["data"]["type"] for e in harness.events if "event" in e]
@@ -613,7 +618,7 @@ async def test_when_no_pull_request_can_be_opened_the_run_says_why(
     run = harness.runner.start("apm-implementer", node)
     await harness.runner.wait(run.id)
 
-    ((level, text),) = notices(harness, run.id)
+    ((level, text),) = harness.notices(run.id)
     assert level == "warning"
     assert text.startswith("No pull request yet: `gh api` failed: No commits between.")
     assert "Branch `apm/solo` is pushed" in text
@@ -633,7 +638,7 @@ async def test_a_run_that_delivered_nothing_says_so_in_the_chat_only(
     harness.review(node)
     run = harness.runner.start("apm-implementer", node)
     await harness.runner.wait(run.id)
-    assert notices(harness, run.id) == [
+    assert harness.notices(run.id) == [
         (
             "warning",
             "No pull request yet: the run recorded no branch, so there is nothing to open one"

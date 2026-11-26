@@ -20,13 +20,9 @@ from apm.runner.feature_runs import (
     tasks_in,
 )
 from apm.runner.queue import Queued, RunQueue
+from tests.conftest import configure
 from tests.runner.fake import FakeClaude
 from tests.runner.test_runner import Harness
-
-
-def configure(project: Project, text: str) -> None:
-    config = project.apm_dir / "apm.yaml"
-    config.write_text(config.read_text() + text)
 
 
 def add(project: Project, title: str, parent: NodeId | None = None, *deps: NodeId) -> NodeId:

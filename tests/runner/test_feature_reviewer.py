@@ -15,14 +15,6 @@ from tests.runner.fake import FakeClaude
 from tests.runner.test_runner import Harness, option
 
 
-def notices(harness: Harness, run_id: str) -> list[tuple[str, str]]:
-    return [
-        (e.data["level"], e.data["text"])
-        for e in harness.store.list_events(run_id)
-        if e.data["type"] == "apm_notice"
-    ]
-
-
 async def test_a_passing_review_opens_the_feature_s_pull_request(
     code_repo: CodeRepo, fake_claude: FakeClaude, fake_gh: FakeGh
 ) -> None:
@@ -45,7 +37,7 @@ async def test_a_passing_review_opens_the_feature_s_pull_request(
     assert "Write" in option(call, "--disallowedTools")
     assert "Bash(git diff *)" in option(call, "--allowedTools").split(",")
 
-    said = notices(harness, run.id)
+    said = harness.notices(run.id)
     assert said[0][1].startswith(f"Reviewing `{branch}` at ")
     level, complete = next((lv, text) for lv, text in said if "**Complete**" in text)
     assert level == "info"
@@ -74,7 +66,7 @@ async def test_gaps_become_follow_up_tasks_and_a_reply_replaces_them(
     (first,) = harness.store.list_proposals(status="pending")
     assert first.node_id == feature
     assert [c["title"] for c in first.data["children"]] == ["Handle errors"]
-    level, text = notices(harness, run.id)[-1]
+    level, text = harness.notices(run.id)[-1]
     assert level == "warning"
     assert "**Incomplete**: 1 of 2 criteria met" in text
     assert "1 follow-up task waits under Proposals" in text

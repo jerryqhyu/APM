@@ -38,14 +38,9 @@ from apm.core.split import (
 )
 from apm.core.store import EagerBuild, EagerSlice, Store, TaskReview, content_fingerprint
 from apm.runner.agents import slug, worktree_name
-from tests.conftest import CodeRepo
+from tests.conftest import CodeRepo, configure
 
 EAGER_ON = "features:\n  eager: true\n"
-
-
-def configure(project: Project, text: str) -> None:
-    config = project.apm_dir / "apm.yaml"
-    config.write_text(config.read_text() + text)
 
 
 def out(repo: Path, *args: str) -> str:
