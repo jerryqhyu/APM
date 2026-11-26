@@ -302,7 +302,7 @@ class _Table:
         return cls(**values)
 
 
-def _table(cls: type, name: str, json_fields: str = "", **renamed: str) -> _Table:
+def _table(cls: Any, name: str, json_fields: str = "", **renamed: str) -> _Table:
     names = tuple(f.name for f in fields(cls))
     as_json = frozenset(json_fields.split())
     tuples = frozenset(f.name for f in fields(cls) if get_origin(f.type) is tuple) & as_json
