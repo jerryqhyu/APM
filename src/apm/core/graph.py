@@ -1,7 +1,5 @@
-"""The in-memory graph (plans.md §2), held as two networkx digraphs over the same node ids:
-
-- `tree`: containment. An edge runs parent → child.
-- `deps`: dependencies. An edge runs from a node to the node it depends on.
+"""The in-memory graph (plans.md §2): two adjacency maps over the same node ids, containment
+(parent → children) and dependencies (node → what it depends on, and back).
 
 A Graph is read-only. It doesn't check invariants (that's `validate()`), so it stays safe on broken
 input: a reference to a node that doesn't exist is not an edge (`validate()` reports it from the
@@ -12,12 +10,10 @@ handles, and each node's state (blocked, ready, stacked, progress). It is never 
 go stale.
 """
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from functools import cached_property
 from types import MappingProxyType
-
-import networkx as nx
 
 from apm.core.ids import handles, resolve_handle
 from apm.core.model import Kind, Node, NodeId, Status
@@ -74,20 +70,20 @@ class Graph:
                 raise ValueError(f"Graph: duplicate id {node.id}")
             by_id[node.id] = node
         self.nodes: Mapping[NodeId, Node] = MappingProxyType(by_id)
-
-        tree: nx.DiGraph[NodeId] = nx.DiGraph()
-        deps: nx.DiGraph[NodeId] = nx.DiGraph()
-        ordered = sorted(by_id)
-        tree.add_nodes_from(ordered)
-        deps.add_nodes_from(ordered)
-        for node_id in ordered:
+        kids: dict[NodeId, list[NodeId]] = {}
+        dependents: dict[NodeId, list[NodeId]] = {}
+        self._deps: dict[NodeId, tuple[NodeId, ...]] = {}
+        for node_id in sorted(by_id):  # id order is creation order
             node = by_id[node_id]
             if node.parent in by_id:
-                tree.add_edge(node.parent, node_id)
-            deps.add_edges_from((node_id, dep) for dep in node.depends_on if dep in by_id)
-        self.tree: nx.DiGraph[NodeId] = nx.freeze(tree)
-        self.deps: nx.DiGraph[NodeId] = nx.freeze(deps)
-        self._top = tuple(node_id for node_id in ordered if by_id[node_id].parent is None)
+                kids.setdefault(node.parent, []).append(node_id)
+            self._deps[node_id] = tuple(sorted(d for d in set(node.depends_on) if d in by_id))
+            for dep in self._deps[node_id]:
+                dependents.setdefault(dep, []).append(node_id)
+        review_last = lambda c: (by_id[c].kind is Kind.REVIEW, c)  # noqa: E731
+        self._kids = {p: tuple(sorted(c, key=review_last)) for p, c in kids.items()}
+        self._dependents = {d: tuple(n) for d, n in dependents.items()}
+        self._top = tuple(n for n in sorted(by_id) if by_id[n].parent is None)
 
     def __len__(self) -> int:
         return len(self.nodes)
@@ -107,15 +103,10 @@ class Graph:
         """Children of `parent` (None = top-level nodes), in id order, which is creation order,
         except that a review step comes last: it is the feature's finishing step.
         """
-        if parent is None:
-            return self._top
-        if parent not in self.nodes:
-            return ()
-        kids = self.tree.successors(parent)
-        return tuple(sorted(kids, key=lambda c: (self.nodes[c].kind is Kind.REVIEW, c)))
+        return self._top if parent is None else self._kids.get(parent, ())
 
     def is_leaf(self, node_id: NodeId) -> bool:
-        return self.tree.out_degree(self[node_id].id) == 0
+        return not self._kids.get(self[node_id].id)
 
     def ancestors(self, node_id: NodeId) -> list[NodeId]:
         """Ancestors, nearest first. Stops at a parent that doesn't exist, or on a cycle."""
@@ -138,12 +129,14 @@ class Graph:
 
     def descendants(self, node_id: NodeId) -> list[NodeId]:
         """All descendants, depth-first in `children` order, not including `node_id` itself."""
-
-        def order(kids: Iterable[NodeId]) -> list[NodeId]:
-            return sorted(kids, key=lambda c: (self.nodes[c].kind is Kind.REVIEW, c))
-
-        walk = nx.dfs_preorder_nodes(self.tree, self[node_id].id, sort_neighbors=order)
-        return [n for n in walk if n != node_id]
+        out: list[NodeId] = []
+        seen, stack = {self[node_id].id}, list(reversed(self.children(node_id)))
+        while stack:
+            if (n := stack.pop()) not in seen:
+                seen.add(n)
+                out.append(n)
+                stack.extend(reversed(self._kids.get(n, ())))
+        return out
 
     def review_step(self, parent: NodeId) -> NodeId | None:
         """The review step among `parent`'s children, if it has one."""
@@ -166,15 +159,37 @@ class Graph:
 
     def leaves(self, node_id: NodeId) -> list[NodeId]:
         """The leaves of `node_id`'s subtree: itself if it has no children."""
-        return [n for n in (node_id, *self.descendants(node_id)) if self.tree.out_degree(n) == 0]
+        return [n for n in (node_id, *self.descendants(node_id)) if not self._kids.get(n)]
 
     def dependencies(self, node_id: NodeId) -> tuple[NodeId, ...]:
         """The existing nodes `node_id` depends on, in id order."""
-        return tuple(sorted(self.deps.successors(self[node_id].id)))
+        return self._deps[self[node_id].id]
 
     def dependents(self, node_id: NodeId) -> tuple[NodeId, ...]:
         """The nodes that depend on `node_id`, in id order."""
-        return tuple(sorted(self.deps.predecessors(self[node_id].id)))
+        return self._dependents.get(self[node_id].id, ())
+
+    def dependency_edges(self) -> Iterable[tuple[NodeId, NodeId]]:
+        """Every (node, what it depends on) between existing nodes."""
+        return ((n, d) for n, deps in self._deps.items() for d in deps)
+
+    def depends_on_all(self, node_id: NodeId) -> set[NodeId]:
+        """What `node_id` depends on, directly or not (not itself, even on a cycle)."""
+        return reachable(node_id, self._deps.__getitem__)
+
+    def containment_cycles(self) -> list[list[NodeId]]:
+        """Each cycle of parents, in parent → child order. One parent each, so none share a node."""
+        cycles, done = [], set()
+        for start in sorted(self.nodes):
+            path: dict[NodeId, int] = {}
+            n: NodeId | None = start
+            while n is not None and n in self.nodes and n not in done and n not in path:
+                path[n] = len(path)
+                n = self.nodes[n].parent
+            if n is not None and n in path:
+                cycles.append(list(reversed(list(path)[path[n] :])))
+            done.update(path)
+        return cycles
 
     # --- handles ---
 
@@ -227,7 +242,7 @@ class Graph:
         delivery = node.delivery
         return (
             node.status is Status.IN_PROGRESS
-            and self.tree.out_degree(node_id) == 0
+            and not self._kids.get(node_id)
             and delivery is not None
             and bool(delivery.branch or delivery.pr)
         )
@@ -242,7 +257,7 @@ class Graph:
         if len(candidates) <= 1:
             return candidates[0] if candidates else None
         for top in candidates:
-            below = nx.descendants(self.deps, top)
+            below = self.depends_on_all(top)
             if all(other == top or other in below for other in candidates):
                 return top
         return None
@@ -263,3 +278,57 @@ class Graph:
             total += 1
             done += self[leaf].status is Status.DONE
         return Progress(done, total)
+
+
+def reachable[N](start: N, successors: Callable[[N], Iterable[N]]) -> set[N]:
+    """Everything reachable from `start`, not counting `start` unless a cycle leads back."""
+    seen: set[N] = set()
+    stack = list(successors(start))
+    while stack:
+        if (n := stack.pop()) not in seen:
+            seen.add(n)
+            stack.extend(successors(n))
+    seen.discard(start)
+    return seen
+
+
+def strongly_connected[N](
+    nodes: Iterable[N], successors: Callable[[N], Iterable[N]]
+) -> list[set[N]]:
+    """The strongly connected components (Tarjan's algorithm, without recursion)."""
+    index: dict[N, int] = {}
+    low: dict[N, int] = {}
+    on_stack: set[N] = set()
+    stack: list[N] = []
+    groups: list[set[N]] = []
+    for root in nodes:
+        if root in index:
+            continue
+        work = [(root, iter(successors(root)))]
+        index[root] = low[root] = len(index)
+        stack.append(root)
+        on_stack.add(root)
+        while work:
+            node, children = work[-1]
+            child = next(children, None)
+            if child is None:
+                work.pop()
+                if work:
+                    low[work[-1][0]] = min(low[work[-1][0]], low[node])
+                if low[node] == index[node]:
+                    group = set()
+                    while True:
+                        member = stack.pop()
+                        on_stack.discard(member)
+                        group.add(member)
+                        if member == node:
+                            break
+                    groups.append(group)
+            elif child not in index:
+                index[child] = low[child] = len(index)
+                stack.append(child)
+                on_stack.add(child)
+                work.append((child, iter(successors(child))))
+            elif child in on_stack:
+                low[node] = min(low[node], index[child])
+    return groups

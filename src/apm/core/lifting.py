@@ -7,9 +7,7 @@ children of a node R, each edge is mapped onto the children of R that contain it
 from dataclasses import dataclass
 from typing import Literal
 
-import networkx as nx
-
-from apm.core.graph import Graph
+from apm.core.graph import Graph, strongly_connected
 from apm.core.ids import handle
 from apm.core.model import NodeId
 from apm.core.validate import Issue, Report, validate
@@ -63,31 +61,28 @@ def level_view(graph: Graph, root: NodeId | None = None) -> LevelView:
         owner[child] = child
         owner.update(dict.fromkeys(graph.descendants(child), child))
 
-    lifted: nx.DiGraph[NodeId] = nx.DiGraph()
-    lifted.add_nodes_from(children)
+    lifted: dict[tuple[NodeId, NodeId], list[Edge]] = {}
     ports: dict[tuple[NodeId, NodeId, Literal["out", "in"]], list[Edge]] = {}
     internal: list[Edge] = []
-    for u, v in graph.deps.edges:
+    for u, v in graph.dependency_edges():
         a, b = owner.get(u), owner.get(v)
         if a is not None and b is not None:
             if a == b:
                 internal.append((u, v))
                 continue
-            if not lifted.has_edge(a, b):
-                lifted.add_edge(a, b, underlying=[])
-            lifted.edges[a, b]["underlying"].append((u, v))
+            lifted.setdefault((a, b), []).append((u, v))
         elif a is not None:
             ports.setdefault((a, v, "out"), []).append((u, v))
         elif b is not None:
             ports.setdefault((b, u, "in"), []).append((u, v))
 
+    out: dict[NodeId, list[NodeId]] = {child: [] for child in children}
+    for a, b in lifted:
+        out[a].append(b)
     return LevelView(
         root=root,
         nodes=children,
-        edges=tuple(
-            LiftedEdge(a, b, tuple(sorted(lifted.edges[a, b]["underlying"])))
-            for a, b in sorted(lifted.edges)
-        ),
+        edges=tuple(LiftedEdge(a, b, tuple(sorted(lifted[a, b]))) for a, b in sorted(lifted)),
         ports=tuple(
             Port(node, outside, direction, tuple(sorted(edges)))
             for (node, outside, direction), edges in sorted(ports.items())
@@ -96,7 +91,7 @@ def level_view(graph: Graph, root: NodeId | None = None) -> LevelView:
         entangled=tuple(
             sorted(
                 tuple(sorted(group))
-                for group in nx.strongly_connected_components(lifted)
+                for group in strongly_connected(children, out.__getitem__)
                 if len(group) > 1
             )
         ),

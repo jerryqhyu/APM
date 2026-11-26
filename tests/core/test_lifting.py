@@ -124,7 +124,7 @@ def test_every_edge_is_accounted_for_exactly_once_at_each_level(nodes: list[Node
     for root in (None, *graph.nodes):
         view = level_view(graph, root)
         inside = set(graph.nodes) if root is None else set(graph.descendants(root))
-        touching = sorted((u, v) for u, v in graph.deps.edges if u in inside or v in inside)
+        touching = sorted((u, v) for u, v in graph.dependency_edges() if u in inside or v in inside)
         shown = [
             *(e for edge in view.edges for e in edge.underlying),
             *(e for port in view.ports for e in port.underlying),

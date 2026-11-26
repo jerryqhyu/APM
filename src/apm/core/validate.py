@@ -4,14 +4,12 @@
 `apm.core.lifting`. Errors (I1 to I4, I7) stop a write; warnings (I6) are only reported.
 """
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Literal
 
-import networkx as nx
-
 from apm.core.errors import ApmError
-from apm.core.graph import Graph
+from apm.core.graph import Graph, strongly_connected
 from apm.core.ids import handle
 from apm.core.model import Kind, NodeId, Status
 
@@ -63,8 +61,7 @@ def _containment(graph: Graph) -> list[Issue]:
         for n in graph.nodes.values()
         if n.parent is not None and n.parent not in graph
     ]
-    # Each node has one parent, so containment cycles never share a node: listing them is cheap.
-    for cycle in sorted(_rotate(c) for c in nx.simple_cycles(graph.tree)):
+    for cycle in sorted(_rotate(c) for c in graph.containment_cycles()):
         issues.append(Issue("I1", f"containment cycle: {_path(cycle)}", tuple(cycle)))
     return issues
 
@@ -72,11 +69,11 @@ def _containment(graph: Graph) -> list[Issue]:
 def _dependency_cycles(graph: Graph) -> list[Issue]:
     """I2: `depends_on` is acyclic. One issue per tangle, with one cycle from it as the example."""
     issues = []
-    tangles = [c for c in nx.strongly_connected_components(graph.deps) if len(c) > 1]
-    tangles += [{n} for n in nx.nodes_with_selfloops(graph.deps)]
+    deps = graph.dependencies
+    tangles = [c for c in strongly_connected(sorted(graph.nodes), deps) if len(c) > 1]
+    tangles += [{n} for n in sorted(graph.nodes) if n in deps(n)]
     for tangle in sorted(tangles, key=min):
-        edges = nx.find_cycle(graph.deps.subgraph(tangle), min(tangle))
-        cycle = [u for u, _ in edges]
+        cycle = _cycle_through(min(tangle), tangle, deps)
         issues.append(Issue("I2", f"dependency cycle: {_path(cycle)}", tuple(sorted(tangle))))
     return issues
 
@@ -168,6 +165,26 @@ def _done_parents(graph: Graph) -> list[Issue]:
             message = f"{handle(node.id)} is done but has {count}"
             issues.append(Issue("I6", message, (node.id, *open_children)))
     return issues
+
+
+def _cycle_through(
+    start: NodeId, within: set[NodeId], deps: Callable[[NodeId], Sequence[NodeId]]
+) -> list[NodeId]:
+    """A path from `start` back to itself inside a tangle (one always exists), depth first."""
+    path, seen = [start], {start}
+    branches = [iter([d for d in deps(start) if d in within])]
+    while branches:
+        step = next(branches[-1], None)
+        if step == start:
+            return path
+        if step is None:
+            branches.pop()
+            path.pop()
+        elif step not in seen:
+            seen.add(step)
+            path.append(step)
+            branches.append(iter([d for d in deps(step) if d in within]))
+    return [start]
 
 
 def _rotate(cycle: list[NodeId]) -> list[NodeId]:
