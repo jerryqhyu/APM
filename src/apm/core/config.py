@@ -9,7 +9,7 @@ import yaml
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from apm.core.errors import ApmError, format_issue
-from apm.core.files import CONFIG_FILE, config_path, read_file_if_exists
+from apm.core.files import CONFIG_FILE, cached_parse, config_path, read_file_if_exists
 from apm.core.ids import could_name_a_node
 
 
@@ -186,7 +186,12 @@ def parse_config(text: str, source: str = CONFIG_FILE) -> ApmConfig:
 
 
 def read_config(apm_dir: Path) -> ApmConfig:
-    text = read_file_if_exists(config_path(apm_dir))
+    """apm.yaml, parsed again only when it changes."""
+    return cached_parse(config_path(apm_dir), _parse_file)
+
+
+def _parse_file(path: Path) -> ApmConfig:
+    text = read_file_if_exists(path)
     if text is None:
         raise ConfigError(["file not found"])
     return parse_config(text)

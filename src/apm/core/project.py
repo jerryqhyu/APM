@@ -16,7 +16,14 @@ import yaml
 
 from apm.core.config import parse_config
 from apm.core.errors import ApmError
-from apm.core.files import CONFIG_FILE, GRAPH_FILE, read_graph_file, write_file_atomic
+from apm.core.files import (
+    CONFIG_FILE,
+    GRAPH_FILE,
+    cached_parse,
+    graph_path,
+    read_graph_file,
+    write_file_atomic,
+)
 from apm.core.git import CommitMessage, GitError, add, commit, git
 from apm.core.graph import Graph
 from apm.core.lock import CACHE_DIR
@@ -112,7 +119,12 @@ def link_plan(code_dir: Path) -> Project:
 
 
 def load_graph(project: Project) -> Graph:
-    return Graph(read_graph_file(project.apm_dir))
+    """The plan's graph, parsed again only when graph.ndjson changes."""
+    return cached_parse(graph_path(project.apm_dir), _graph)
+
+
+def _graph(path: Path) -> Graph:
+    return Graph(read_graph_file(path.parent))
 
 
 def _initial_config(name: str, remote: str | None) -> str:
