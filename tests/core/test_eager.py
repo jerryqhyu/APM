@@ -21,7 +21,7 @@ from apm.core.eager import (
     task_refusal,
 )
 from apm.core.files import read_body
-from apm.core.git import CommitMessage, git
+from apm.core.git import CommitMessage, git, tree_of
 from apm.core.model import NodeId, Status
 from apm.core.ops import NewNode, create_nodes, decompose, set_status
 from apm.core.project import Project, load_graph
@@ -35,7 +35,6 @@ from apm.core.split import (
     mechanical_split,
     publish,
     source_lines,
-    tree_of,
 )
 from apm.core.store import EagerBuild, EagerSlice, Store, TaskReview, content_fingerprint
 from apm.runner.agents import slug, worktree_name

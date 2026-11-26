@@ -29,7 +29,7 @@ from typing import Literal
 from apm.core.config import default_repo, read_config
 from apm.core.errors import ApmError
 from apm.core.files import read_body
-from apm.core.git import GitError, git, is_ancestor, rev_parse
+from apm.core.git import GitError, git, has_origin, is_ancestor, publish, ref_tip, rev_parse
 from apm.core.graph import Graph
 from apm.core.ids import handle
 from apm.core.model import NodeId, Status
@@ -222,16 +222,9 @@ def home_branch(graph: Graph, node_id: NodeId) -> str | None:
 
 def branch_ref(repo_dir: Path, branch: str) -> str | None:
     """`origin/<branch>` if the remote has it, else `<branch>` if it exists locally, else None."""
-    for ref, name in (
-        (f"refs/remotes/origin/{branch}", f"origin/{branch}"),
-        (f"refs/heads/{branch}", branch),
-    ):
-        try:
-            if rev_parse(repo_dir, ref):
-                return name
-        except GitError:
-            continue
-    return None
+    if ref_tip(repo_dir, f"refs/remotes/origin/{branch}"):
+        return f"origin/{branch}"
+    return branch if ref_tip(repo_dir, f"refs/heads/{branch}") else None
 
 
 def ensure_feature_branch(
@@ -254,14 +247,9 @@ def ensure_feature_branch(
             raise GitError(["branch", name], None, "there is no branch to start it from")
         sha = git(repo_dir, ["rev-parse", start]).strip()
         try:
-            git(repo_dir, ["remote", "get-url", "origin"])
-            git(repo_dir, ["push", "--quiet", "origin", f"{sha}:refs/heads/{name}"])
-            git(
-                repo_dir,
-                ["fetch", "--quiet", "origin", f"+refs/heads/{name}:refs/remotes/origin/{name}"],
-            )
+            publish(repo_dir, {name: (sha, None)})
         except GitError:
-            git(repo_dir, ["branch", "--quiet", name, sha])  # no origin: a local branch will do
+            git(repo_dir, ["branch", "--quiet", name, sha])  # a local branch will do
     if step is not None:
         delivery = load_graph(project)[step].delivery
         if delivery is None or delivery.branch != name:
@@ -354,20 +342,14 @@ def branch_is_open(repo_dir: Path, branch: str, pr: str | None, target: str) -> 
 
 def branch_tip(repo_dir: Path, branch: str) -> str | None:
     """The SHA of `branch` on `origin`, else locally; None if it's in neither."""
-    for ref in (f"refs/remotes/origin/{branch}", f"refs/heads/{branch}"):
-        try:
-            if sha := rev_parse(repo_dir, ref):
-                return sha
-        except GitError:
-            continue
-    return None
+    return ref_tip(repo_dir, f"refs/remotes/origin/{branch}") or ref_tip(
+        repo_dir, f"refs/heads/{branch}"
+    )
 
 
 def fetch_origin(repo_dir: Path) -> None:
     """`git fetch --prune origin`, if there is an `origin`. Best effort: offline is fine."""
-    try:
-        git(repo_dir, ["remote", "get-url", "origin"])
-    except GitError:
+    if not has_origin(repo_dir):
         return
     env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
     with contextlib.suppress(OSError, subprocess.TimeoutExpired):

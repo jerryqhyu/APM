@@ -126,7 +126,7 @@ def test_a_branch_that_moved_meanwhile_gets_the_report_on_its_new_tip(
     git(code_repo.dir, ["push", "--quiet", "origin", f"{later}:refs/heads/{branch}"])
 
     # And someone pushes again between APM's fetch and its push: it starts over, once.
-    real_push = report_branch._push
+    real_push = report_branch.publish
     calls = []
 
     def racing(*args: object) -> None:
@@ -135,7 +135,7 @@ def test_a_branch_that_moved_meanwhile_gets_the_report_on_its_new_tip(
             raise GitError(["push"], 1, "rejected: non-fast-forward")
         real_push(*args)  # ty: ignore[invalid-argument-type]
 
-    monkeypatch.setattr(report_branch, "_push", racing)
+    monkeypatch.setattr(report_branch, "publish", racing)
     sha = commit_report(project, target, "# Export\n")
     assert len(calls) == 2
     assert git(code_repo.dir, ["rev-parse", f"{sha}^"]).strip() == later
@@ -152,7 +152,7 @@ def test_a_report_that_can_t_be_committed_is_kept_with_why(
     def refused(*_: object) -> None:
         raise GitError(["push"], 1, "remote: permission denied")
 
-    monkeypatch.setattr(report_branch, "_push", refused)
+    monkeypatch.setattr(report_branch, "publish", refused)
     store = Store(project.apm_dir)
     saved = save_report(
         project, store, target, ReportAnswer(summary="S.", markdown="# E"), run="r1"

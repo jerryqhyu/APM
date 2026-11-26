@@ -5,7 +5,9 @@ from an argument list, never a shell. Output is decoded as UTF-8 with line endin
 `show` returns a file exactly as committed.
 """
 
+import contextlib
 import re
+import shutil
 import subprocess
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
@@ -116,6 +118,92 @@ def is_ancestor(cwd: Path, ancestor: str, descendant: str) -> bool:
             return False
         raise
     return True
+
+
+def ref_tip(cwd: Path, ref: str) -> str | None:
+    """The commit `ref` points at, or None if it doesn't exist (or git can't tell)."""
+    try:
+        return rev_parse(cwd, ref)
+    except GitError:
+        return None
+
+
+def tree_of(cwd: Path, rev: str) -> str:
+    return git(cwd, ["rev-parse", f"{rev}^{{tree}}"]).strip()
+
+
+def parents_of(cwd: Path, sha: str) -> list[str]:
+    return git(cwd, ["rev-list", "--parents", "-n", "1", sha]).split()[1:]
+
+
+def patch_id(
+    cwd: Path, start: str, end: str | None = None, *, diff: str | None = None
+) -> str | None:
+    """The stable patch id of the change from `start` to `end` (or of `diff`); None if empty."""
+    if diff is None:
+        diff = git(cwd, ["diff", "--no-color", start, end or "HEAD"])
+    if not diff.strip():
+        return None
+    out = git(cwd, ["patch-id", "--stable"], stdin=diff).split()
+    return out[0] if out else None
+
+
+def has_origin(cwd: Path) -> bool:
+    try:
+        git(cwd, ["remote", "get-url", "origin"])
+    except GitError:
+        return False
+    return True
+
+
+def checkout_detached(repo: Path, name: str, sha: str) -> Path:
+    """A fresh detached checkout of `sha` at `.claude/worktrees/<name>`, replacing any there."""
+    path = repo / ".claude" / "worktrees" / name
+    if path.exists():
+        with contextlib.suppress(GitError):
+            git(repo, ["worktree", "remove", "--force", "--force", str(path)])
+        shutil.rmtree(path, ignore_errors=True)
+    with contextlib.suppress(GitError):
+        git(repo, ["worktree", "prune"])
+    path.parent.mkdir(parents=True, exist_ok=True)
+    git(repo, ["worktree", "add", "--quiet", "--detach", str(path), sha])
+    return path
+
+
+NO_SHA = "0" * 40
+"""What `update-ref` takes as the old value of a branch that must not exist yet."""
+
+
+def publish(repo: Path, moves: Mapping[str, tuple[str, str | None]]) -> None:
+    """Moves branches (name → (new, old)): one plain, atomic push to `origin` (never forced), then
+    their tracking refs are refreshed. Without an `origin`, the local branches move instead, each
+    only if it is still at `old` (None: it must not exist yet).
+    """
+    if not moves:
+        return
+    if not has_origin(repo):
+        for branch, (new, old) in moves.items():
+            git(repo, ["update-ref", f"refs/heads/{branch}", new, old or NO_SHA])
+        return
+    git(
+        repo,
+        [
+            "push",
+            "--quiet",
+            "--atomic",
+            "origin",
+            *(f"{new}:refs/heads/{b}" for b, (new, _) in moves.items()),
+        ],
+    )
+    git(
+        repo,
+        [
+            "fetch",
+            "--quiet",
+            "origin",
+            *(f"+refs/heads/{b}:refs/remotes/origin/{b}" for b in moves),
+        ],
+    )
 
 
 @dataclass(frozen=True, slots=True)

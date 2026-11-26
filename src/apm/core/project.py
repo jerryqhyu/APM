@@ -14,7 +14,7 @@ from pathlib import Path
 
 import yaml
 
-from apm.core.config import parse_config
+from apm.core.config import default_repo, parse_config, read_config
 from apm.core.errors import ApmError
 from apm.core.files import (
     CONFIG_FILE,
@@ -138,6 +138,17 @@ def _initial_config(name: str, remote: str | None) -> str:
     )
     parse_config(text)  # never write a config that can't be read back
     return text
+
+
+def code_repo(project: Project, error: type[ApmError] = ProjectError) -> Path:
+    """The default code repo's directory. Raises `error` if it isn't a git repository."""
+    config = read_config(project.apm_dir)
+    path = (project.apm_dir / config.code.repos[default_repo(config)].path).resolve()
+    try:
+        git(path, ["rev-parse", "--git-dir"])
+    except GitError:
+        raise error(f"{path} is not a git repository") from None
+    return path
 
 
 def _origin(code_dir: Path) -> str | None:

@@ -24,12 +24,22 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 from apm.core.errors import ApmError
-from apm.core.git import CommitMessage, GitError, format_commit_message, git, rev_parse
+from apm.core.git import (
+    CommitMessage,
+    GitError,
+    format_commit_message,
+    git,
+    has_origin,
+    parents_of,
+    ref_tip,
+    rev_parse,
+    tree_of,
+)
+from apm.core.git import publish as publish_branches
 from apm.core.ids import HandleError, resolve_handle
 from apm.core.model import NodeId
 
 TRAILER = "APM-Node"
-NO_SHA = "0" * 40
 DIFF_LIMIT = 20_000
 """How much of a diff goes into an agent's message, in characters."""
 
@@ -53,18 +63,6 @@ class Piece:
 # --- reading commits ---
 
 
-def tree_of(repo_dir: Path, rev: str) -> str:
-    return git(repo_dir, ["rev-parse", f"{rev}^{{tree}}"]).strip()
-
-
-def parents_of(repo_dir: Path, sha: str) -> list[str]:
-    return git(repo_dir, ["rev-list", "--parents", "-n", "1", sha]).split()[1:]
-
-
-def message_of(repo_dir: Path, sha: str) -> str:
-    return git(repo_dir, ["log", "-1", "--format=%B", sha])
-
-
 def subject_of(repo_dir: Path, sha: str) -> str:
     return git(repo_dir, ["log", "-1", "--format=%s", sha]).strip()
 
@@ -80,15 +78,6 @@ def exists(repo_dir: Path, sha: str) -> bool:
         return rev_parse(repo_dir, sha) is not None
     except GitError:
         return False
-
-
-def patch_id(repo_dir: Path, start: str, end: str) -> str | None:
-    """The stable patch id of the change from `start` to `end`; None if there is none."""
-    diff = git(repo_dir, ["diff", "--no-color", start, end])
-    if not diff.strip():
-        return None
-    out = git(repo_dir, ["patch-id", "--stable"], stdin=diff).split()
-    return out[0] if out else None
 
 
 def diff_text(repo_dir: Path, start: str, end: str, limit: int = DIFF_LIMIT) -> str:
@@ -297,19 +286,7 @@ class Move:
 
 def remote_tip(repo_dir: Path, branch: str) -> str | None:
     """`branch`'s tip on `origin` as last fetched, else locally if there is no `origin`."""
-    ref = f"refs/remotes/origin/{branch}" if has_origin(repo_dir) else f"refs/heads/{branch}"
-    try:
-        return rev_parse(repo_dir, ref)
-    except GitError:
-        return None
-
-
-def has_origin(repo_dir: Path) -> bool:
-    try:
-        git(repo_dir, ["remote", "get-url", "origin"])
-    except GitError:
-        return False
-    return True
+    return ref_tip(repo_dir, f"refs/remotes/origin/{branch}" if has_origin(repo_dir) else branch)
 
 
 def publish(repo_dir: Path, moves: Sequence[Move]) -> None:
@@ -327,19 +304,10 @@ def publish(repo_dir: Path, moves: Sequence[Move]) -> None:
         if now != move.old:
             raise SplitError(_in_the_way(move, now))
         todo.append(move)
-    if not todo:
-        return
-    if not has_origin(repo_dir):
-        for move in todo:
-            git(repo_dir, ["update-ref", f"refs/heads/{move.branch}", move.new, move.old or NO_SHA])
-        return
-    refspecs = [f"{m.new}:refs/heads/{m.branch}" for m in todo]
     try:
-        git(repo_dir, ["push", "--quiet", "--atomic", "origin", *refspecs])
+        publish_branches(repo_dir, {m.branch: (m.new, m.old) for m in todo})
     except GitError as err:
         raise SplitError(f"git refused to move the task branches: {err.stderr.strip()}") from None
-    fetched = [f"+refs/heads/{m.branch}:refs/remotes/origin/{m.branch}" for m in todo]
-    git(repo_dir, ["fetch", "--quiet", "origin", *fetched])
 
 
 def _in_the_way(move: Move, now: str | None) -> str:

@@ -18,13 +18,13 @@ from apm.core.config import read_config
 from apm.core.delivery import feature_branch
 from apm.core.eager import eager_view, plan_redo
 from apm.core.files import read_body
-from apm.core.git import CommitMessage, git
+from apm.core.git import CommitMessage, git, tree_of
 from apm.core.ids import handle
 from apm.core.model import NodeId, Status
 from apm.core.ops import NewNode, create_nodes, decompose
 from apm.core.project import Project, load_graph
 from apm.core.reconcile import reconcile
-from apm.core.split import commit_tree, tree_of
+from apm.core.split import commit_tree
 from apm.core.store import EagerBuild
 from apm.runner.agents import EAGER_BUILDER, SPLITTER, RunRefused
 from apm.runner.auto import AutoQueue

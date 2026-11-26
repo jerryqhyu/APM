@@ -18,7 +18,6 @@ really does what the description asks. This module is the plain code around it:
 """
 
 import contextlib
-import shutil
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -27,7 +26,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from apm.core.config import default_repo, read_config
+from apm.core.config import read_config
 from apm.core.delivery import (
     PrOutcome,
     PullRequest,
@@ -41,12 +40,12 @@ from apm.core.delivery import (
 )
 from apm.core.errors import ApmError, format_issue
 from apm.core.files import read_body
-from apm.core.git import GitError, git, is_ancestor
+from apm.core.git import GitError, checkout_detached, is_ancestor
 from apm.core.graph import Graph
 from apm.core.ids import handle
 from apm.core.model import Delivery, NodeId, Status
 from apm.core.ops import attach_delivery, edit_body, set_status
-from apm.core.project import Project, load_graph
+from apm.core.project import Project, code_repo, load_graph
 from apm.core.proposals import DECOMPOSITION_SCHEMA, Decomposition, ProposedChild, accept_proposal
 from apm.core.store import Proposal, Store
 
@@ -403,39 +402,18 @@ def _delivery(graph: Graph, leaf: NodeId) -> Delivery | None:
 
 
 def _repo_dir(project: Project) -> Path:
-    config = read_config(project.apm_dir)
-    repo = config.code.repos[default_repo(config)]
-    repo_dir = (project.apm_dir / repo.path).resolve()
-    try:
-        git(repo_dir, ["rev-parse", "--git-dir"])
-    except GitError:
-        raise ReviewRefused(f"{repo_dir} is not a git repository") from None
-    return repo_dir
+    return code_repo(project, ReviewRefused)
 
 
 # --- where the reviewer works ---
 
 
-def worktree_path(project: Project, node_id: NodeId) -> Path:
-    """One per feature: a new review replaces the last one's checkout."""
-    return _repo_dir(project) / ".claude" / "worktrees" / f"{WORKTREE_PREFIX}{handle(node_id)}"
-
-
 def prepare_worktree(project: Project, node_id: NodeId, target: Target) -> Path:
     """A detached checkout of the commit under review, at the same place for every review of this
-    feature, so a reply to an earlier review still finds its conversation.
+    feature (a new review replaces it), so a reply to an earlier review finds its conversation.
     """
-    repo_dir = _repo_dir(project)
-    path = worktree_path(project, node_id)
-    if path.exists():
-        with contextlib.suppress(GitError):
-            git(repo_dir, ["worktree", "remove", "--force", "--force", str(path)])
-        shutil.rmtree(path, ignore_errors=True)
-    with contextlib.suppress(GitError):
-        git(repo_dir, ["worktree", "prune"])
-    path.parent.mkdir(parents=True, exist_ok=True)
-    git(repo_dir, ["worktree", "add", "--quiet", "--detach", str(path), target.sha])
-    return path
+    name = f"{WORKTREE_PREFIX}{handle(node_id)}"
+    return checkout_detached(_repo_dir(project), name, target.sha)
 
 
 # --- recording the verdict ---

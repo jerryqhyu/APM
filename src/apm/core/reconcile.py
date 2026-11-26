@@ -37,7 +37,7 @@ from apm.core.delivery import (
     set_pr_base,
 )
 from apm.core.files import read_body
-from apm.core.git import GitError, git, is_ancestor, rev_parse
+from apm.core.git import GitError, git, is_ancestor, patch_id, rev_parse
 from apm.core.graph import Graph
 from apm.core.ids import handle
 from apm.core.model import Delivery, NodeId, Status
@@ -266,7 +266,7 @@ def _same_changes_on(repo_dir: Path, commits: Sequence[str], target: str) -> boo
     try:
         if all(_cherry_picked(repo_dir, commit, target) for commit in commits):
             return True
-        combined = _patch_id(repo_dir, git(repo_dir, ["diff", f"{commits[0]}^", commits[-1]]))
+        combined = patch_id(repo_dir, f"{commits[0]}^", commits[-1])
         if combined is None:
             return False
         log = git(
@@ -289,10 +289,3 @@ def _cherry_picked(repo_dir: Path, commit: str, target: str) -> bool:
         out = git(repo_dir, ["cherry", target, commit])
     lines = [line for line in out.splitlines() if line.strip()]
     return bool(lines) and all(line.startswith("-") for line in lines)
-
-
-def _patch_id(repo_dir: Path, diff: str) -> str | None:
-    if not diff.strip():
-        return None
-    out = git(repo_dir, ["patch-id", "--stable"], stdin=diff).split()
-    return out[0] if out else None
