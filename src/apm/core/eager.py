@@ -12,6 +12,8 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Literal
 
+import networkx as nx
+
 from apm.core.config import ApmConfig
 from apm.core.delivery import (
     PullRequest,
@@ -109,7 +111,7 @@ def build_tasks(graph: Graph, feature: NodeId) -> list[NodeId]:
 def required_before(graph: Graph, tasks: Sequence[NodeId]) -> dict[NodeId, frozenset[NodeId]]:
     """For each task, the others it depends on, directly or not: they come first in the chain."""
     inside = set(tasks)
-    return {t: frozenset(graph.depends_on_all(t) & inside) for t in tasks}
+    return {t: frozenset(nx.descendants(graph.deps, t) & inside) for t in tasks}
 
 
 def dependency_order(graph: Graph, tasks: Sequence[NodeId]) -> list[NodeId]:

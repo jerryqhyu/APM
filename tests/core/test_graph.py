@@ -67,7 +67,8 @@ def test_a_reference_to_a_missing_node_is_not_an_edge() -> None:
     assert graph.children(A) == ()
     assert graph.children(None) == ()
     assert graph.dependencies(B) == ()
-    assert list(graph.dependency_edges()) == []
+    assert A not in graph.tree
+    assert C not in graph.deps
 
 
 def test_stays_safe_on_a_containment_cycle() -> None:
