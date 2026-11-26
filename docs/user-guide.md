@@ -9,6 +9,7 @@ APM is a project planner you run on your own machine. You keep a plan as a graph
 - [Talking to Claude](#talking-to-claude)
 - [Changing the graph yourself](#changing-the-graph-yourself)
 - [Having Claude break a node down](#having-claude-break-a-node-down)
+- [Task review: keeping tasks small](#task-review-keeping-tasks-small)
 - [Having Claude build a node](#having-claude-build-a-node)
 - [Finishing a feature: the review step](#finishing-a-feature-the-review-step)
 - [From the terminal](#from-the-terminal)
@@ -168,6 +169,7 @@ With nothing selected, the panel acts on the whole plan:
 | **Reconcile** | Marks nodes done whose work is on your default branch. A pull request merged into another step's branch doesn't count yet: Reconcile says where it went. It also lists open pull requests that still target a branch that has landed, to retarget. |
 | **Commit hand edits** | Records changes you made by editing the plan's files directly. |
 | **Export archive…** | Downloads the plan and its history as one `.apm.zip` file (see [Sharing or moving a project](#sharing-or-moving-a-project)). |
+| **Settings…** | The project's settings: eager mode, the task size limit, feature reports and what `apm serve` does on its own (see [Settings](#settings)). |
 
 To edit a description, press **Edit** in Details. It is markdown; ⌘/Ctrl+Enter saves.
 
@@ -195,7 +197,9 @@ Decompose versus conversation: use Decompose when you want a reviewed proposal t
 
 ## Task review: keeping tasks small
 
-A task should be small enough to read and understand in about five minutes: at most **50 lines of real source code**. Blank lines, comments, imports, tests, docs and agent or skill markdown don't count. They can come on top, as long as they stay in proportion.
+A task should be small enough to read and understand in about five minutes: at most the **task size limit** in lines of real source code, **50** unless you set another (see [Features](#features)). Blank lines, comments, imports, tests, docs and agent or skill markdown don't count. They can come on top, as long as they stay in proportion.
+
+The limit can differ per feature: the reviewer is told the one that applies to its task, and so are the decomposer, which sizes its tasks to it, and the implementer, which aims for it.
 
 APM checks this before a task is built. A **task review** (the `apm-task-reviewer` agent, with the `apm-task-sizing` skill) reads the task and the code it will touch, estimates the real lines it needs, and gives one verdict:
 
@@ -204,7 +208,9 @@ APM checks this before a task is built. A **task review** (the `apm-task-reviewe
 - **Unclear**: too vague to estimate. It says what is missing; add it to the description.
 - **Error**: the review failed or was cut off (for example, `apm serve` was stopped). The task is unlocked and shows the error. APM tries once more for the same content, then waits until you edit the task or start a review yourself.
 
-**When it runs.** While `apm serve` is up, a review is queued whenever a task is created or its title, kind or description changes, from anywhere: the UI, the terminal, MCP or an agent. A burst of edits becomes one review, of the final content. Changing only the status or recording a delivery doesn't count. When `apm serve` starts, it reviews every To do task that has no review for its current content. To start one yourself, press **Review task** on the task, or run `apm run task-reviewer <handle>`.
+**When it runs.** While `apm serve` is up, a review is queued whenever a task is created or its title, kind or description changes, from anywhere: the UI, the terminal, MCP or an agent. A burst of edits becomes one review, of the final content. Changing only the status or recording a delivery doesn't count. When `apm serve` starts, it reviews every To do task that has no review for its current content. To start one yourself, press **Review task** on the task, or run `apm run task-reviewer <handle>`. To review every To do task of a feature, press **Review all tasks** on it (see [A whole feature at once](#a-whole-feature-at-once)).
+
+**Changing the limit** doesn't undo the reviews that passed: they were for the old limit. Press **Review all tasks** on a feature, or run `apm review-tasks <feature>`, to check its tasks against the new one.
 
 **The lock.** While its review runs, a task can't be edited, moved, merged, deleted, decomposed or implemented. The UI shows **Under review** and disables those actions; the API, the terminal and MCP refuse with "under review". The lock ends when the review finishes, fails or is cancelled, and a lock left behind by a run that died doesn't count.
 
@@ -232,6 +238,27 @@ Two things to know:
 
 - **Claude can only run your tests if the command is allowed.** Add it in the settings (see below), or approve it when asked.
 - **The worktree stays** after the run. Remove it with `git worktree remove <path>` when you no longer need it.
+
+### A whole feature at once
+
+Select a feature (a node with children). The **Tasks** row of the Actions panel works on every task inside it, nested features included, but not review steps:
+
+| Button | What it does |
+|---|---|
+| **Review all tasks** | Starts a task review on every To do task. A task already under review is skipped. A task that passed is reviewed again, against the limit as it is now. |
+| **Implement all** | Asks first, then starts Claude on every task that is ready now (**Ready · stacked** included) and has a passing task review of its current content. Blocked tasks, tasks without a passing review and tasks under review are skipped. |
+
+No more than `runner.max_concurrent` agents run at once: the rest wait their turn and start as others finish, so neither button fails for lack of room. Below the buttons you see what started, what waits for room, and what was skipped and why.
+
+In the terminal, the same is:
+
+```bash
+apm review-tasks 3f9e2a10              # review every To do task of the feature
+apm implement 3f9e2a10                 # build every ready task that passed its review
+apm implement 3f9e2a10 -m "Use the new logger."   # guidance for every task
+```
+
+Both start what fits, start the rest as runs finish, and follow every run in the terminal, each line marked with its task's handle. They ask you in the terminal when a run needs an answer, like `apm run`.
 
 ## Finishing a feature: the review step
 
@@ -284,12 +311,25 @@ apm run decomposer 1c0b9a44 -m "Three steps at most."      # then: apm proposal 
 apm run implementer 7d2e0f11 --mode manual                 # build, asking before each change
 apm run feature-reviewer 3f9e2a10                          # review a finished feature (--branch to pick one)
 apm run task-reviewer 7d2e0f11                             # check a task is small enough to build
+apm review-tasks 3f9e2a10                                  # review every To do task of a feature
+apm implement 3f9e2a10                                     # build every ready, reviewed task of it
 apm proposal accept <id>                                    # or: apm proposal reject <id>
 apm reconcile                                               # mark merged work done
 apm reconcile --retarget                                    # ...and retarget stacked PRs
 ```
 
 When an agent needs an answer, `apm run` asks you in the terminal.
+
+Settings:
+
+```bash
+apm settings show                                  # the project's settings, and every feature's own
+apm settings show 3f9e2a10                         # what applies to a node, and where each comes from
+apm settings set task_max_lines=80 eager=on        # project-wide
+apm settings set automation.reconcile=off          # an automation switch
+apm settings set --node 3f9e2a10 task_max_lines=30 # one feature's own; NAME=inherit inherits again
+apm settings clear 3f9e2a10                        # the feature inherits everything again
+```
 
 ## In your own Claude Code session
 
@@ -322,11 +362,32 @@ runner:
       allowed_tools: ["Bash(uv run *)", "Bash(npm test*)"]
 automation:                  # what `apm serve` does on its own (see below)
   implement_follow_ups: false
+features:                    # how features are built and reported (see below)
+  task_max_lines: 80
+  overrides:
+    0192f0c1-8a2b-7c3d-9e4f-1c0b9a44d2e7: { task_max_lines: 30 }
 ```
 
 - `permission_mode` is what agents start in unless you pick another setting for a run.
 - `allowed_tools` are commands an agent may run without asking. Give the implementer the commands that run your tests.
 - `budget_usd` stops a run that would cost more.
+
+**Changing settings.** You can edit `apm.yaml` by hand, or press **Settings…** in the Actions panel with nothing selected, or use `apm settings set` (see [From the terminal](#from-the-terminal)). The panel and the command change only what you changed: your comments, your layout and every other value stay as they were. A value APM wouldn't accept, such as a task size limit of 3, is refused with the reason, and the file is left alone. Each change is one entry in the plan's history (`settings: task size limit 80 lines`); edits you had made to `apm.yaml` by hand go into that entry too, and it says so. `apm check` reports a broken `apm.yaml`.
+
+### Features
+
+`features:` sets how features are built and reported. Each setting here is the project's default:
+
+| Key | Default | What it does |
+| --- | --- | --- |
+| `eager` | `false` | Eager mode: build a feature in one run on one branch, then split it into one pull request per task. Not built yet: saved for when it is. |
+| `task_max_lines` | `50` | The task size limit, in real lines of code (see [Task review](#task-review-keeping-tasks-small)). At least 5. |
+| `report` | `true` | Write a feature report once a feature's review passes: what it is, the decisions made and why, and how it was built. Not built yet. |
+| `report_detail` | `standard` | How much that report says: `brief`, `standard` or `detailed`. |
+
+**A feature's own settings.** Under `overrides:`, by the feature's id, a feature can set any of these for itself and everything inside it. A feature inside it can override them again: the innermost one wins. In the UI, select a feature and open **Details**: its **Settings** show what applies, where each value comes from (the project, an enclosing feature, or set here), and let you pick a value of its own or **Inherit**. **Inherit all** removes its own settings.
+
+When you type an override by hand, a handle works as the key. Put a handle of digits only in quotes (`'12345678':`), or YAML reads it as a number. An override for a node that no longer exists is ignored, and `apm check` and **Problems** say so.
 
 ### Automation
 
@@ -341,6 +402,7 @@ While `apm serve` is up it can take a feature from review to pull request on its
 | `accept_follow_ups` | `true` | Accept the follow-up tasks a feature review proposes. |
 | `implement_follow_ups` | `true` | Build those follow-ups once their task review passes. Only follow-ups from a feature review are built automatically, never other tasks. |
 | `feature_pr` | `true` | Open the feature's pull request once its feature review passes. With it off, the passing review is recorded and no pull request is opened. |
+| `eager_redo` | `true` | For eager mode (`features.eager`), which isn't built yet: when a task pull request of an eager feature changes, rebuild and re-split the tasks after it. Until eager mode lands, it does nothing. |
 
 Automation never runs more than `runner.max_concurrent` agents at once (the rest wait their turn) and gives each run its agent's `budget_usd`.
 
@@ -405,7 +467,9 @@ Imported runs are history only: you can read them, but nothing starts again. A r
 | A run fails with "couldn't start claude" | Install the Claude Code CLI and sign in. Check that `claude --version` works in your terminal. |
 | A run fails with a budget error | Raise `default_budget_usd`, or the agent's own `budget_usd`, in `.apm/apm.yaml`. |
 | "… is already running" | One conversation takes one turn at a time, and a node has one Decompose or Implement at a time. Wait, or press **Stop**. |
-| "2 runs are already active" | Raise `runner.max_concurrent`, or wait for one to finish. |
+| "2 runs are already active" | Raise `runner.max_concurrent`, or wait for one to finish. **Review all tasks** and **Implement all** never say this: their runs wait their turn. |
+| A setting is refused, e.g. `features.task_max_lines: Input should be greater than or equal to 5` | The message names the setting and what it accepts. Nothing was changed. |
+| "APM couldn't make this change without touching other settings" | Something in `apm.yaml` can't be written back exactly as it is. Make the change by hand in `.apm/apm.yaml`. |
 | Implement is greyed out | Hover over it: the node has children, is blocked, or is already done. |
 | "No pull request yet: `gh` is not installed" | Install the GitHub CLI and run `gh auth login`, then send any reply in the node's conversation: after that turn, APM tries again. |
 | "couldn't tell which GitHub repository … is" | Set the repo's `remote: https://github.com/<owner>/<repo>` in `.apm/apm.yaml`. |

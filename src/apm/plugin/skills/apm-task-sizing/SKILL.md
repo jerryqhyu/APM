@@ -1,12 +1,15 @@
 ---
 name: apm-task-sizing
-description: How to size an APM task, covering what counts as a real line of code, the 50-line limit, how to estimate, and when the verdict is pass, too_big or unclear. Use when reviewing a task before it is built, or when writing tasks that must stay small.
+description: How to size an APM task, covering what counts as a real line of code, the task size limit (50 lines unless the project sets another), how to estimate, and when the verdict is pass, too_big or unclear. Use when reviewing a task before it is built, or when writing tasks that must stay small.
 ---
 
 # Sizing a task
 
 A task must be small enough that a person can read and understand its code in about five
-minutes. The rule: **at most 50 real lines of source code** per task.
+minutes. The rule: **at most N real lines of source code** per task, where N is the task size
+limit. Use the limit your prompt gives for the task: the project sets it in apm.yaml
+(`features.task_max_lines`, and a feature can set its own). When no limit is given, it is the
+default: **at most 50 real lines** of source code.
 
 ## What counts as a real line
 
@@ -41,18 +44,20 @@ not the shortest possible code. Count changed lines as well as added ones.
 
 ## Verdicts
 
-- **pass**: the change is clear and the estimate is at most about 50 real lines.
-- **too_big**: the estimate is clearly over 50. Propose a split into two or more tasks, each
+- **pass**: the change is clear and the estimate is at most about the limit.
+- **too_big**: the estimate is clearly over the limit. Propose a split into two or more tasks, each
   within the limit, that together do exactly what the task asked. Slice so each piece can be
   tested on its own (see the `apm-decompose` skill), not by layer.
 - **unclear**: you can't estimate, because the task doesn't say what to build: no intent, no
   acceptance criteria, or a choice it leaves open that changes the size. List what is missing.
 
-Judge the reader, not the number to the line: 55 lines of plain code is a pass, while 45 lines
-that are really two unrelated changes may be worth splitting. A task over 100 real lines is
-always `too_big`.
+Judge the reader, not the number to the line: a few lines of plain code over the limit is a pass,
+while a change under it that is really two unrelated changes may be worth splitting. A task over
+twice the limit is always `too_big`.
 
 ## Worked examples
+
+These use the default limit of 50 real lines.
 
 ### pass: about 20 lines
 

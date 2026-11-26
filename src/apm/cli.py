@@ -14,18 +14,21 @@ import textwrap
 import threading
 import time
 import webbrowser
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import Annotated, Any
+from typing import TYPE_CHECKING, Annotated, Any
 
 import typer
+import yaml
 
 from apm import __version__
 from apm.core import ops
+from apm.core.config import read_config
 from apm.core.errors import ApmError
-from apm.core.files import read_body, render_body
-from apm.core.git import git
+from apm.core.files import CONFIG_FILE, read_body, render_body
+from apm.core.git import git, log
 from apm.core.graph import Graph
+from apm.core.ids import handle as short_handle
 from apm.core.lifting import check_all
 from apm.core.model import Kind, NodeId, Status
 from apm.core.mutate import Mutation, OpError, commit_hand_edits
@@ -44,8 +47,21 @@ from apm.core.proposals import (
     reject_proposal,
 )
 from apm.core.reconcile import describe, reconcile
+from apm.core.settings import (
+    SETTINGS,
+    check_config,
+    clear_override,
+    resolve_settings,
+    set_defaults,
+    set_override,
+    settings_view,
+)
 from apm.core.store import Proposal, Store
 from apm.core.views import all_nodes_view, node_line, node_text, node_view, outline, search
+
+if TYPE_CHECKING:  # the runner is imported only by the commands that start runs
+    from apm.runner.feature_runs import Batch
+    from apm.runner.runner import Runner
 
 HELP = {"help_option_names": ["-h", "--help"]}
 app = typer.Typer(name="apm", no_args_is_help=True, add_completion=False, context_settings=HELP)
@@ -53,8 +69,12 @@ node_app = typer.Typer(no_args_is_help=True, help="Work with nodes.", context_se
 proposal_app = typer.Typer(
     no_args_is_help=True, help="Review what agents proposed.", context_settings=HELP
 )
+settings_app = typer.Typer(
+    no_args_is_help=True, help="Show and change the settings in apm.yaml.", context_settings=HELP
+)
 app.add_typer(node_app, name="node")
 app.add_typer(proposal_app, name="proposal")
+app.add_typer(settings_app, name="settings")
 
 Json = Annotated[bool, typer.Option("--json", help="Print JSON instead of text.")]
 
@@ -132,15 +152,19 @@ def init(
 @app.command()
 @command
 def check() -> None:
-    """Validate the plan: errors (exit code 1) and warnings."""
-    result = check_all(plan()[1])
-    for issue in result.errors:
-        typer.echo(f"error {issue.code}: {issue.message}")
-    for issue in result.warnings:
-        typer.echo(f"warning {issue.code}: {issue.message}")
-    if not result.errors and not result.warnings:
+    """Validate the plan and apm.yaml: errors (exit code 1) and warnings."""
+    project, graph = plan()
+    result = check_all(graph)
+    config_errors, config_warnings = check_config(project.apm_dir, graph)
+    errors = [*(f"{i.code}: {i.message}" for i in result.errors), *config_errors]
+    warnings = [*(f"{i.code}: {i.message}" for i in result.warnings), *config_warnings]
+    for line in errors:
+        typer.echo(f"error {line}")
+    for line in warnings:
+        typer.echo(f"warning {line}")
+    if not errors and not warnings:
         typer.echo("ok")
-    if result.errors:
+    if errors:
         raise typer.Exit(1)
 
 
@@ -150,6 +174,116 @@ def commit() -> None:
     """Validate and commit edits you made by hand in .apm/."""
     result = commit_hand_edits(find_project())
     report(result, f"committed {len(result.nodes)} node(s)")
+
+
+# --- settings (apm.yaml) ------------------------------------------------------------------------
+
+
+@settings_app.command("show")
+@command
+def settings_show(
+    handle: Annotated[
+        str | None, typer.Argument(help="A feature or task: what applies to it, and from where.")
+    ] = None,
+) -> None:
+    """Show the project's settings, or what applies to one node."""
+    project, graph = plan()
+    config = read_config(project.apm_dir)
+    if handle is not None:
+        node_id = graph.resolve(handle)
+        resolved = resolve_settings(config, graph, node_id)
+        typer.echo(f"{graph.handles[node_id]} {graph[node_id].title}")
+        for name in SETTINGS:
+            value, source = getattr(resolved.settings, name), resolved.sources[name]
+            where = (
+                "the project"
+                if source is None
+                else "set here"
+                if source == node_id
+                else f"from {graph.handles[source]} {graph[source].title}"
+            )
+            typer.echo(f"  {name:<16} {setting_text(value):<10} {where}")
+        return
+    view = settings_view(config, graph)
+    for section in ("features", "automation"):
+        typer.echo(f"{section}:")
+        for name, value in view[section].items():
+            typer.echo(f"  {name:<22} {setting_text(value)}")
+    if view["overrides"]:
+        typer.echo("overrides:")
+    for override in view["overrides"]:
+        target = override["node"]
+        who = f"{graph.handles[target]} {graph[target].title}" if target else override["key"]
+        values = ", ".join(f"{k} {setting_text(v)}" for k, v in override["values"].items())
+        typer.echo(f"  {who}: {values or 'nothing'}")
+    for problem in view["problems"]:
+        typer.echo(f"warning {CONFIG_FILE}: {problem}")
+
+
+@settings_app.command("set")
+@command
+def settings_set(
+    pairs: Annotated[
+        list[str],
+        typer.Argument(
+            help="NAME=VALUE: eager=on, task_max_lines=80, report_detail=brief,"
+            " automation.task_review=off. VALUE default (or inherit) unsets it.",
+        ),
+    ],
+    node: Annotated[
+        str | None,
+        typer.Option("--node", "-n", help="Change this feature's own settings instead."),
+    ] = None,
+) -> None:
+    """Change settings in apm.yaml, keeping its comments: one commit in the plan repo."""
+    project, graph = plan()
+    parsed = [parse_setting(pair) for pair in pairs]
+    by_section: dict[str, dict[str, Any]] = {"features": {}, "automation": {}}
+    for section, name, value in parsed:
+        by_section[section][name] = value
+    if node is not None:
+        if by_section["automation"]:
+            raise OpError("automation switches are project-wide: leave out --node")
+        change = set_override(project, graph.resolve(node), by_section["features"])
+    else:
+        features, automation = by_section["features"], by_section["automation"]
+        change = set_defaults(project, features=features, automation=automation)
+    typer.echo(log(project.apm_dir)[0].subject if change.sha else "nothing to change")
+
+
+@settings_app.command("clear")
+@command
+def settings_clear(handle: str) -> None:
+    """Remove a feature's own settings, so it inherits them all again."""
+    project, graph = plan()
+    change = clear_override(project, graph.resolve(handle))
+    typer.echo(log(project.apm_dir)[0].subject if change.sha else "nothing to clear")
+
+
+def parse_setting(pair: str) -> tuple[str, str, bool | int | float | str | None]:
+    """`automation.task_review=off` as ("automation", "task_review", False). A name without a
+    section is a feature setting.
+    """
+    name, equals, raw = pair.partition("=")
+    section, _, key = name.strip().rpartition(".")
+    section = section or "features"
+    if not equals or not key or section not in ("features", "automation"):
+        raise OpError(f'"{pair}": expected NAME=VALUE, e.g. eager=on or automation.reconcile=off')
+    if raw.strip() in ("default", "inherit"):
+        return section, key, None
+    try:
+        value = yaml.safe_load(raw)  # on, off, yes, no, true, false, 80, brief
+    except yaml.YAMLError:
+        value = raw
+    if value is None or not isinstance(value, bool | int | float | str):
+        raise OpError(f'"{pair}": {key} needs a value')
+    return section, key, value
+
+
+def setting_text(value: object) -> str:
+    if isinstance(value, bool):
+        return "on" if value else "off"
+    return str(value)
 
 
 @app.command("reconcile")
@@ -564,28 +698,142 @@ def run(
     ] = None,
 ) -> None:
     """Run an agent and follow it here. It asks you in the terminal when it needs an answer."""
+    project, graph = plan()
+    node_id = graph.resolve(handle) if handle else None
+    name = agent if agent.startswith("apm-") else f"apm-{agent}"
+
+    async def work(runner: Runner) -> None:
+        started = runner.start(name, node_id, message, critic=critic, mode=mode, branch=branch)
+        await runner.wait(started.id)
+
+    if follow_runs(project, work):
+        raise typer.Exit(1)
+
+
+Mode = Annotated[
+    str | None, typer.Option(help="Permission mode: auto, manual, acceptEdits, plan or dontAsk.")
+]
+
+
+@app.command("review-tasks")
+@command
+def review_tasks(
+    handle: Annotated[str, typer.Argument(help="The feature (or one task).")],
+    mode: Mode = None,
+) -> None:
+    """Review every To do task of a feature, nested features included, and follow the reviews
+    here. Up to runner.max_concurrent run at once; the rest start as those finish.
+    """
+    from apm.runner.feature_runs import review_all_tasks
+
+    run_batch(handle, review_all_tasks, "nothing to review: it has no To do tasks", mode=mode)
+
+
+@app.command("implement")
+@command
+def implement(
+    handle: Annotated[str, typer.Argument(help="The feature (or one task).")],
+    message: Annotated[
+        str, typer.Option("--message", "-m", "--guidance", "-g", help="Guidance for every task.")
+    ] = "",
+    mode: Mode = None,
+) -> None:
+    """Build every task of a feature that is ready now and has passed its task review, and follow
+    the runs here. Up to runner.max_concurrent run at once; the rest start as those finish.
+    """
+    from apm.runner.feature_runs import implement_feature
+
+    empty = "nothing to implement: it has no To do tasks"
+    run_batch(handle, implement_feature, empty, mode=mode, message=message)
+
+
+POLL_S = 0.2
+"""How often `run_batch` looks for room to start a waiting run."""
+
+
+def run_batch(
+    handle: str,
+    start: Callable[..., Batch],
+    empty: str,
+    *,
+    mode: str | None,
+    message: str = "",
+) -> None:
+    """Starts a feature-level action in this process, says what it started, queued and skipped,
+    then starts the queued runs as others finish, following them all until the last one ends.
+    """
+    from apm.runner.queue import RunQueue
+
+    project, graph, node_id = locate(handle)
+
+    async def work(runner: Runner) -> None:
+        queue = RunQueue(runner)
+        batch = start(queue, node_id, mode=mode, message=message)
+        for line in describe_batch(graph, batch) or [empty]:
+            typer.echo(line)
+        while queue.waiting or runner.active():
+            await asyncio.sleep(POLL_S)
+            for dropped in queue.pump().dropped:
+                # By handle alone: the node may be gone, which is often why it was dropped.
+                typer.echo(f"skipped {short_handle(dropped.item.node_id)}: {dropped.reason}")
+
+    if follow_runs(project, work, tag=True):
+        raise typer.Exit(1)
+
+
+def describe_batch(graph: Graph, batch: Batch) -> list[str]:
+    """What a feature-level action started, queued and skipped, one line each."""
+
+    def named(node_id: NodeId) -> str:
+        return f"{graph.handles[node_id]} {graph[node_id].title}"
+
+    lines = []
+    if batch.started:
+        lines.append(
+            f"started {len(batch.started)}: {', '.join(named(r.node_id) for r in batch.started)}"
+        )
+    if batch.waiting:
+        waiting = ", ".join(named(n) for n in batch.waiting)
+        lines.append(
+            f"waiting for room under runner.max_concurrent, {len(batch.waiting)}: {waiting}"
+        )
+    lines += [f"skipped {named(s.node_id)}: {s.reason}" for s in batch.skipped]
+    return lines
+
+
+def follow_runs(
+    project: Project, work: Callable[[Runner], Awaitable[None]], *, tag: bool = False
+) -> bool:
+    """Runs `work` with a runner whose runs print here, and whose questions and permission
+    prompts are put to you here. With `tag`, each line starts with the handle of the node its run
+    is about, for several runs at once. True if a run failed.
+    """
     from apm.runner.agents import RunRefused
     from apm.runner.runner import Runner
     from apm.runner.transcript import format_event
 
-    project, graph = plan()
-    node_id = graph.resolve(handle) if handle else None
-    name = agent if agent.startswith("apm-") else f"apm-{agent}"
     store = Store(project.apm_dir)
     failed: list[dict[str, Any]] = []
     waiting: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    nodes: dict[str, str] = {}  # run id → its node's handle
+
+    def echo(run_id: str, text: str, *, err: bool = False) -> None:
+        typer.echo(f"[{nodes[run_id]}] {text}" if tag and run_id in nodes else text, err=err)
 
     def show(event: dict[str, Any]) -> None:
         if event["type"] == "run.started":
-            typer.echo(f"▶ {event['run']['agent']} (run {event['run']['id']})")
+            run = event["run"]
+            nodes[run["id"]] = short_handle(run["node_id"])
+            echo(run["id"], f"▶ {run['agent']} (run {run['id']})")
         elif event["type"] == "run.event":
             for line in format_event(event["event"]["data"]):
-                typer.echo(line)
+                echo(event["run_id"], line)
         elif event["type"] == "run.request":
             waiting.put_nowait(event["request"])
         elif event["type"] == "run.finished" and event["run"]["status"] != "succeeded":
-            failed.append(event["run"])
-            typer.echo(f"✗ {event['run']['status']}: {event['run']['error'] or ''}", err=True)
+            run = event["run"]
+            failed.append(run)
+            echo(run["id"], f"✗ {run['status']}: {run['error'] or ''}", err=True)
         elif event["type"] == "proposal.created":
             proposal = event["proposal"]
             count = len(proposal["data"]["children"])
@@ -615,15 +863,13 @@ def run(
 
         asker = asyncio.create_task(answer_requests())
         try:
-            started = runner.start(name, node_id, message, critic=critic, mode=mode, branch=branch)
-            await runner.wait(started.id)
+            await work(runner)
         finally:
             asker.cancel()
             await runner.shutdown()
 
     asyncio.run(go())
-    if failed:
-        raise typer.Exit(1)
+    return bool(failed)
 
 
 def ask_in_terminal(request: dict[str, Any]) -> tuple[bool, dict[str, str] | None]:

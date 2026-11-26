@@ -40,7 +40,8 @@ apm serve
 - **Talk to Claude** in the conversation on the right. Ask where things stand, plan a feature together, or have it reshape the plan: add, edit, link, move, merge and delete nodes. It goes turn by turn, and when Claude has a question or needs permission for something, a card appears for you to answer.
 - **Change the graph yourself** with the actions panel: every operation is a button, for one node, several, or the whole plan.
 - **Decompose** a node to get a reviewed proposal you can edit before anything is written.
-- **Implement** a ready node: Claude builds it in its own git worktree, opens a pull request if `gh` is set up, and records the delivery on the node.
+- **Implement** a ready node: Claude builds it in its own git worktree, opens a pull request if `gh` is set up, and records the delivery on the node. On a feature, **Review all tasks** and **Implement all** work on every task inside it at once.
+- **Settings…** sets the task size limit, feature reports and what `apm serve` does on its own, for the project or for one feature. They live in `.apm/apm.yaml`, which keeps your comments.
 - **Permissions** are yours to set per run: Auto (the default), Ask, Accept edits, Plan first, or Don't ask.
 
 Everything is also a terminal command (`apm --help`), and your own Claude Code session can use the plan with `claude --plugin-dir "$(apm plugin-path)"`. The [user guide](docs/user-guide.md) covers all of it.

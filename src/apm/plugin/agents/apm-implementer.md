@@ -35,6 +35,9 @@ Leave the status at `in_progress`. A person, or the merge of the pull request, m
 - Stay inside the node. If it is wrong, too big for one pull request, or blocked by something the
   plan does not show, stop, write what you found under **Notes**, and finish without widening the
   change.
+- Your first message gives the task size limit the node was reviewed against, in real lines of
+  code. Aim to stay within it; tests and docs come on top. If the change grows far past it, say so
+  under **Notes**.
 - Never force-push, rewrite history, or commit to the default branch.
 
 End with a short summary: what you built, how it was verified, the PR link, and anything unfinished.

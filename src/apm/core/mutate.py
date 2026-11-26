@@ -41,7 +41,9 @@ type Op = Literal[
     "decompose",
     "edit-body",
     "merge",
+    "settings",
 ]
+"""`settings` changes apm.yaml, not the graph: see `apm.core.settings`."""
 
 
 class OpError(ApmError, ValueError):
@@ -191,16 +193,28 @@ def mutate(
         if run:
             trailers.append(("APM-Run", run))
         message = CommitMessage(subject=f"{op} {summary}", body=note, trailers=trailers)
-        sha = _write_and_commit(apm_dir, writes, message)
+        sha = write_and_commit(apm_dir, writes, message)
         return Mutation(sha, touched, tuple(draft._created), graph)
 
 
-def _write_and_commit(apm_dir: Path, writes: dict[str, str | None], message: CommitMessage) -> str:
+def write_and_commit(
+    apm_dir: Path,
+    writes: dict[str, str | None],
+    message: CommitMessage,
+    *,
+    over_hand_edits: bool = False,
+) -> str:
+    """Writes files of the plan repo (path → content, or None to delete it) and commits them, or,
+    if that fails, puts them back as they were. The caller holds the write lock.
+
+    Hand edits to those files are refused (`DirtyPlanError`), unless `over_hand_edits`: then the
+    new content, which the caller made from the edited file, is committed with them.
+    """
     paths = sorted(writes)
     # Only these files are staged, so they must match HEAD first: otherwise hand edits would be
     # swept into this commit, or lost if it had to be undone.
     status = git(apm_dir, ["status", "--porcelain", "-z", "--", *paths])
-    if dirty := [entry[3:] for entry in status.split("\0") if entry]:
+    if (dirty := [entry[3:] for entry in status.split("\0") if entry]) and not over_hand_edits:
         raise DirtyPlanError(dirty)
 
     previous = {path: read_file_if_exists(apm_dir / path) for path in paths}

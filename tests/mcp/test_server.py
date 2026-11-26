@@ -103,6 +103,21 @@ def test_read_tools(plan: tuple[Project, str, str, str]) -> None:
     assert session.call("apm_check") == "ok"
 
 
+def test_check_also_checks_apm_yaml(plan: tuple[Project, str, str, str]) -> None:
+    project, parent, _, _ = plan
+    config = project.apm_dir / "apm.yaml"
+    text = config.read_text()
+    config.write_text(f"{text}features:\n  overrides:\n    abcdef12: {{ eager: true }}\n")
+    session = Session(project, "read")
+    assert session.call("apm_check") == (
+        "warning apm.yaml: features.overrides.abcdef12 matches no node: it is ignored"
+    )
+    config.write_text(f"{text}features:\n  overrides:\n    {parent}: {{ eager: maybe }}\n")
+    assert session.call("apm_check").startswith(
+        f"error apm.yaml: features.overrides.{parent}.eager: "
+    )
+
+
 def test_ready_marks_stacked_work(plan: tuple[Project, str, str, str]) -> None:
     project, _, first, second = plan
     first_id = load_graph(project).resolve(first)

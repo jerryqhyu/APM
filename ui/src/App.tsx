@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { type ActionHandlers, Actions } from "./Actions";
-import { ApiError, api, download, query } from "./api";
+import { ApiError, api, clearNodeSettings, download, implementAll, query, reviewAllTasks, saveNodeSettings } from "./api";
 import { Canvas } from "./Canvas";
 import { Chat } from "./Chat";
 import { type DetailActions, NodeDetails, PlanSummary } from "./Details";
@@ -8,6 +8,7 @@ import { AddNodeDialog, DeleteDialog, ExportDialog, MergeDialog, PickNodeDialog,
 import { useLiveConnection, useLiveEvents } from "./live";
 import { Outline } from "./Outline";
 import { ProposalReview } from "./ProposalReview";
+import { SettingsDialog } from "./Settings";
 import { type Theme, useTheme } from "./theme";
 import type { AgentRequest, Level, NodeDetail, NodeView, Project, Proposal, Run, Status, Tree } from "./types";
 import { Spinner } from "./ui";
@@ -28,7 +29,8 @@ type Dialog =
   | { kind: "merge"; nodes: string[] }
   | { kind: "delete"; nodes: string[] }
   | { kind: "review"; proposal: Proposal }
-  | { kind: "export" };
+  | { kind: "export" }
+  | { kind: "settings" };
 
 type Tab = "chat" | "details";
 
@@ -276,6 +278,17 @@ export function App() {
         toast(result.sha ? `Committed your edits to ${result.nodes.length} node(s).` : "No hand edits to commit.");
       }),
     exportArchive: () => setDialog({ kind: "export" }),
+    openSettings: () => setDialog({ kind: "settings" }),
+    reviewTasks: async (id) => {
+      const batch = await reviewAllTasks(id);
+      await refresh();
+      return batch;
+    },
+    implementAll: async (id) => {
+      const batch = await implementAll(id);
+      await refresh();
+      return batch;
+    },
     clear: () => select(null, false),
   };
 
@@ -285,6 +298,15 @@ export function App() {
     unlink: (dependsOn) => act(() => api(`/api/edges${query({ src: detail.id, dst: dependsOn })}`, { method: "DELETE" })),
     goTo,
     review: (proposal) => setDialog({ kind: "review", proposal }),
+    // Errors show next to the settings, so these don't toast.
+    saveSettings: async (change) => {
+      await saveNodeSettings(detail.id, change);
+      await refresh();
+    },
+    clearSettings: async () => {
+      await clearNodeSettings(detail.id);
+      await refresh();
+    },
   };
 
   if (fatal === "token") {
@@ -412,7 +434,14 @@ export function App() {
       </main>
 
       <aside className="side">
-        <Actions selected={selectedNodes} running={running} handlers={handlers} lookup={(id) => byId.get(id)} detail={detail} />
+        <Actions
+          selected={selectedNodes}
+          running={running}
+          handlers={handlers}
+          lookup={(id) => byId.get(id)}
+          detail={detail}
+          nodes={nodes}
+        />
         <div className="tabs" role="tablist">
           <button role="tab" aria-selected={tab === "chat"} className={cx("tab", tab === "chat" && "active")} onClick={() => setTab("chat")}>
             Chat
@@ -574,6 +603,17 @@ export function App() {
             await api(`/api/proposals/${dialog.proposal.id}/reject`, { method: "POST" });
             setDialog(null);
             await refresh();
+          }}
+        />
+      )}
+      {dialog?.kind === "settings" && (
+        <SettingsDialog
+          nodes={nodes}
+          onClose={() => setDialog(null)}
+          onGoTo={goTo}
+          onSaved={(said) => {
+            toast(said);
+            refresh().catch(fail);
           }}
         />
       )}

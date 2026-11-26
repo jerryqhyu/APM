@@ -9,9 +9,9 @@ from collections.abc import AsyncGenerator, Awaitable, Callable
 from dataclasses import asdict
 from functools import partial
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 
-from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
+from fastapi import Body, FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -20,7 +20,8 @@ from starlette.background import BackgroundTask
 from apm import __version__
 from apm.core import ops
 from apm.core.archive import SUFFIX, export_archive
-from apm.core.config import read_config
+from apm.core.config import ApmConfig, read_config
+from apm.core.config_edit import Scalar
 from apm.core.errors import ApmError
 from apm.core.files import read_body, render_body
 from apm.core.git import GitError, rev_parse
@@ -32,11 +33,21 @@ from apm.core.project import Project, load_graph
 from apm.core.proposals import accept_proposal, close_orphaned, reject_proposal
 from apm.core.reconcile import Report, describe, reconcile
 from apm.core.review_lock import under_review
+from apm.core.settings import (
+    ResolvedSettings,
+    clear_override,
+    override_problems,
+    resolve_settings,
+    set_defaults,
+    set_override,
+    settings_view,
+)
 from apm.core.store import PROJECT, Store
 from apm.core.task_review import implement_blocker, review_state
 from apm.core.views import all_nodes_view, level_json, node_history, node_ref, node_view, search
 from apm.runner.agents import AGENTS, MODES
 from apm.runner.auto import AutoQueue
+from apm.runner.feature_runs import Batch, implement_feature, review_all_tasks
 from apm.runner.runner import Runner
 from apm.server.security import bearer, host_is_loopback, origin_allowed, token_matches
 
@@ -109,6 +120,20 @@ class AcceptProposal(BaseModel):
     """The children to create, if you edited or trimmed the proposal. Default: all of them."""
 
 
+class StartBatch(BaseModel):
+    """Review all tasks, or Implement all, on a feature."""
+
+    mode: str | None = None
+    message: str = ""
+
+
+class PatchSettings(BaseModel):
+    """Project-wide settings to change, by name. None puts one back to APM's default."""
+
+    features: dict[str, Scalar | None] = Field(default_factory=dict)
+    automation: dict[str, Scalar | None] = Field(default_factory=dict)
+
+
 class Hub:
     """Fan-out of live events to every connected WebSocket."""
 
@@ -150,12 +175,14 @@ def create_app(
     store = Store(project.apm_dir)
     hub = Hub()
     runner = Runner(project, store, hub.publish)
+    automation = AutoQueue(runner)
+    queue = automation.manual  # what you ask for at the feature level, waiting for room
 
     @contextlib.asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncGenerator[None]:
         hub.bind(asyncio.get_running_loop())
         watcher = asyncio.create_task(_watch_head(project, hub))
-        auto = asyncio.create_task(AutoQueue(runner).drive(hub.subscribe()))
+        auto = asyncio.create_task(automation.drive(hub.subscribe()))
         try:
             yield
         finally:
@@ -168,6 +195,7 @@ def create_app(
     )
     app.state.runner = runner
     app.state.store = store
+    app.state.queue = queue
     app.state.hub = hub
 
     @app.middleware("http")
@@ -221,6 +249,14 @@ def create_app(
             "proposals": [
                 asdict(p) for p in store.list_proposals(node_id=node_id, status="pending")
             ],
+            "settings": node_settings(config, graph, node_id),
+        }
+
+    def batch_view(graph: Graph, batch: Batch) -> dict[str, Any]:
+        return {
+            "started": [asdict(run) for run in batch.started],
+            "waiting": [node_ref(graph, n) for n in batch.waiting],
+            "skipped": [{**node_ref(graph, s.node_id), "reason": s.reason} for s in batch.skipped],
         }
 
     def run_view(run_id: str, after: int = 0) -> dict[str, Any]:
@@ -266,11 +302,17 @@ def create_app(
     def get_tree() -> dict[str, Any]:
         graph = load_graph(project)
         report = check_all(graph)
+        problems: list[str] = []
+        with contextlib.suppress(ApmError):  # a broken apm.yaml shows up everywhere else
+            problems = override_problems(read_config(project.apm_dir), graph)
         return {
             "head": rev_parse(project.apm_dir, "HEAD"),
             "nodes": all_nodes_view(graph),
             "errors": [asdict(i) for i in report.errors],
-            "warnings": [asdict(i) for i in report.warnings],
+            "warnings": [
+                *(asdict(i) for i in report.warnings),
+                *({"code": "apm.yaml", "message": p, "nodes": []} for p in problems),
+            ],
         }
 
     @app.get("/api/graph")
@@ -388,6 +430,51 @@ def create_app(
         result = commit_hand_edits(project)
         return {"sha": result.sha, "nodes": list(result.nodes)}
 
+    # --- settings (apm.yaml) ---
+
+    @app.get("/api/settings")
+    def get_settings() -> dict[str, Any]:
+        return settings_view(read_config(project.apm_dir), load_graph(project))
+
+    @app.patch("/api/settings")
+    def patch_settings(body: PatchSettings) -> dict[str, Any]:
+        """Edits apm.yaml in place and commits it. A bad value is refused, and nothing changes."""
+        change = set_defaults(project, features=body.features, automation=body.automation)
+        return settings_view(change.config, load_graph(project))
+
+    @app.patch("/api/nodes/{node}/settings")
+    def patch_node_settings(
+        node: str, body: Annotated[dict[str, Scalar | None], Body()]
+    ) -> dict[str, Any]:
+        """A feature's own settings, by name: null inherits that one again."""
+        graph, node_id = locate(node)
+        change = set_override(project, node_id, body)
+        return node_settings(change.config, graph, node_id)
+
+    @app.delete("/api/nodes/{node}/settings")
+    def delete_node_settings(node: str) -> dict[str, Any]:
+        graph, node_id = locate(node)
+        change = clear_override(project, node_id)
+        return node_settings(change.config, graph, node_id)
+
+    # --- many runs at once: what fits starts, the rest waits for room ---
+
+    @app.post("/api/nodes/{node}/review-tasks")
+    async def review_tasks(node: str, body: StartBatch | None = None) -> dict[str, Any]:
+        """Review all tasks: a task review on every To do task in the feature."""
+        graph, node_id = locate(node)
+        body = body or StartBatch()
+        batch = review_all_tasks(queue, node_id, mode=body.mode, message=body.message)
+        return batch_view(graph, batch)
+
+    @app.post("/api/nodes/{node}/implement")
+    async def implement_all(node: str, body: StartBatch | None = None) -> dict[str, Any]:
+        """Implement all: the implementer on every task of the feature that is ready now."""
+        graph, node_id = locate(node)
+        body = body or StartBatch()
+        batch = implement_feature(queue, node_id, mode=body.mode, message=body.message)
+        return batch_view(graph, batch)
+
     # --- runs: one turn of an agent ---
 
     @app.get("/api/runs")
@@ -500,6 +587,28 @@ def create_app(
             return UI_MISSING
 
     return app
+
+
+def node_settings(config: ApmConfig, graph: Graph, node_id: NodeId) -> dict[str, Any]:
+    """The settings that apply to a node and where each comes from (a node, or null for the
+    project); the node's own override; and what it would have without it.
+    """
+
+    def view(resolved: ResolvedSettings) -> dict[str, Any]:
+        return {
+            "values": asdict(resolved.settings),
+            "sources": {
+                name: node_ref(graph, source) if source else None
+                for name, source in resolved.sources.items()
+            },
+        }
+
+    resolved = resolve_settings(config, graph, node_id)
+    return {
+        **view(resolved),
+        "own": resolved.own.model_dump(exclude_none=True) if resolved.own else {},
+        "inherited": view(resolve_settings(config, graph, node_id, inherited=True)),
+    }
 
 
 async def _watch_head(project: Project, hub: Hub) -> None:

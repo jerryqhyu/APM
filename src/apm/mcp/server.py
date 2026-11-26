@@ -27,6 +27,7 @@ from apm.core.lifting import check_all
 from apm.core.model import Kind, NodeId, Status
 from apm.core.mutate import Mutation
 from apm.core.project import Project, find_project, load_graph
+from apm.core.settings import check_config
 from apm.core.views import node_line, node_text, outline, search
 
 SCOPE_ENV = "APM_RUN_SCOPE"
@@ -179,11 +180,14 @@ def build_server(project: Project | None = None, env: Mapping[str, str] | None =
 
     @tool
     def apm_check() -> str:
-        """Validate the plan: invariant errors and warnings."""
-        _, graph = plan()
+        """Validate the plan and apm.yaml: errors and warnings."""
+        project, graph = plan()
         report = check_all(graph)
+        config_errors, config_warnings = check_config(project.apm_dir, graph)
         lines = [f"error {i.code}: {i.message}" for i in report.errors]
+        lines += [f"error {line}" for line in config_errors]
         lines += [f"warning {i.code}: {i.message}" for i in report.warnings]
+        lines += [f"warning {line}" for line in config_warnings]
         return "\n".join(lines) or "ok"
 
     # --- write ---
