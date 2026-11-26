@@ -157,6 +157,66 @@ export interface NodeDetail extends NodeView {
   review: { state: "none" | "running" | "stale" | "pass" | "too_big" | "unclear" | "error"; summary?: string; missing?: string[]; error?: string } | null;
   implement_blocker: string | null;
   settings: NodeSettings;
+  /** A feature's eager build, or a task's place in one; null when eager mode doesn't apply. */
+  eager: EagerFeature | EagerTaskInfo | null;
+}
+
+// --- eager mode (src/apm/core/eager.py) ---
+
+export type EagerState = "building" | "splitting" | "split" | "failed" | "split_failed";
+
+/** One task's part of an eager build: its branch in the chain and its pull request. */
+export interface EagerTask {
+  id: string;
+  handle: string;
+  title: string;
+  status: Status;
+  /** From 0: its branch is built on the one before, and its pull request targets it. */
+  position: number;
+  branch: string;
+  commit: string;
+  /** Roughly how many lines of source its part adds. */
+  lines: number | null;
+  pr: string | null;
+  /** `stale`: a task before it changed, and it is to be rebuilt. */
+  state: "open" | "merged" | "stale";
+}
+
+export interface EagerBuild {
+  round: number;
+  branch: string;
+  base: string;
+  base_sha: string;
+  sha: string | null;
+  state: EagerState;
+  run_id: string | null;
+  error: string | null;
+  warnings: string[];
+  tasks: string[];
+  updated: number;
+}
+
+/** A feature's eager build, for its details. */
+export interface EagerFeature {
+  applies: boolean;
+  /** `automation.eager_redo`: whether a change is rebuilt on its own. */
+  auto_redo: boolean;
+  build: EagerBuild | null;
+  tasks: EagerTask[];
+  /** A task pull request that changed since the split, or why APM can't rebuild after it. */
+  pending: { node?: NodeRef; kind?: "pushed" | "merged"; blocked: string | null } | null;
+  /** What Redo would do now, or (action null) why it can't. */
+  redo: { action: "split" | "rebuild" | null; why: string };
+}
+
+/** A task's place in an eager feature. */
+export interface EagerTaskInfo {
+  feature: NodeRef | null;
+  in_split: boolean;
+  /** Why Implement can't start on it alone. */
+  blocker: string | null;
+  /** Implement builds its whole feature eagerly. */
+  redirect: boolean;
 }
 
 // --- settings (apm.yaml; src/apm/core/settings.py) ---
@@ -219,6 +279,38 @@ export interface Batch {
   skipped: (NodeRef & { reason: string })[];
 }
 
+// --- the feature report (src/apm/core/report_branch.py) ---
+
+/** A report APM wrote, committed to the feature branch (or kept, with why it wasn't). */
+export interface FeatureReport {
+  node_id: string;
+  run_id: string | null;
+  branch: string;
+  path: string;
+  /** The commit that put it on the branch; null if it couldn't be committed. */
+  sha: string | null;
+  error: string | null;
+  markdown: string;
+  summary: string;
+  detail: ReportDetail;
+  created: number;
+}
+
+/** Where a feature's report stands. */
+export interface ReportStatus {
+  feature: string;
+  state: "none" | "writing" | "written" | "not_committed";
+  /** The latest report, even while a new one is being written. */
+  report: FeatureReport | null;
+  running: Run | null;
+  /** Its page on GitHub, once committed. */
+  url: string | null;
+  pr: string | null;
+  /** Whether it is written on its own once the feature's review passes (`features.report`). */
+  automatic: boolean;
+  detail: ReportDetail;
+}
+
 export interface Agent {
   name: string;
   label: string;
@@ -268,4 +360,5 @@ export type LiveEvent =
   | { type: "run.request"; request: AgentRequest }
   | { type: "run.request_resolved"; run_id: string; id: string }
   | { type: "proposal.created"; proposal: Proposal }
-  | { type: "proposal.resolved"; id: string; status: string };
+  | { type: "proposal.resolved"; id: string; status: string }
+  | { type: "report.written"; node_id: string };

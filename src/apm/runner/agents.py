@@ -18,7 +18,9 @@ from apm.core.ids import handle
 from apm.core.model import NodeId, Status
 from apm.core.project import Project
 from apm.core.proposals import DECOMPOSITION_SCHEMA, REVIEW_SCHEMA
+from apm.core.report import REPORT_SCHEMA
 from apm.core.settings import feature_settings
+from apm.core.split import SPLIT_SCHEMA
 from apm.core.store import PROJECT
 from apm.core.task_verdict import TASK_VERDICT_SCHEMA
 
@@ -142,8 +144,49 @@ AGENTS: dict[str, AgentSpec] = {
             schema=TASK_VERDICT_SCHEMA,
             read_only=True,
         ),
+        AgentSpec(
+            name="apm-feature-reporter",
+            label="Write report",
+            summary="Write this feature's report for people who weren't there: what it is and"
+            " why, the decisions people made and their reasons, and how it was built. APM commits"
+            " it to the feature branch as docs/features/…md.",
+            scope="read",
+            tools=(*READ_TOOLS, *GIT_READ_TOOLS),
+            mcp_tools=READ_MCP,
+            schema=REPORT_SCHEMA,
+            read_only=True,
+        ),
     )
 }
+
+# Eager mode (plans.md §7.9): started by Implement on an eager feature, never on their own.
+EAGER_BUILDER = "apm-eager-builder"
+SPLITTER = "apm-splitter"
+EAGER_AGENTS: tuple[AgentSpec, ...] = (
+    AgentSpec(
+        name=EAGER_BUILDER,
+        label="Eager build",
+        summary="Build every To do task of this feature in one run, on one branch. APM then"
+        " splits it into one pull request per task.",
+        scope="read",
+        tools=(*READ_TOOLS, "Edit", "Write", "Bash(git *)"),
+        mcp_tools=READ_MCP,
+        worktree=True,
+        user_startable=False,
+    ),
+    AgentSpec(
+        name=SPLITTER,
+        label="Split",
+        summary="Carve an eager build into one commit per task, each built on the one before.",
+        scope="read",
+        tools=(*READ_TOOLS, "Edit", "Write", "Bash(git *)"),
+        mcp_tools=READ_MCP,
+        schema=SPLIT_SCHEMA,
+        worktree=True,
+        user_startable=False,
+    ),
+)
+AGENTS.update((spec.name, spec) for spec in EAGER_AGENTS)
 
 
 class RunRefused(ApmError, ValueError):  # noqa: N818 (a refusal, not a failure)
@@ -251,6 +294,10 @@ def build_prompt(
     if spec.name == "apm-assistant":
         question = message or "Summarise this node: what it is for, its state, and what's next."
         return f"The user is looking at {where}.\n\n{question}"
+    if spec.name == "apm-feature-reporter":
+        # Replaced once the run starts by `apm.core.report.report_prompt`, with the record.
+        prompt = f"Write the feature report for {where}."
+        return prompt + (f"\n\nGuidance from the user:\n{message}" if message else "")
     raise RunRefused(f"{spec.name} can't be started directly")
 
 

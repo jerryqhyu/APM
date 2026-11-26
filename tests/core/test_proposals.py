@@ -144,3 +144,27 @@ def test_a_proposal_for_a_deleted_node_closes_itself(project: Project) -> None:
     gone = store.create_proposal(node_id="01930000-0000-7000-8000-000000000001", data=PROPOSAL)
     assert close_orphaned(store, load_graph(project)) == [gone.id]
     assert [p.id for p in store.list_proposals(status="pending")] == [kept.id]
+
+
+def test_what_you_accepted_is_kept_with_the_proposal(project: Project) -> None:
+    # The dialog sends the children as you left them: edited, trimmed, or as proposed.
+    store = Store(project.apm_dir)
+    first, second = create_nodes(project, [NewNode(title="A"), NewNode(title="B")]).created
+    edited = [{**PROPOSAL["children"][0], "title": "Parse it"}]
+    proposal = store.create_proposal(node_id=first, data=PROPOSAL)
+    result = accept_proposal(project, store, proposal.id, edited)
+    acceptance = store.acceptance(proposal.id)
+    assert acceptance is not None
+    assert (acceptance.children, acceptance.created) == (edited, result.created)
+
+    whole = store.create_proposal(node_id=second, data=PROPOSAL)
+    result = accept_proposal(project, store, whole.id)
+    acceptance = store.acceptance(whole.id)
+    assert acceptance is not None
+    assert (acceptance.children, acceptance.created) == (None, result.created)
+
+    # A proposal that couldn't be applied has no acceptance.
+    broken = store.create_proposal(node_id=first, data=PROPOSAL)
+    with pytest.raises(ProposalError):
+        accept_proposal(project, store, broken.id, [{**edited[0], "depends_on_keys": ["nope"]}])
+    assert store.acceptance(broken.id) is None

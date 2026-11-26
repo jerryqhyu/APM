@@ -215,7 +215,11 @@ function Turn({
     return map;
   }, [events]);
 
-  const automatic = run.agent === "apm-critic" || run.prompt.startsWith("A reviewer looked at your breakdown");
+  // A report's first message is the record APM gathered, with your guidance in it.
+  const automatic =
+    run.agent === "apm-critic" ||
+    run.prompt.startsWith("A reviewer looked at your breakdown") ||
+    (run.agent === "apm-feature-reporter" && !run.parent_run);
   const label = automatic ? "APM" : "You";
   return (
     <div className="turn">

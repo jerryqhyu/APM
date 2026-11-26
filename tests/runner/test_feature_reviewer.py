@@ -35,8 +35,8 @@ async def test_a_passing_review_opens_the_feature_s_pull_request(
     await harness.runner.wait(run.id)
     assert harness.store.get_run(run.id).status == "succeeded"
 
-    (call,) = fake_claude.calls
-    assert call["agent"] == "apm-feature-reviewer"
+    call, report = fake_claude.calls  # the review, then the feature report (tests/runner/...)
+    assert (call["agent"], report["agent"]) == ("apm-feature-reviewer", "apm-feature-reporter")
     assert ".claude/worktrees/apm-review-" in call["cwd"]  # a checkout of the reviewed commit
     assert f"as built on branch {branch} at commit" in call["prompt"]
     assert "it is the feature branch" in call["prompt"]
@@ -47,9 +47,9 @@ async def test_a_passing_review_opens_the_feature_s_pull_request(
 
     said = notices(harness, run.id)
     assert said[0][1].startswith(f"Reviewing `{branch}` at ")
-    assert said[-1][0] == "info"
-    assert "**Complete**" in said[-1][1]
-    assert "Its pull request into main: https://github.com/o/r/pull/7" in said[-1][1]
+    level, complete = next((lv, text) for lv, text in said if "**Complete**" in text)
+    assert level == "info"
+    assert "Its pull request into main: https://github.com/o/r/pull/7" in complete
 
     graph = load_graph(project)
     assert graph[step].status is Status.IN_PROGRESS

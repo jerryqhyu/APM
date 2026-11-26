@@ -11,7 +11,9 @@ APM is a project planner you run on your own machine. You keep a plan as a graph
 - [Having Claude break a node down](#having-claude-break-a-node-down)
 - [Task review: keeping tasks small](#task-review-keeping-tasks-small)
 - [Having Claude build a node](#having-claude-build-a-node)
+- [Eager mode: a whole feature in one run](#eager-mode-a-whole-feature-in-one-run)
 - [Finishing a feature: the review step](#finishing-a-feature-the-review-step)
+- [Feature reports](#feature-reports)
 - [From the terminal](#from-the-terminal)
 - [In your own Claude Code session](#in-your-own-claude-code-session)
 - [Settings](#settings)
@@ -260,6 +262,69 @@ apm implement 3f9e2a10 -m "Use the new logger."   # guidance for every task
 
 Both start what fits, start the rest as runs finish, and follow every run in the terminal, each line marked with its task's handle. They ask you in the terminal when a run needs an answer, like `apm run`.
 
+## Eager mode: a whole feature in one run
+
+Normally Claude builds a feature task by task: one run and one pull request each, and a task that needs another waits until that one is built. In **eager mode** one run builds every task of the feature together, on one branch, and APM then splits the result into one pull request per task. You still review small pull requests, one per task, but the code was written in one go, by one agent that saw the whole feature.
+
+**When to use it.** When a feature's tasks build on each other closely, so building them one at a time would mean a long wait for each, or a tall stack of pull requests, and when the feature is planned well enough that one run can build all of it. Keep it off for features whose tasks are independent: building those one by one, side by side, is just as fast.
+
+**Turning it on.** `eager` under `features:` (see [Features](#features)), for the project or for one feature: select the feature, open **Details**, and set **Eager mode** under its **Settings**. It is off unless you turn it on.
+
+### How a feature is built and split
+
+Press **Implement all** on the feature (or `apm implement <feature>`). Pressing **Implement** on any one of its To do tasks does the same: an eager feature is built as a whole.
+
+1. **The check first.** Every To do task of the feature must have passed its task review for what it says now (see [Task review](#task-review-keeping-tasks-small)), and everything a task needs from outside the feature must be done, because the build starts from the feature branch. If anything isn't, nothing starts, and each task that holds the build back says why.
+2. **The build.** APM makes the **eager branch**, `eager/<handle>-<title>`, from the feature branch. One Claude run (the `apm-eager-builder` agent, in its own worktree) gets every task in the order their dependencies need: its title, description, acceptance criteria and what it depends on. It builds them on that branch, commits each task on its own, runs your repository's tests and linters, and pushes the branch. It opens no pull requests.
+3. **The split.** APM cuts the eager branch into one commit per task, each built on the one before. When Claude committed task by task, as it is told to, APM does this itself, exactly. Otherwise a second agent, `apm-splitter`, carves the changes up.
+4. **The check after.** Before anything is recorded, APM checks the split: one commit per task, in dependency order, each on the one before and naming its task, none empty, and the last one holding exactly what the eager branch holds, nothing lost or added. If it fails, the conversation and the feature's Notes say why, nothing is recorded as delivered, and the eager branch stays: press **Redo** to split it again.
+5. **The pull requests.** APM pushes one branch per task (`apm/<handle>-<title>`, as for any task), records each task's delivery, sets it In progress, and opens one pull request per task. The first targets the feature branch; each later one targets the task before it, so **each shows only its own changes**. A part that looks bigger than its task's size limit is shown as a warning.
+
+Follow it all in the feature's conversation. Afterwards the feature's **Details** show an **Eager build** section: the eager branch, each task's pull request in the order to merge them, and their state.
+
+### Merging in order
+
+Merge the pull requests in order, first to last, into the feature branch. Each time one merges, **Reconcile** marks its task done and points the next pull request at the feature branch. `apm serve` reconciles every few minutes on its own (see [Automation](#automation)); in the terminal, `apm reconcile --retarget`. A merge commit, a squash or a rebase all work. If you merge a pull request into the task before it instead, its task is done once that one reaches the feature branch. When every task is done, the feature's review step is ready, as for any feature.
+
+### When a task's pull request changes: Redo
+
+Review often changes a pull request: you push a fix to its branch, or edit it as you merge it. The tasks after it were built on the old version, so APM rebuilds them. A task's pull request counts as **changed** when:
+
+- its branch has new commits that change its content since the split (review fixes, say), or
+- it merged into the feature branch with content other than what the split gave it (edited during review, or squashed with changes).
+
+A **Redo** then:
+
+- starts from the changed task's new branch, or from the feature branch if it merged;
+- has Claude rebuild **only the tasks after it**, on a new eager branch (`…-2`, `…-3`), telling it exactly what changed;
+- splits those tasks again, checked the same way;
+- moves their branches and pull requests on to the rebuilt work.
+
+**Nobody's commits are overwritten.** APM never force-pushes. A rebuilt task's branch moves forward: APM adds one commit on top, whose content is the task as rebuilt, so its pull request again shows only its own changes and anyone who has the branch checked out can simply pull. Tasks that are done or merged are never touched. If a task after the change has commits APM didn't make, or has already merged, APM doesn't rebuild over it: the feature's **Eager build** section says why, and you sort it out by hand.
+
+**When it runs.** After every reconcile, `apm serve` looks for changed pull requests; the tasks after one show **Stale: will be rebuilt** and the redo starts on its own, once per change. With `automation.eager_redo` off, they show **Stale: press Redo** and nothing starts until you press **Redo** on the feature (or run `apm eager redo <feature>`). Redo works either way.
+
+### Tasks added later
+
+Once a feature is split, its tasks come from the split: **Implement** on one of them is refused ("use Redo"). A task added to the feature afterwards, such as a follow-up from its feature review, isn't part of the split, so it is built on its own, like any task, into the feature branch.
+
+### Settings and switches
+
+| Setting | What it does for eager mode |
+|---|---|
+| `features.eager` | Eager mode for the project, or one feature and what is inside it. |
+| `features.task_max_lines` | Each task's size limit: Claude aims for it, and a part over it is shown as a warning. |
+| `automation.eager_redo` | Redo on its own after a reconcile finds a changed task pull request. Off: only by hand. |
+| `automation.reconcile` | The periodic reconcile that moves the chain along and looks for changes. |
+
+In the terminal:
+
+```bash
+apm implement 3f9e2a10        # build the eager feature, split it, open the pull requests
+apm eager show 3f9e2a10       # its eager branch, each task's pull request, what is stale
+apm eager redo 3f9e2a10       # rebuild the tasks after one that changed (or split again)
+```
+
 ## Finishing a feature: the review step
 
 "Every task is merged" isn't the same as "the feature works". So every feature ends in a **review step**: its last child, which waits on all the others. When they're all done (merged into the feature branch), it becomes **Ready**, and you press **Review feature**, on the step or on the feature itself.
@@ -273,12 +338,51 @@ Claude then:
 
 It changes no files. Its verdict goes into the review step's description under **Feature review**, as a table you can read later. Then:
 
-- **Complete**: APM opens the feature branch's pull request into your default branch (or into the enclosing feature's branch), titled after the feature and with the review in its description. The step stays **In progress** until that pull request merges; **Reconcile** then marks the step and the feature done.
+- **Complete**: APM opens the feature branch's pull request into your default branch (or into the enclosing feature's branch), titled after the feature and with the review in its description. Then it writes the feature's report, adds it to that branch and links it from the pull request (see [Feature reports](#feature-reports)). The step stays **In progress** until that pull request merges; **Reconcile** then marks the step and the feature done.
 - **Incomplete**: the step goes back to **To do**, and the gaps come back as **follow-up tasks**, waiting under **Proposals**, the same way a breakdown does. Accept them, build them, and press **Review feature** again once they're merged. You can also reply in the review's conversation ("look again at error handling"); a new verdict replaces the old one.
 
 Claude says "complete" only when every criterion is met and nothing major is wrong. APM holds it to that: a "complete" with a missing criterion or a major issue is recorded as incomplete.
 
 **To review another branch**, type it in the **Branch** field when you start the review. **To skip a review**, set the step to **Dropped**. You can't delete or move a review step: APM keeps it waiting on exactly the feature's tasks, adding the ones you add later and dropping the ones you drop.
+
+## Feature reports
+
+A feature report tells people who weren't there what a feature is and why it exists, the decisions you made along the way and your reasons, and how it was built. It is a markdown file in your repository, `docs/features/<title>-<handle>.md`, committed on the feature's branch, so it lands with the feature, and the feature's pull request links it at the top of its description.
+
+**What it is written from.** The reporter (the `apm-feature-reporter` agent) reads the feature branch's code, and a **record** that APM gathers for it, so it doesn't have to dig:
+
+- the feature's description, its decision nodes, and every task: its description, status, pull request and the size its task review gave it;
+- what you said and chose: every message you typed in a conversation about the feature or anything in it (chats, and the guidance you gave Decompose, Implement and Review feature), your answers to Claude's questions, and the commands you refused, with your reason. A chat about the whole plan counts for the turns that changed this feature;
+- the proposals you accepted or rejected, and what you changed in one before accepting it (a renamed task, a criterion added, a child left out);
+- the plan's history of the feature, with who made each change and the note that came with it, like the reason you gave for dropping a task;
+- every turn of the feature's reviews: what was missing, and the follow-up tasks that fixed it;
+- what the feature branch changes, file by file.
+
+A long record is kept to a sensible size: Claude's replies in long conversations are shortened, then left out, and what you typed is never left out, only shortened.
+
+**It doesn't make things up.** The reporter may report a decision only if the record shows it, and give only the reason the record gives. Where you made a decision without saying why, the report says "No reason was recorded." It cites the pull requests and files behind what it says. So the more you say *why* (in a chat, in a guidance box, in a decision node or a status note), the better your reports get.
+
+**What it says**, by `report_detail`:
+
+| Detail | What is in it |
+| --- | --- |
+| **Brief** | About a page: what it is and why, the key decisions with one-line reasons, and the pull requests. |
+| **Standard** (the default) | Also each decision with its rationale and the alternatives that were rejected, how the feature is put together (modules, data flow), a paragraph per task, how it was tested, and what was left for later. |
+| **Detailed** | Also notes file by file, what each feature review found and how it was fixed, risks and follow-ups, and a timeline. |
+
+**When it is written.** On its own, once the feature's review passes: APM opens the feature's pull request first, then writes the report, commits it to the feature branch (a new commit, pushed without force, so it joins the open pull request) and links it from the pull request's description. The pull request never waits for the report. If the report fails or takes more than 30 minutes, the review's conversation says so and how to write it by hand. A feature inside a feature gets its report on its own branch, which goes into the enclosing feature's branch with it.
+
+**By hand**, press **Write report** on a feature (in the Actions panel, under **Review all tasks** and **Implement all**), or run `apm report <feature>`. It works whenever the feature branch has work on it, before or after the review, and whether or not reports are on. You can add guidance ("say more about the file format"). Each time, APM rewrites the report and adds a new commit. A reply in the report's conversation rewrites it too.
+
+**Where to see it.** A feature's **Details** show its report: not written yet, being written, or written at a commit, with a link to the file on GitHub, and **Show** displays it. `apm report <feature> --show` prints it. Claude's work on it is in the feature's conversation.
+
+**Turning it off, or changing the detail.** In **Settings…** (or `features:` in `apm.yaml`), **Feature report** turns automatic reports on or off and **Report detail** sets how much they say, for the whole project. A feature can have its own in its **Details → Settings**, for itself and the features inside it. In the terminal:
+
+```bash
+apm settings set report=off                          # no automatic reports in this project
+apm settings set report_detail=brief                 # shorter reports
+apm settings set --node 3f9e2a10 report_detail=detailed   # this feature says more
+```
 
 ## From the terminal
 
@@ -313,6 +417,9 @@ apm run feature-reviewer 3f9e2a10                          # review a finished f
 apm run task-reviewer 7d2e0f11                             # check a task is small enough to build
 apm review-tasks 3f9e2a10                                  # review every To do task of a feature
 apm implement 3f9e2a10                                     # build every ready, reviewed task of it
+apm report 3f9e2a10 -m "Say more about the format."        # write the feature's report (--show prints it)
+apm eager show 3f9e2a10                                    # an eager feature's build and PR chain
+apm eager redo 3f9e2a10                                    # rebuild after a task PR changed
 apm proposal accept <id>                                    # or: apm proposal reject <id>
 apm reconcile                                               # mark merged work done
 apm reconcile --retarget                                    # ...and retarget stacked PRs
@@ -380,9 +487,9 @@ features:                    # how features are built and reported (see below)
 
 | Key | Default | What it does |
 | --- | --- | --- |
-| `eager` | `false` | Eager mode: build a feature in one run on one branch, then split it into one pull request per task. Not built yet: saved for when it is. |
+| `eager` | `false` | Eager mode: build a feature in one run on one branch, then split it into one pull request per task (see [Eager mode](#eager-mode-a-whole-feature-in-one-run)). |
 | `task_max_lines` | `50` | The task size limit, in real lines of code (see [Task review](#task-review-keeping-tasks-small)). At least 5. |
-| `report` | `true` | Write a feature report once a feature's review passes: what it is, the decisions made and why, and how it was built. Not built yet. |
+| `report` | `true` | Write a feature report once a feature's review passes: what it is, the decisions made and why, and how it was built (see [Feature reports](#feature-reports)). Off, you can still write one with **Write report**. |
 | `report_detail` | `standard` | How much that report says: `brief`, `standard` or `detailed`. |
 
 **A feature's own settings.** Under `overrides:`, by the feature's id, a feature can set any of these for itself and everything inside it. A feature inside it can override them again: the innermost one wins. In the UI, select a feature and open **Details**: its **Settings** show what applies, where each value comes from (the project, an enclosing feature, or set here), and let you pick a value of its own or **Inherit**. **Inherit all** removes its own settings.
@@ -391,7 +498,7 @@ When you type an override by hand, a handle works as the key. Put a handle of di
 
 ### Automation
 
-While `apm serve` is up it can take a feature from review to pull request on its own: it reviews tasks as they change, reconciles every few minutes (retargeting stacked pull requests), starts a feature's review once its review step is Ready, accepts the follow-up tasks that review proposes, builds them once their task review passes (one pull request each, into the feature branch), reviews the feature again once they merge, and opens the feature's pull request when it passes. Each step has its own switch under `automation:`, and turning one off stops only that step:
+While `apm serve` is up it can take a feature from review to pull request on its own: it reviews tasks as they change, reconciles every few minutes (retargeting stacked pull requests), starts a feature's review once its review step is Ready, accepts the follow-up tasks that review proposes, builds them once their task review passes (one pull request each, into the feature branch), reviews the feature again once they merge, and opens the feature's pull request when it passes. For an eager feature it also rebuilds the tasks after one whose pull request changed. Each step has its own switch under `automation:`, and turning one off stops only that step:
 
 | Key | Default | What it does |
 | --- | --- | --- |
@@ -402,7 +509,7 @@ While `apm serve` is up it can take a feature from review to pull request on its
 | `accept_follow_ups` | `true` | Accept the follow-up tasks a feature review proposes. |
 | `implement_follow_ups` | `true` | Build those follow-ups once their task review passes. Only follow-ups from a feature review are built automatically, never other tasks. |
 | `feature_pr` | `true` | Open the feature's pull request once its feature review passes. With it off, the passing review is recorded and no pull request is opened. |
-| `eager_redo` | `true` | For eager mode (`features.eager`), which isn't built yet: when a task pull request of an eager feature changes, rebuild and re-split the tasks after it. Until eager mode lands, it does nothing. |
+| `eager_redo` | `true` | Eager mode: when a task pull request of an eager feature changes (new commits, or merged with changes), rebuild and re-split the tasks after it (see [Redo](#when-a-tasks-pull-request-changes-redo)). Off, the tasks show as stale and you press **Redo**. |
 
 Automation never runs more than `runner.max_concurrent` agents at once (the rest wait their turn) and gives each run its agent's `budget_usd`.
 
@@ -470,7 +577,11 @@ Imported runs are history only: you can read them, but nothing starts again. A r
 | "2 runs are already active" | Raise `runner.max_concurrent`, or wait for one to finish. **Review all tasks** and **Implement all** never say this: their runs wait their turn. |
 | A setting is refused, e.g. `features.task_max_lines: Input should be greater than or equal to 5` | The message names the setting and what it accepts. Nothing was changed. |
 | "APM couldn't make this change without touching other settings" | Something in `apm.yaml` can't be written back exactly as it is. Make the change by hand in `.apm/apm.yaml`. |
-| Implement is greyed out | Hover over it: the node has children, is blocked, or is already done. |
+| Implement is greyed out | Hover over it: the node has children, is blocked, or is already done. On a task of an eager feature that was split, its work comes from the split: use **Redo** on the feature. |
+| "No feature report: …" after a review passed | The pull request is open without it. Fix what the line says, then press **Write report** on the feature, or run `apm report <feature>`. |
+| "APM couldn't commit the report to `feature/…`" | The report is kept: the feature's **Details** show it. Once you can push to that branch again, press **Write report**. |
+| "The split failed: …" | The eager build is kept and nothing was delivered. Fix what it names (a task with no changes of its own can be dropped), then press **Redo** on the feature to split it again, or Implement to build it again. |
+| "APM won't overwrite them" or "never touches merged work" | A redo would have had to replace someone's commits or merged work. Bring that branch back in line by hand, or rebuild the tasks after it yourself. |
 | "No pull request yet: `gh` is not installed" | Install the GitHub CLI and run `gh auth login`, then send any reply in the node's conversation: after that turn, APM tries again. |
 | "couldn't tell which GitHub repository … is" | Set the repo's `remote: https://github.com/<owner>/<repo>` in `.apm/apm.yaml`. |
 | A change is refused with a code like `I2` | It would break a rule of the plan. The message says which nodes are involved. |

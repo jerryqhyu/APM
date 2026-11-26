@@ -41,6 +41,8 @@ apm serve
 - **Change the graph yourself** with the actions panel: every operation is a button, for one node, several, or the whole plan.
 - **Decompose** a node to get a reviewed proposal you can edit before anything is written.
 - **Implement** a ready node: Claude builds it in its own git worktree, opens a pull request if `gh` is set up, and records the delivery on the node. On a feature, **Review all tasks** and **Implement all** work on every task inside it at once.
+- **Feature reports**: once a feature's review passes, Claude writes a report of it for people who weren't there (what it is and why, the decisions you made and your reasons, how it was built) from the record APM keeps, and it lands with the feature as `docs/features/….md`, linked from its pull request. **Write report** does it by hand.
+- **Eager mode** builds a whole feature in one run, then splits it into one pull request per task, chained so each shows only its own part, and rebuilds the later ones when an earlier one changes in review.
 - **Settings…** sets the task size limit, feature reports and what `apm serve` does on its own, for the project or for one feature. They live in `.apm/apm.yaml`, which keeps your comments.
 - **Permissions** are yours to set per run: Auto (the default), Ask, Accept edits, Plan first, or Don't ask.
 

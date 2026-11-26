@@ -18,6 +18,13 @@ What it does is steered by FAKE_CLAUDE (a comma-separated set of words):
 - `review-stacked-gaps`: the same, with a second follow-up that depends on the first.
 - `too-big`, `unclear`, `bad-verdict`: the task reviewer's verdict (else `pass`); `bad-verdict` is
   `too_big` with no split.
+- The feature reporter returns a report that names the detail level its prompt asked for (and
+  says "rewritten" when resumed). `report-fails`: it exits 1; `report-hangs`: it hangs;
+  `report-bad`: its markdown is empty.
+
+The eager splitter (`apm-splitter`) returns the JSON in the file FAKE_CLAUDE_SPLIT names: the
+test makes the chain with real git, as the agent would, and writes its answer there. The eager
+builder writes no code either: tests commit to the eager branch themselves.
 
 Every call's arguments, working directory and prompt are appended to FAKE_CLAUDE_LOG as one JSON
 line.
@@ -146,7 +153,12 @@ def main() -> int:
         with Path(log).open("a") as f:
             f.write(json.dumps(call) + "\n")
 
-    if "fail" in modes or ("critic-fails" in modes and agent == "apm-critic"):
+    reporter = agent == "apm-feature-reporter"
+    if (
+        "fail" in modes
+        or ("critic-fails" in modes and agent == "apm-critic")
+        or ("report-fails" in modes and reporter)
+    ):
         print("boom: something broke", file=sys.stderr)
         return 1
 
@@ -155,7 +167,7 @@ def main() -> int:
     print("not json at all", flush=True)
     text = f"I am {agent}" + (" (resumed)" if resumed else "")
     emit({"type": "assistant", "message": {"content": [{"type": "text", "text": text}]}})
-    if "hang" in modes:
+    if "hang" in modes or ("report-hangs" in modes and reporter):
         time.sleep(600)
 
     if "other-control" in modes:
@@ -203,6 +215,18 @@ def main() -> int:
                 then = {"key": "f", "title": "Report errors", "depends_on_keys": ["e"]}
                 answer = json.loads(json.dumps(GAPS))
                 answer["follow_ups"].append(answer["follow_ups"][0] | then)
+        elif reporter:
+            detail = next(
+                (d for d in ("brief", "standard", "detailed") if f"**{d}**" in prompt), ""
+            )
+            answer = {
+                "summary": "Search for the app.",
+                "markdown": f"# Search\n\nA {detail} report"
+                + (", rewritten" if resumed else "")
+                + ". No reason was recorded for the index.\n",
+            }
+            if "report-bad" in modes:
+                answer = {"summary": "", "markdown": "  "}
         elif agent == "apm-critic":
             verdict = "revise" if "revise" in modes else "accept"
             issue = {"severity": "major", "child_key": "a", "problem": "Too big.", "suggestion": ""}
@@ -211,6 +235,10 @@ def main() -> int:
                 "summary": "Looks fine." if verdict == "accept" else "Needs work.",
                 "issues": [issue] if verdict == "revise" else [],
             }
+        elif agent == "apm-splitter":
+            # Eager mode: the test made the chain with real git and wrote the answer down.
+            split = os.environ.get("FAKE_CLAUDE_SPLIT")
+            answer = json.loads(Path(split).read_text()) if split else {"summary": "", "tasks": []}
         elif "bad-proposal" in modes:
             answer = {"rationale": "nothing to do", "children": [], "warnings": []}
         else:

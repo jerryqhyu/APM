@@ -22,7 +22,7 @@ import { cx, errorText } from "./util";
  * Settings whose feature isn't built yet: they are saved, and do nothing until it is. Take a name
  * out when its feature lands.
  */
-const NOT_BUILT = new Set<string>(["eager", "report", "report_detail", "eager_redo"]);
+const NOT_BUILT = new Set<string>([]);
 const NOT_BUILT_HINT = "Not built yet: saved for when it is.";
 
 const MIN_TASK_LINES = 5;
@@ -42,7 +42,10 @@ const SETTING: Record<SettingName, { label: string; hint: string }> = {
     label: "Feature report",
     hint: "Write a report once a feature’s review passes: what it is, the decisions made and why, and how it was built.",
   },
-  report_detail: { label: "Report detail", hint: "How much the feature report says." },
+  report_detail: {
+    label: "Report detail",
+    hint: "How much the feature report says. Brief: about a page. Standard: each decision with its reasons, how it fits together, each task. Detailed: also file by file, the review findings and a timeline.",
+  },
 };
 
 const AUTOMATION: { key: keyof Automation; label: string }[] = [

@@ -2012,6 +2012,34 @@ input.number {
   font-size: 12px;
 }
 
+/* --- the feature report (details) --- */
+
+.report-state {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 13px;
+}
+
+p.report-state {
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+}
+
+.report-state .hint {
+  font-size: 12px;
+}
+
+.report-body {
+  margin-top: 4px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  max-height: 480px;
+  overflow: auto;
+}
+
 /* --- proposal review --- */
 
 .rationale {
@@ -2192,3 +2220,49 @@ input.number {
     display: none;
   }
 }
+
+/* --- eager mode: a feature's build and its chain of pull requests --- */
+
+.eager {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.eager-chain {
+  margin: 0;
+  padding-left: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 13px;
+}
+
+.eager-chain .dot {
+  margin-right: 6px;
+}
+
+.eager-chain a,
+.eager-chain .no-pr {
+  margin-left: 8px;
+  font-size: 12px;
+}
+
+.eager-chain .no-pr,
+.eager-state.stale {
+  color: var(--warn);
+}
+
+.eager-state {
+  margin-left: 8px;
+  color: var(--fg-muted);
+  font-size: 12px;
+}
+
+.eager-warnings {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--warn);
+  font-size: 12px;
+}
+

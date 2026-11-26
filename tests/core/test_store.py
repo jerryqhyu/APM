@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from apm.core.model import Delivery, Kind, Status
-from apm.core.store import Store, TaskReview, content_fingerprint
+from apm.core.store import FeatureReport, Store, TaskReview, content_fingerprint
 from tests.core.build import A, B, node
 
 
@@ -136,3 +136,30 @@ def test_restored_records_keep_their_ids_times_numbers_and_statuses(tmp_path: Pa
     assert fresh.id not in {r.id for r in store.list_runs()}
     with pytest.raises(sqlite3.IntegrityError):
         store.restore([], [pending])
+
+
+def test_an_acceptance_keeps_the_children_as_accepted(tmp_path: Path) -> None:
+    store = Store(tmp_path)
+    assert store.acceptance("p1") is None
+    store.record_acceptance("p1", [{"key": "a", "title": "Renamed é"}], [A, B])
+    store.record_acceptance("p2", None, [A])
+    first = Store(tmp_path).acceptance("p1")
+    assert first is not None
+    assert (first.children, first.created) == ([{"key": "a", "title": "Renamed é"}], (A, B))
+    second = store.acceptance("p2")
+    assert second is not None
+    assert (second.children, second.created) == (None, (A,))
+
+
+def test_the_latest_report_of_a_feature(tmp_path: Path) -> None:
+    store = Store(tmp_path)
+    assert store.latest_report(A) is None
+    old = FeatureReport(A, "r1", "feature/x", "docs/x.md", "s1", None, "# Old", "", "brief", 1.0)
+    new = FeatureReport(
+        A, "r2", "feature/x", "docs/x.md", None, "push refused", "# é", "One line.", "standard", 2.0
+    )
+    other = FeatureReport(B, None, "feature/y", "docs/y.md", "s3", None, "# Y", "", "detailed", 3.0)
+    for report in (old, new, other):
+        store.add_report(report)
+    assert Store(tmp_path).latest_report(A) == new
+    assert store.latest_report(B) == other

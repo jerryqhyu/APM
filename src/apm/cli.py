@@ -57,7 +57,15 @@ from apm.core.settings import (
     settings_view,
 )
 from apm.core.store import Proposal, Store
-from apm.core.views import all_nodes_view, node_line, node_text, node_view, outline, search
+from apm.core.views import (
+    all_nodes_view,
+    node_line,
+    node_text,
+    node_view,
+    outline,
+    pr_label,
+    search,
+)
 
 if TYPE_CHECKING:  # the runner is imported only by the commands that start runs
     from apm.runner.feature_runs import Batch
@@ -72,9 +80,15 @@ proposal_app = typer.Typer(
 settings_app = typer.Typer(
     no_args_is_help=True, help="Show and change the settings in apm.yaml.", context_settings=HELP
 )
+eager_app = typer.Typer(
+    no_args_is_help=True,
+    help="Eager mode: a feature built in one run, then split into one pull request per task.",
+    context_settings=HELP,
+)
 app.add_typer(node_app, name="node")
 app.add_typer(proposal_app, name="proposal")
 app.add_typer(settings_app, name="settings")
+app.add_typer(eager_app, name="eager")
 
 Json = Annotated[bool, typer.Option("--json", help="Print JSON instead of text.")]
 
@@ -745,6 +759,118 @@ def implement(
 
     empty = "nothing to implement: it has no To do tasks"
     run_batch(handle, implement_feature, empty, mode=mode, message=message)
+
+
+@app.command("report")
+@command
+def report_(
+    handle: Annotated[str, typer.Argument(help="The feature.")],
+    message: Annotated[
+        str, typer.Option("--message", "-m", "--guidance", "-g", help="Guidance for the report.")
+    ] = "",
+    mode: Mode = None,
+    show: Annotated[
+        bool, typer.Option("--show", help="Print the latest report instead of writing one.")
+    ] = False,
+) -> None:
+    """Write the feature's report and commit it to its branch as docs/features/<name>.md, or show
+    the latest one. Its pull request, if open, links it.
+    """
+    from apm.core.report import REPORTER
+    from apm.core.report_branch import report_status
+
+    project, _, node_id = locate(handle)
+    if show:
+        status = report_status(project, Store(project.apm_dir), node_id)
+        report = status.report
+        if report is None:
+            typer.echo("no report yet" + (": one is being written" if status.running else ""))
+            return
+        where = f"commit {report.sha[:7]}" if report.sha else f"not committed: {report.error}"
+        typer.echo(f"{report.path} on {report.branch}, {where} ({report.detail})")
+        if status.url:
+            typer.echo(status.url)
+        typer.echo(f"\n{report.markdown.rstrip()}")
+        return
+
+    async def work(runner: Runner) -> None:
+        started = runner.start(REPORTER, node_id, message, mode=mode)
+        await runner.wait(started.id)
+
+    if follow_runs(project, work):
+        raise typer.Exit(1)
+
+
+@eager_app.command("show")
+@command
+def eager_show(handle: Annotated[str, typer.Argument(help="The feature.")]) -> None:
+    """Show a feature's eager build: its branch, each task's part and pull request, and what a
+    Redo would do.
+    """
+    from apm.core.eager import eager_view
+
+    project, graph, node_id = locate(handle)
+    store, config = Store(project.apm_dir), read_config(project.apm_dir)
+    view = eager_view(store, config, graph, node_id)
+    for line in describe_eager(graph, node_id, view):
+        typer.echo(line)
+
+
+def describe_eager(graph: Graph, node_id: NodeId, view: dict[str, Any] | None) -> list[str]:
+    """A feature's eager build as `apm eager show` prints it."""
+    named = f"{graph.handles[node_id]} {graph[node_id].title}"
+    if view is None or "build" not in view:
+        return [f"{named}: eager mode is off, and nothing was built eagerly"]
+    build = view["build"]
+    if build is None:
+        return [
+            f"{named}: eager mode is on; nothing built yet (apm implement {graph.handles[node_id]})"
+        ]
+    lines = [
+        f"{named}: eager build {build['round']} on {build['branch']}, {build['state']}"
+        f" (from {build['base']} at {build['base_sha'][:7]})"
+    ]
+    if build["error"]:
+        lines.append(f"  error: {build['error']}")
+    for task in view["tasks"]:
+        pr = pr_label(task["pr"]) or "no PR"
+        state = "stale: will be rebuilt" if task["state"] == "stale" else task["state"]
+        lines.append(
+            f"  {task['position'] + 1}. {task['handle']} {task['title']}  {task['branch']}"
+            f"  {pr}  {state}"
+        )
+    pending = view["pending"]
+    if pending and pending.get("node"):
+        what = "new commits" if pending["kind"] == "pushed" else "merged with changes"
+        lines.append(f"changed: {pending['node']['handle']} {pending['node']['title']} ({what})")
+    if pending and pending.get("blocked"):
+        lines.append(f"can't redo on its own: {pending['blocked']}")
+    lines += [f"warning: {w}" for w in build["warnings"]]
+    if view["redo"]["action"]:
+        lines.append(f"redo: {view['redo']['why']} (apm eager redo {graph.handles[node_id]})")
+    return lines
+
+
+@eager_app.command("redo")
+@command
+def eager_redo(
+    handle: Annotated[str, typer.Argument(help="The feature.")],
+    message: Annotated[
+        str, typer.Option("--message", "-m", "--guidance", "-g", help="Guidance for the rebuild.")
+    ] = "",
+    mode: Mode = None,
+) -> None:
+    """Rebuild the tasks after one whose pull request changed since the split (or split a build
+    again whose split failed), and follow it here.
+    """
+    project, _, node_id = locate(handle)
+
+    async def work(runner: Runner) -> None:
+        started = await runner.eager.redo(node_id, message, mode=mode)
+        await runner.wait(started.id)
+
+    if follow_runs(project, work):
+        raise typer.Exit(1)
 
 
 POLL_S = 0.2

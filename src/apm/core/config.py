@@ -157,7 +157,8 @@ class AutomationConfig(_Model):
     """Open the feature's pull request into its home once its feature review passes."""
     eager_redo: bool = True
     """When a task pull request of an eager feature changes, rebuild and re-split the tasks after
-    it. For eager mode (`features.eager`), which isn't built yet: until it is, this does nothing.
+    it, on its own (`features.eager`). With it off, changed tasks are still shown as stale, and
+    Redo rebuilds them by hand.
     """
 
 
