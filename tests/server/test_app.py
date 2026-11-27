@@ -18,7 +18,7 @@ from apm.core.model import Status
 from apm.core.ops import NewNode, attach_delivery, create_nodes, set_status
 from apm.core.project import Project, load_graph
 from apm.core.review_lock import take_review_lock
-from apm.core.store import Store, TaskReview, content_fingerprint
+from apm.core.store import PROJECT, Store, TaskReview, content_fingerprint
 from apm.server.app import archive_name, create_app
 from apm.server.security import host_is_loopback, origin_allowed
 from tests.conftest import tasks_of
@@ -639,3 +639,24 @@ def test_tags_over_the_api(client: TestClient, project: Project) -> None:
     bad = client.patch(f"/api/nodes/{made['id']}", json={"tags": ["no!"]})
     assert bad.status_code == 422
     assert "tag" in bad.json()["error"]
+
+
+def test_a_nodes_runs_can_include_the_conversations_that_changed_it(
+    project: Project, client: TestClient, tmp_path: Path
+) -> None:
+    store = Store(project.apm_dir)
+    (task,) = create_nodes(project, [NewNode(title="Store costs")]).created
+    chat = store.create_run(node_id=PROJECT, agent="apm-assistant", session_id="abc")
+    store.add_event(chat.id, {"type": "system", "subtype": "init", "cwd": str(tmp_path)})
+    set_status(project, task, Status.IN_PROGRESS, actor="agent:apm-assistant", run=chat.id)
+
+    assert client.get("/api/runs", params={"node_id": task}).json() == []
+    related = client.get("/api/runs", params={"node_id": handle(task), "related": True}).json()
+    assert [r["id"] for r in related] == [chat.id]
+    session = client.get(f"/api/runs/{chat.id}/session").json()
+    assert session == {
+        "session_id": "abc",
+        "cwd": str(tmp_path),
+        "command": f"cd {tmp_path} && claude --resume abc",
+    }
+    assert client.get("/api/runs/nope/session").status_code == 404

@@ -16,6 +16,7 @@ import { Canvas, type View } from "./Canvas";
 import { Chat } from "./Chat";
 import { type DetailActions, NodeDetails, PlanSummary } from "./Details";
 import { AddNodeDialog, DeleteDialog, ExportDialog, MergeDialog, PickNodeDialog, RunAgentDialog } from "./Dialogs";
+import { Grip, type Nav, SidebarIcon, navState, navigate, setHashParam, startNav, useStoredNumber } from "./layout-chrome";
 import { useLiveConnection, useLiveEvents } from "./live";
 import { Outline } from "./Outline";
 import { ProposalReview } from "./ProposalReview";
@@ -23,7 +24,7 @@ import { SettingsDialog } from "./Settings";
 import { type Theme, useTheme } from "./theme";
 import type { AgentRequest, Level, NodeDetail, NodeView, Project, Proposal, Run, Status, Tree } from "./types";
 import { Spinner } from "./ui";
-import { cx, errorText, isSplit, proposalSummary, stackedName } from "./util";
+import { AGENT_LABEL, type Thread, cx, errorText, isSplit, proposalSummary, stackedName, threadsOf, timeAgo } from "./util";
 
 interface Route {
   /** The node whose inside the graph shows; null = the top level. */
@@ -45,15 +46,25 @@ type Dialog =
 
 type Tab = "chat" | "details";
 
+function hashParams(): URLSearchParams {
+  return new URLSearchParams(window.location.hash.replace(/^#/, ""));
+}
+
 function readRoute(): Route {
-  const params = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+  const params = hashParams();
   const node = params.get("node");
   return { root: params.get("in"), selected: node ? [node] : [] };
 }
 
+const routeHash = (route: Route) => query({ in: route.root, node: route.selected.at(-1) }).replace(/^\?/, "#");
+
+/** Puts `route` in the address. Going to another level is a step Back can undo; picking another
+ * node on the same level is not. The conversation in view (`chat`) is added by the chat itself.
+ */
 function writeRoute(route: Route): void {
-  const hash = query({ in: route.root, node: route.selected.at(-1) }).replace(/^\?/, "#");
-  if (hash !== window.location.hash) window.history.pushState(null, "", hash || window.location.pathname);
+  const before = readRoute();
+  const hash = routeHash(route);
+  if (hash !== routeHash(before)) navigate(hash, route.root !== before.root);
 }
 
 export function App() {
@@ -66,11 +77,21 @@ export function App() {
   const [proposals, setProposals] = useState<Proposal[]>([]);
   const [runningRuns, setRunningRuns] = useState<Run[]>([]);
   const [requests, setRequests] = useState<AgentRequest[]>([]);
-  const [route, setRouteState] = useState<Route>(readRoute);
+  const [route, setRouteState] = useState<Route>(() => {
+    startNav();
+    return readRoute();
+  });
+  const [nav, setNav] = useState<Nav>(navState);
+  const [outline, setOutline] = useRemembered<"shown" | "hidden">("apm-outline", "shown", ["shown", "hidden"]);
+  const [outlineWidth, setOutlineWidth] = useStoredNumber("apm-outline-width", null);
+  const [sideWidth, setSideWidth] = useStoredNumber("apm-side-width", null);
+  const sideRef = useRef<HTMLElement>(null);
+  const outlineRef = useRef<HTMLDivElement>(null);
   const [dialog, setDialog] = useState<Dialog | null>(null);
   const [tab, setTab] = useState<Tab>("chat");
   const [view, setView] = useRemembered<View>("apm-view", "graph", ["graph", "list"]);
-  const [focusRun, setFocusRun] = useState<string | null>(null);
+  // The conversation to show: one you just started, or the one the address names (`#…&chat=`).
+  const [focusRun, setFocusRun] = useState<string | null>(() => hashParams().get("chat"));
   const [toasts, setToasts] = useState<{ id: number; text: string }[]>([]);
   const [fatal, setFatal] = useState<string | null>(null);
   const toastId = useRef(0);
@@ -92,10 +113,14 @@ export function App() {
   const setRoute = useCallback((next: Route) => {
     writeRoute(next);
     setRouteState(next);
+    setNav(navState());
   }, []);
 
   useEffect(() => {
-    const onChange = () => setRouteState(readRoute());
+    const onChange = () => {
+      setRouteState(readRoute());
+      setNav(navState());
+    };
     window.addEventListener("popstate", onChange);
     window.addEventListener("hashchange", onChange);
     return () => {
@@ -350,8 +375,25 @@ export function App() {
   const chatNode = primary ? (byId.get(primary) ?? null) : null;
 
   return (
-    <div className="app">
+    <div
+      className={cx("app", outline === "hidden" && "outline-hidden")}
+      style={
+        {
+          ...(outlineWidth ? { "--outline-w": `${outlineWidth}px` } : {}),
+          ...(sideWidth ? { "--side-w": `${sideWidth}px` } : {}),
+        } as React.CSSProperties
+      }
+    >
       <header className="topbar">
+        <button
+          className="icon sidebar-toggle"
+          aria-pressed={outline === "shown"}
+          aria-label={outline === "shown" ? "Hide the outline" : "Show the outline"}
+          title={outline === "shown" ? "Hide the outline" : "Show the outline"}
+          onClick={() => setOutline(outline === "shown" ? "hidden" : "shown")}
+        >
+          <SidebarIcon open={outline === "shown"} />
+        </button>
         <div className="brand" title={project.code_dir}>
           <span className="logo" aria-hidden>
             ◈
@@ -360,6 +402,7 @@ export function App() {
         </div>
         <Search onPick={goTo} />
         <div className="topbar-right">
+          <ConversationsMenu byId={byId} onOpen={showRun} onError={toast} />
           {requests.length > 0 && (
             <Menu label={`Needs you ${requests.length}`} title="Claude is waiting for your answer" tone="accent">
               {requests.map((request) => {
@@ -421,16 +464,27 @@ export function App() {
         </div>
       </header>
 
-      <Outline
-        nodes={nodes}
-        selected={selectedSet}
-        root={route.root}
-        running={running}
-        proposed={proposedOn}
-        onPick={(id, additive) => {
-          if (additive) select(id, true);
-          else goTo(id);
+      <div className="outline-panel" ref={outlineRef}>
+        <Outline
+          nodes={nodes}
+          selected={selectedSet}
+          root={route.root}
+          running={running}
+          proposed={proposedOn}
+          onPick={(id, additive) => {
+            if (additive) select(id, true);
+            else goTo(id);
+          }}
+        />
+      </div>
+      <Grip
+        className="grip-outline"
+        label="Outline width"
+        onResize={(dx) => {
+          const now = outlineWidth ?? outlineRef.current?.getBoundingClientRect().width ?? 240;
+          setOutlineWidth(Math.min(480, Math.max(160, now + dx)));
         }}
+        onReset={() => setOutlineWidth(null)}
       />
 
       <main>
@@ -448,10 +502,20 @@ export function App() {
           onReview={(proposal) => setDialog({ kind: "review", proposal })}
           view={view}
           onView={setView}
+          nav={nav}
         />
       </main>
+      <Grip
+        className="grip-side"
+        label="Conversation width"
+        onResize={(dx) => {
+          const now = sideWidth ?? sideRef.current?.getBoundingClientRect().width ?? 480;
+          setSideWidth(Math.min(window.innerWidth * 0.7, Math.max(320, now - dx)));
+        }}
+        onReset={() => setSideWidth(null)}
+      />
 
-      <aside className="side">
+      <aside className="side" ref={sideRef}>
         <div className="side-head">
           <div className="tabs" role="tablist">
             <button role="tab" aria-selected={tab === "chat"} className={cx("tab", tab === "chat" && "active")} onClick={() => setTab("chat")}>
@@ -474,6 +538,7 @@ export function App() {
             lookup={(id) => byId.get(id)}
             detail={detail}
             nodes={nodes}
+            here={route.root ? (byId.get(route.root) ?? null) : null}
           />
         </div>
         <div className={cx("tab-panel", tab !== "chat" && "hidden")}>
@@ -484,6 +549,8 @@ export function App() {
             focus={focusRun}
             onError={toast}
             onChanged={() => void refresh().catch(fail)}
+            onShown={(threadId) => setHashParam("chat", threadId)}
+            titleOf={(id) => byId.get(id)?.title}
           />
         </div>
         <div className={cx("tab-panel", "scroll", tab !== "details" && "hidden")}>
@@ -698,17 +765,62 @@ function ThemeToggle({ theme, onChange }: { theme: Theme; onChange: (theme: Them
   );
 }
 
+/** Every conversation in the plan, newest first: chats and every agent's runs, whatever they are
+ * about. Pick one to read it, or reply to it, in the Chat panel.
+ */
+function ConversationsMenu({
+  byId,
+  onOpen,
+  onError,
+}: {
+  byId: Map<string, NodeView>;
+  onOpen: (run: Run) => void;
+  onError: (text: string) => void;
+}) {
+  const [threads, setThreads] = useState<Thread[] | null>(null);
+  const load = () =>
+    void api<Run[]>("/api/runs")
+      .then((runs) => setThreads(threadsOf(runs).slice(0, 40)))
+      .catch((err) => onError(errorText(err)));
+  return (
+    <Menu label="Conversations" title="Every conversation in the plan, newest first" onOpen={load}>
+      {threads === null ? (
+        <p className="empty">Loading…</p>
+      ) : threads.length === 0 ? (
+        <p className="empty">No conversations yet.</p>
+      ) : (
+        threads.map((thread) => {
+          const about = thread.runs[0]!.node_id;
+          return (
+            <button key={thread.id} className="menu-item" onClick={() => onOpen(thread.runs.at(-1)!)}>
+              {thread.running && <Spinner />}
+              <span>{thread.title}</span>
+              <span className="menu-note">
+                {about ? `“${byId.get(about)?.title ?? "a deleted node"}”` : "the whole plan"} ·{" "}
+                {AGENT_LABEL[thread.agent] ?? thread.agent} · {timeAgo(thread.updated)}
+              </span>
+            </button>
+          );
+        })
+      )}
+    </Menu>
+  );
+}
+
 function Menu({
   label,
   title,
   tone,
   spinner,
+  onOpen,
   children,
 }: {
   label: string;
   title: string;
   tone?: "warn" | "bad" | "accent";
   spinner?: boolean;
+  /** Called as the list opens: to load what it shows. */
+  onOpen?: () => void;
   children: React.ReactNode;
 }) {
   const [open, setOpen] = useState(false);
@@ -724,7 +836,15 @@ function Menu({
   }, [open]);
   return (
     <div className="menu" ref={ref}>
-      <button className={cx("menu-button", tone)} title={title} aria-expanded={open} onClick={() => setOpen(!open)}>
+      <button
+        className={cx("menu-button", tone)}
+        title={title}
+        aria-expanded={open}
+        onClick={() => {
+          if (!open) onOpen?.();
+          setOpen(!open);
+        }}
+      >
         {spinner && <Spinner />}
         {label}
       </button>

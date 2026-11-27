@@ -20,6 +20,7 @@ import {
 import "@xyflow/react/dist/style.css";
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { type Box, type Link, type Positions, layout } from "./layout";
+import type { Nav } from "./layout-chrome";
 import type { Level, LevelPort, NodeView, Proposal, ProposedChild } from "./types";
 import { NodeList } from "./NodeList";
 import { Spinner, StatePill } from "./ui";
@@ -156,6 +157,8 @@ export interface CanvasProps {
   /** Graph or list: the same level either way. */
   view: View;
   onView: (view: View) => void;
+  /** Whether Back and Forward (through the levels you visited) have somewhere to go. */
+  nav: Nav;
 }
 
 export type View = "graph" | "list";
@@ -182,6 +185,7 @@ function CanvasInner({
   onReview,
   view,
   onView,
+  nav,
 }: CanvasProps) {
   const flow = useReactFlow();
   const rootId = level.root?.id ?? null;
@@ -345,6 +349,14 @@ function CanvasInner({
   return (
     <div className="canvas" ref={frame}>
       <div className="canvas-bar">
+        <div className="nav-buttons" role="group" aria-label="History">
+          <button className="icon" aria-label="Back" title="Back to the level you were on" disabled={!nav.back} onClick={() => window.history.back()}>
+            ‹
+          </button>
+          <button className="icon" aria-label="Forward" title="Forward again" disabled={!nav.forward} onClick={() => window.history.forward()}>
+            ›
+          </button>
+        </div>
         <nav className="crumbs" aria-label="Where you are">
           <button className={cx("crumb", !level.root && "here")} onClick={() => onOpen("")}>
             All
@@ -366,14 +378,6 @@ function CanvasInner({
             </button>
           ))}
         </div>
-        <button className="primary" onClick={onAdd}>
-          + Add {level.root ? "child" : "node"}
-        </button>
-        {level.root && (
-          <button onClick={onDecompose} title="Ask Claude to break this node into children">
-            Decompose with Claude
-          </button>
-        )}
         {running.has(rootId ?? "") && (
           <span className="note">
             <Spinner /> Claude is working on this node…
