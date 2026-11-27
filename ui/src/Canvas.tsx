@@ -338,7 +338,7 @@ function CanvasInner({
 
   const entangled = useMemo(() => new Set(level.entangled.flat()), [level.entangled]);
 
-  // Select one node and its chain lights up: what it needs, all the way back (up), and what needs
+  // Select one node and its chain stands out: what it needs, all the way back (up), and what needs
   // it, all the way on (down). The rest dims.
   const focus = selected.size === 1 ? [...selected][0]! : null;
   const { up, down } = useMemo(() => {
@@ -399,7 +399,7 @@ function CanvasInner({
   }, [level.nodes, ports, proposal, positions, selected, running, proposedOn, entangled, up, down, lit]);
 
   const edges = useMemo<Edge[]>(() => {
-    const arrow = (color?: string) => ({ type: MarkerType.ArrowClosed, width: 16, height: 16, color });
+    const arrow = { type: MarkerType.ArrowClosed, width: 16, height: 16 };
     const route = (id: string): RouteData => ({ points: positions.routes.get(id) });
     // An edge runs from what is needed (dst) to what needs it (src).
     const lane = (needed: string, needing: string): "up" | "down" | "dim" | null => {
@@ -408,8 +408,6 @@ function CanvasInner({
       if ((needed === focus || down.has(needed)) && down.has(needing)) return "down";
       return "dim";
     };
-    const marker = (relation: string | null) =>
-      arrow(relation === "up" ? "var(--rel-up)" : relation === "down" ? "var(--rel-down)" : undefined);
     const out: Edge[] = level.edges.map((e) => {
       const id = `e:${e.dst}:${e.src}`;
       const relation = lane(e.dst, e.src);
@@ -419,7 +417,7 @@ function CanvasInner({
         source: e.dst,
         target: e.src,
         data: route(id),
-        markerEnd: marker(relation),
+        markerEnd: arrow,
         label: e.count > 1 ? String(e.count) : undefined,
         className: cx("dep", entangled.has(e.src) && entangled.has(e.dst) && "entangled", relation),
         zIndex: relation === "up" || relation === "down" ? 1 : 0,
@@ -436,7 +434,7 @@ function CanvasInner({
           source: link.from,
           target: link.to,
           data: route(link.id),
-          markerEnd: marker(shown),
+          markerEnd: arrow,
           className: cx("dep", link.id.startsWith("p:") ? "port-edge" : "ghost-edge", shown),
           selectable: false,
         });
@@ -565,8 +563,8 @@ function CanvasInner({
           <Background variant={BackgroundVariant.Dots} gap={22} size={1} />
           {lit && (up.size > 0 || down.size > 0) && (
             <div className="relation-legend" aria-live="polite">
-              <span className="rel-key up">Needs first: {up.size}</span>
-              <span className="rel-key down">Waits on it: {down.size}</span>
+              <span>Needs first: {up.size}</span>
+              <span>Waits on it: {down.size}</span>
             </div>
           )}
           <Controls showInteractive={false} position="bottom-left" />

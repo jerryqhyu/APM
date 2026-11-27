@@ -10,8 +10,6 @@
   --canvas: light-dark(#f6f8fa, #111111);
   /* Around the panels: the window itself. */
   --chrome: light-dark(#e4e7eb, #000000);
-  --rel-up: light-dark(#0e7490, #22d3ee);
-  --rel-down: light-dark(#be185d, #f472b6);
   --panel-radius: 12px;
   --border: light-dark(#d0d7de, #363636);
   --border-muted: light-dark(#e3e7eb, #272727);
@@ -910,34 +908,21 @@ main {
   --xy-handle-border-color: var(--bg);
 }
 
-/* The chain of the selected node: what it needs (up), what needs it (down); the rest dims. */
+/* The chain of the selected node, what it needs and what needs it, stays as it is, its edges a
+   little bolder; everything off the chain dims. */
 .card.rel-dim,
 .port.rel-dim {
-  opacity: 0.32;
+  opacity: 0.3;
 }
 
-.card.rel-up,
-.port.rel-up {
-  box-shadow: 0 0 0 2px var(--rel-up);
-}
-
-.card.rel-down,
-.port.rel-down {
-  box-shadow: 0 0 0 2px var(--rel-down);
-}
-
-.react-flow__edge.up .react-flow__edge-path {
-  stroke: var(--rel-up) !important;
-  stroke-width: 2.5;
-}
-
+.react-flow__edge.up .react-flow__edge-path,
 .react-flow__edge.down .react-flow__edge-path {
-  stroke: var(--rel-down) !important;
-  stroke-width: 2.5;
+  stroke: var(--fg-muted) !important;
+  stroke-width: 2;
 }
 
 .react-flow__edge.dim {
-  opacity: 0.18;
+  opacity: 0.15;
 }
 
 .relation-legend {
@@ -949,28 +934,10 @@ main {
   gap: 12px;
   padding: 4px 10px;
   font-size: 12px;
+  color: var(--fg-muted);
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-}
-
-.rel-key::before {
-  content: "";
-  display: inline-block;
-  width: 14px;
-  height: 3px;
-  margin-right: 6px;
-  vertical-align: middle;
-  border-radius: 2px;
-  background: var(--c);
-}
-
-.rel-key.up {
-  --c: var(--rel-up);
-}
-
-.rel-key.down {
-  --c: var(--rel-down);
 }
 
 .react-flow__edge.dep .react-flow__edge-path {
