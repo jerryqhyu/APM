@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from apm.core.model import Delivery, Kind, Status
-from apm.core.store import FeatureReport, Store, TaskReview, content_fingerprint
+from apm.core.store import FeatureReport, NodeCost, Store, TaskReview, content_fingerprint
 from tests.core.build import A, B, node
 
 
@@ -93,6 +93,26 @@ def test_fresh_runs_keep_the_cost_they_report(tmp_path: Path) -> None:
     # A resumed session whose count started afresh keeps the reported cost whole.
     four = store.create_run(node_id=A, agent="apm-critic", session_id=one.session_id)
     assert store.finish_run(four.id, "succeeded", cost_usd=0.25).cost_usd == 0.25
+
+
+def test_a_node_costs_the_sum_of_its_runs_by_agent(tmp_path: Path) -> None:
+    store = Store(tmp_path)
+    for agent, cost in [("apm-implementer", 1.25), ("apm-implementer", 0.5), ("apm-critic", 2.0)]:
+        store.finish_run(store.create_run(node_id=A, agent=agent).id, "succeeded", cost_usd=cost)
+    store.finish_run(store.create_run(node_id=B, agent="apm-critic").id, "succeeded", cost_usd=9.0)
+    cost = store.node_cost(A)
+    assert cost.by_agent == {"apm-critic": 2.0, "apm-implementer": 1.75}
+    assert cost.total == sum(cost.by_agent.values()) == 3.75
+
+
+def test_runs_without_a_cost_yet_count_as_nothing(tmp_path: Path) -> None:
+    store = Store(tmp_path)
+    store.create_run(node_id=A, agent="apm-implementer")
+    store.finish_run(store.create_run(node_id=A, agent="apm-critic").id, "failed")
+    assert store.node_cost(A) == NodeCost(
+        total=0.0, by_agent={"apm-critic": 0.0, "apm-implementer": 0.0}
+    )
+    assert store.node_cost(B) == NodeCost(total=0.0, by_agent={})
 
 
 def test_events_are_numbered_per_run(tmp_path: Path) -> None:
