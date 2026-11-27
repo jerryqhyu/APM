@@ -30,8 +30,13 @@ H = 100  # cap height: the stripes fill it too
 SLANT = math.tan(math.radians(14))  # the italic: x leans this far per unit of height
 STEM = 24
 STRIPE, STRIPE_GAP = 28, 8  # three stripes and two gaps make the cap height
-STRIPE_LENGTH = 96  # the shortest (bottom) stripe; each above it reaches further on the slant
-GAP = 10  # between the stripes and the A
+A_WIDTH, A_LEG = 92, 30
+LEG_SLOPE = (A_WIDTH - STEM) / H + SLANT
+"""How far the A's left leg leans per unit of height, italic included. The stripes' ends are cut
+on the same line, so the gap between them and the A is even all the way up."""
+STRIPE_LENGTH = 84  # the bottom edge of the bottom stripe; the rest reach further on the leg's line
+GAP = STRIPE_GAP / math.cos(math.atan(LEG_SLOPE))
+"""Across the stripes' ends to the A: as wide, measured square to the cut, as between stripes."""
 
 
 def _italic(points: list[tuple[float, float]], x0: float) -> list[tuple[float, float]]:
@@ -44,7 +49,7 @@ def _poly(points: Sequence[tuple[float, float]]) -> str:
 
 
 def _a(x0: float) -> tuple[str, float]:
-    w, leg = 92, 30
+    w, leg = A_WIDTH, A_LEG
     top = w - STEM
 
     def inner(y: float) -> float:  # the leg's inner edge, `leg` right of its outer edge
@@ -82,8 +87,8 @@ def _m(x0: float) -> tuple[str, float]:
 
 
 def stripes(x0: float = 0, length: float = STRIPE_LENGTH) -> list[tuple[str, str]]:
-    """The three stripes, filling the cap height, their right ends on the italic's slant:
-    (path, colour) each.
+    """The three stripes, filling the cap height, their right ends cut parallel to the A's left
+    leg: (path, colour) each.
     """
     out = []
     for i, colour in enumerate(STRIPES):
@@ -92,8 +97,8 @@ def stripes(x0: float = 0, length: float = STRIPE_LENGTH) -> list[tuple[str, str
         right = x0 + length
         pts = [
             (x0, top),
-            (right + (H - top) * SLANT, top),
-            (right + (H - bottom) * SLANT, bottom),
+            (right + (H - top) * LEG_SLOPE, top),
+            (right + (H - bottom) * LEG_SLOPE, bottom),
             (x0, bottom),
         ]
         out.append((_poly(pts), colour))
@@ -140,17 +145,21 @@ def badge() -> str:
     return svg(w, h, f'{plate}<g transform="translate({pad},{pad})">{logo(WHITE)}</g>')
 
 
+ICON_LENGTH = 70
+"""The stripes alone, as the icon: a little shorter than in the logo, so they fill a square."""
+
+
 def mark(size: float, *, square: bool = False) -> str:
     """The stripes alone on a navy square: the icon. `square` is full bleed, for app icons the
     system rounds or crops itself, with the stripes inside the safe zone.
     """
     inset = 0.24 if square else 0.17
     span = size * (1 - 2 * inset)  # the stripes' width, slant included
-    scale = span / (STRIPE_LENGTH * 1.4 + H * SLANT)
+    scale = span / (ICON_LENGTH + H * LEG_SLOPE)
     x = (size - span) / 2
     y = (size - H * scale) / 2
     corner = 0 if square else size * 0.22
-    stripes_body = _stripes_svg(0, STRIPE_LENGTH * 1.4)
+    stripes_body = _stripes_svg(0, ICON_LENGTH)
     return (
         f'<rect width="{size}" height="{size}" rx="{corner:.2f}" fill="{NAVY}"/>'
         f'<g transform="translate({x:.2f},{y:.2f}) scale({scale:.4f})">{stripes_body}</g>'
@@ -159,8 +168,8 @@ def mark(size: float, *, square: bool = False) -> str:
 
 def favicon() -> str:
     """The icon at 32: the stripes larger in the square, so they still read at 16."""
-    scale = 24 / (STRIPE_LENGTH * 1.25 + H * SLANT)
-    body = _stripes_svg(0, STRIPE_LENGTH * 1.25)
+    scale = 24 / (ICON_LENGTH + H * LEG_SLOPE)
+    body = _stripes_svg(0, ICON_LENGTH)
     return (
         f'<rect width="32" height="32" rx="7" fill="{NAVY}"/>'
         f'<g transform="translate(4,{(32 - H * scale) / 2:.2f}) scale({scale:.4f})">{body}</g>'
