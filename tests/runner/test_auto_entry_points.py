@@ -34,9 +34,13 @@ QUIET_S = 2.0
 
 @pytest.fixture
 def client(
-    project: Project, fake_claude: FakeClaude, monkeypatch: pytest.MonkeyPatch
+    project: Project, fake_claude: FakeClaude, reviewed: str, monkeypatch: pytest.MonkeyPatch
 ) -> Iterator[TestClient]:
-    """The server's app, with its queue starting runs at once rather than after the debounce."""
+    """The server's app, with its queue starting runs at once rather than after the debounce.
+
+    It asks for `reviewed` so the task's review is recorded before the server starts: otherwise
+    the queue's startup scan can see the task unreviewed and start a review of its own.
+    """
     monkeypatch.setattr(server, "AutoQueue", partial(AutoQueue, debounce_s=0))
     app = server.create_app(project, TOKEN, static_dir=None)
     with TestClient(app, base_url="http://127.0.0.1:4100", headers=AUTH) as test_client:

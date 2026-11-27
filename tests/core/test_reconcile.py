@@ -299,6 +299,40 @@ def test_the_cli_reports_and_with_retarget_retargets(
     assert ["api", "-X", "PATCH", "repos/o/r/pulls/21", "-f", "base=main"] in gh.calls
 
 
+# --- freezing a task's cost ---
+
+
+def test_a_merged_pr_freezes_the_tasks_cost_once(code: Project, gh: FakeGh) -> None:
+    store = Store(code.apm_dir)
+
+    def run(node: str, agent: str, cost: float) -> None:
+        run_id = store.create_run(node_id=node, agent=agent).id
+        store.finish_run(run_id, "succeeded", cost_usd=cost)
+
+    url = gh.add(20, merged=True, state="closed")
+    node = delivered(code, "Merged", branch="apm/a", pr=url)
+    run(node, "apm-implementer", 1.5)
+    run(node, "apm-task-reviewer", 0.25)
+    reconcile(code)
+    (record,) = read_costs(code.apm_dir).values()
+    assert (record.node_id, record.merged) == (node, url)
+    assert record.total == 1.75
+    assert record.by_agent == {"apm-implementer": 1.5, "apm-task-reviewer": 0.25}
+
+    run(node, "apm-implementer", 3.0)  # a run after the merge
+    reconcile(code)
+    set_status(code, node, Status.IN_PROGRESS)  # so reconcile judges it again
+    assert done(reconcile(code)) == [(node, "PR #20 merged into main")]
+    assert read_costs(code.apm_dir) == {node: record}
+
+
+def test_a_node_done_without_a_merged_pr_freezes_nothing(code: Project) -> None:
+    sha = code_commit(code, "feature.py")
+    delivered(code, "On main", branch="main", commits=[sha])
+    assert len(reconcile(code).done) == 1
+    assert read_costs(code.apm_dir) == {}
+
+
 # --- frozen feature costs ---
 
 
