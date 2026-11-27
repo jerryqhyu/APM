@@ -28,6 +28,8 @@
   --bad-subtle: light-dark(#ffebe9, #25171c);
   --info: light-dark(#0969da, #4493f8);
   --info-subtle: light-dark(#ddf4ff, #172338);
+  --review: light-dark(#bc4c00, #f0883e);
+  --review-subtle: light-dark(#fff1e5, #2a1d12);
   --done: light-dark(#8250df, #ab7df8);
   --done-subtle: light-dark(#fbefff, #1e1630);
   --neutral: light-dark(#818b98, #737373);
@@ -128,7 +130,8 @@ textarea {
   color: inherit;
 }
 
-button {
+button,
+a.button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -160,6 +163,7 @@ button:disabled {
 }
 
 button.primary,
+a.button.primary,
 .menu-button.accent {
   background: var(--accent-emphasis);
   border-color: var(--accent-emphasis);
@@ -167,7 +171,13 @@ button.primary,
   font-weight: 600;
 }
 
-button.primary:hover:not(:disabled) {
+a.button {
+  color: inherit;
+  text-decoration: none;
+}
+
+button.primary:hover:not(:disabled),
+a.button.primary:hover {
   background: var(--accent-emphasis);
   filter: brightness(1.08);
 }
@@ -358,6 +368,11 @@ textarea {
 .state-in_progress {
   --c: var(--info);
   --c-subtle: var(--info-subtle);
+}
+
+.state-review {
+  --c: var(--review);
+  --c-subtle: var(--review-subtle);
 }
 
 .state-done {
@@ -2397,4 +2412,154 @@ button.tag:hover:not(:disabled) {
 .here-row {
   padding-top: 8px;
   border-top: 1px solid var(--border-muted);
+}
+
+/* --- details: the next step, pull requests, the timeline, the inbox --- */
+
+.next-step {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 14px;
+  border: 1px solid var(--c, var(--border));
+  border-left-width: 4px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--c-subtle, var(--bg-subtle)) 60%, var(--bg));
+}
+
+.next-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+}
+
+.next-label {
+  font-size: 15px;
+  font-weight: 650;
+  color: var(--c, var(--fg));
+}
+
+.next-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.next-step .refs {
+  margin: 0;
+}
+
+.next-warn {
+  color: var(--warn);
+  margin: 0;
+}
+
+.progress-bar {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--bg-muted);
+  overflow: hidden;
+}
+
+.progress-bar span {
+  display: block;
+  height: 100%;
+  background: var(--done);
+}
+
+.feature-group h4 {
+  margin: 4px 0 2px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg-muted);
+}
+
+.batch-result p {
+  margin: 0;
+}
+
+.pr-chips {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.pr-chips .chip {
+  padding: 0 8px;
+  font-size: 12px;
+}
+
+.chip.pr-merged {
+  color: var(--done);
+}
+
+.chip.pr-approved,
+.chip.checks-passing {
+  color: var(--good);
+}
+
+.chip.pr-changes_requested,
+.chip.checks-failing,
+.chip.pr-closed {
+  color: var(--bad);
+}
+
+.chip.checks-running,
+.chip.pr-waiting,
+.chip.pr-draft {
+  color: var(--fg-muted);
+}
+
+.timeline {
+  list-style: none;
+  margin: 0;
+  padding: 0 0 0 14px;
+  border-left: 2px solid var(--border-muted);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.timeline li {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+}
+
+.timeline-dot {
+  position: absolute;
+  left: -20px;
+  top: 6px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--bg);
+  border: 2px solid var(--fg-subtle);
+}
+
+.timeline-meta {
+  color: var(--fg-muted);
+  font-size: 12px;
+}
+
+.inbox-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.inbox-list li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.inbox-text {
+  flex: 1;
+  min-width: 0;
 }

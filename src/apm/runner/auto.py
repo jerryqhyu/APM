@@ -9,7 +9,7 @@ import asyncio
 import contextlib
 import time
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from functools import partial
 from typing import Any
 
@@ -19,6 +19,7 @@ from apm.core.errors import ApmError
 from apm.core.files import read_body
 from apm.core.graph import Graph
 from apm.core.model import Kind, NodeId
+from apm.core.pr_status import PrStatuses, awaiting_merge
 from apm.core.project import load_graph
 from apm.core.reconcile import reconcile
 from apm.core.store import Run, Store, content_fingerprint
@@ -30,6 +31,8 @@ TASK_REVIEWER = "apm-task-reviewer"
 IMPLEMENTER = "apm-implementer"
 EAGER_REDO = "eager-redo"
 """The queue's name for an automatic redo of an eager feature (`apm.runner.eager`)."""
+PR_CHECK_S = 60.0
+"""How often pull requests waiting for a merge are looked at on GitHub."""
 DEBOUNCE_S = 3.0
 """How long a run waits after the last change to what it works on."""
 RESCAN_ON = ("graph.changed", "run.finished")
@@ -53,6 +56,10 @@ class AutoQueue:
     """Runs asked for by hand (Review all tasks, Implement all) waiting for room. They go first."""
     redos: dict[NodeId, RedoPlan] = field(default_factory=dict)
     """Eager features whose task PRs changed, as the last reconcile found them."""
+    prs: PrStatuses | None = None
+    """Pull requests' state on GitHub, shared with the server. None: not watched."""
+    next_pr_check: float = 0.0
+    """When pull requests waiting for a merge are next looked at (0 = at once)."""
 
     def __post_init__(self) -> None:
         self.manual = RunQueue(self.runner)
@@ -136,11 +143,39 @@ class AutoQueue:
             return self.runner.eager.start_redo(node_id, self.redos.get(node_id))
         return self.runner.start(agent, node_id, critic=False)
 
+    def check_prs(self) -> bool:
+        """Every `PR_CHECK_S`, asks GitHub how each pull request waiting for a merge stands, tells
+        the UI what changed, and makes the next reconcile due at once if one merged, so its task
+        is marked done without waiting for the periodic reconcile. True if one merged.
+        """
+        if self.prs is None or self.clock() < self.next_pr_check:
+            return False
+        self.next_pr_check = self.clock() + PR_CHECK_S
+        merged = False
+        for node_id, url in awaiting_merge(load_graph(self.runner.project)).items():
+            before = self.prs.known(url)
+            status = self.prs.get(url, max_age=PR_CHECK_S / 2)
+            if status is None or status == before:
+                continue
+            if before is None or (status.state, status.review, status.checks) != (
+                before.state,
+                before.review,
+                before.checks,
+            ):
+                self.runner.announce(
+                    {"type": "pr.status", "node_id": node_id, "pr": asdict(status)}
+                )
+            merged = merged or status.state == "merged"
+        if merged:
+            self.next_reconcile = 0.0
+        return merged
+
     async def drive(self, events: asyncio.Queue[dict[str, Any]], tick_s: float = 0.5) -> None:
         """Runs for the life of the server: scans at startup and on every plan change."""
         rescan = True
         while True:
             with contextlib.suppress(ApmError):  # a broken apm.yaml waits for its fix
+                await asyncio.to_thread(self.check_prs)
                 if await asyncio.to_thread(self.reconcile):
                     rescan = True
                 if rescan:

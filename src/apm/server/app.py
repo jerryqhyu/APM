@@ -29,8 +29,9 @@ from apm.core.files import read_body, render_body
 from apm.core.git import GitError, rev_parse
 from apm.core.graph import Graph
 from apm.core.lifting import check_all
-from apm.core.model import Kind, NodeId, Status
+from apm.core.model import Kind, Node, NodeId, Status
 from apm.core.mutate import commit_hand_edits
+from apm.core.pr_status import PrStatuses
 from apm.core.project import Project, load_graph
 from apm.core.proposals import accept_proposal, close_orphaned, is_split, reject_proposal
 from apm.core.reconcile import Report, describe, reconcile
@@ -48,6 +49,7 @@ from apm.core.settings import (
 )
 from apm.core.store import PROJECT, Proposal, Store
 from apm.core.task_review import implement_blocker, review_state
+from apm.core.timeline import builder, node_timeline
 from apm.core.views import all_nodes_view, level_json, node_history, node_ref, node_view, search
 from apm.runner.agents import AGENTS, MODES
 from apm.runner.auto import AutoQueue
@@ -182,7 +184,9 @@ def create_app(
     store = Store(project.apm_dir)
     hub = Hub()
     runner = Runner(project, store, hub.publish)
+    prs = PrStatuses(project.code_dir)  # pull requests' state on GitHub, shared with the loop
     automation = AutoQueue(runner)
+    automation.prs = prs
     queue = automation.manual  # what you ask for at the feature level, waiting for room
 
     @contextlib.asynccontextmanager
@@ -239,12 +243,27 @@ def create_app(
         """
         return {**asdict(proposal), "split": is_split(store, proposal)}
 
+    def pr_view(node: Node) -> dict[str, Any] | None:
+        """What is known of a node's pull request on GitHub, without asking it."""
+        url = node.delivery.pr if node.delivery is not None else None
+        status = prs.known(url) if url else None
+        return asdict(status) if status is not None else None
+
     def node_detail(graph: Graph, node_id: NodeId) -> dict[str, Any]:
         state = graph.states[node_id]
         config, body = read_config(project.apm_dir), read_body(project.apm_dir, node_id)
         locked = under_review(project.apm_dir, node_id)
+        history = node_history(project, node_id)
+        building = (
+            builder(store, node_id, history)
+            if graph[node_id].status is Status.IN_PROGRESS
+            else None
+        )
         return {
             **node_view(graph, node_id),
+            "pr": pr_view(graph[node_id]),
+            "builder": asdict(building) if building is not None else None,
+            "timeline": [asdict(m) for m in node_timeline(store, graph, node_id, history)],
             "body": body,
             "under_review": locked,
             "review": review_state(graph, store, node_id, body, locked),
@@ -258,7 +277,7 @@ def create_app(
                 "waiting_on": [node_ref(graph, n) for n in state.waiting_on],
                 "children": [node_ref(graph, n) for n in graph.children(node_id)],
             },
-            "history": [asdict(h) for h in node_history(project, node_id)],
+            "history": [asdict(h) for h in history],
             "proposals": [
                 proposal_view(p) for p in store.list_proposals(node_id=node_id, status="pending")
             ],
@@ -319,9 +338,10 @@ def create_app(
         problems: list[str] = []
         with contextlib.suppress(ApmError):  # a broken apm.yaml shows up everywhere else
             problems = override_problems(read_config(project.apm_dir), graph)
+        nodes = [{**view, "pr": pr_view(graph[view["id"]])} for view in all_nodes_view(graph)]
         return {
             "head": rev_parse(project.apm_dir, "HEAD"),
-            "nodes": all_nodes_view(graph),
+            "nodes": nodes,
             "errors": [asdict(i) for i in report.errors],
             "warnings": [
                 *(asdict(i) for i in report.warnings),
@@ -541,6 +561,18 @@ def create_app(
     @app.get("/api/runs/{run_id}")
     def get_run(run_id: str, after: int = 0) -> dict[str, Any]:
         return run_view(run_id, after)
+
+    @app.get("/api/nodes/{node}/pr")
+    def get_pr(node: str) -> dict[str, Any] | None:
+        """Where the node's pull request stands on GitHub, asked afresh if what is known is more
+        than half a minute old. Null if it has none, or GitHub can't be asked.
+        """
+        graph, node_id = locate(node)
+        delivery = graph[node_id].delivery
+        if delivery is None or not delivery.pr:
+            return None
+        status = prs.get(delivery.pr, max_age=30.0)
+        return asdict(status) if status is not None else None
 
     @app.get("/api/runs/{run_id}/session")
     def get_session(run_id: str) -> dict[str, Any]:

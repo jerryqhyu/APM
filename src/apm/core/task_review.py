@@ -16,7 +16,7 @@ from typing import Any
 
 from apm.core.config import ApmConfig
 from apm.core.graph import Graph
-from apm.core.model import NodeId, Status
+from apm.core.model import Node, NodeId, Status
 from apm.core.store import Store, content_fingerprint
 
 MAX_ERRORS = 2
@@ -80,10 +80,59 @@ def review_state(
     graph: Graph, store: Store, node_id: NodeId, body: str, running: bool
 ) -> dict[str, Any]:
     """What the UI shows of a task's review: `state` (none, running, pass, too_big, unclear,
-    error, or stale when the content changed since), plus what the reviewer returned.
+    error, or stale when the content changed since), plus what the reviewer returned and when. A
+    stale review also says what changed (`changes`), when the review kept what it was shown.
     """
     latest = store.latest_task_review(node_id)
     if running or latest is None:
         return {"state": "running" if running else "none"}
     stale = latest.fingerprint != content_fingerprint(graph[node_id], body)
-    return {**latest.data, "state": "stale" if stale else latest.verdict, "verdict": latest.verdict}
+    shown = {key: value for key, value in latest.data.items() if key != "reviewed"}
+    out = {
+        **shown,
+        "state": "stale" if stale else latest.verdict,
+        "verdict": latest.verdict,
+        "reviewed_at": latest.created,
+    }
+    if stale:
+        out["changes"] = review_changes(latest.data.get("reviewed"), graph[node_id], body)
+    return out
+
+
+def review_changes(reviewed: object, node: Node, body: str) -> list[str] | None:
+    """What changed since a review, in a few words each: `the title`, `Approach edited`,
+    `Out of scope added`. None if the review didn't keep what it was shown (an older one).
+    """
+    if not isinstance(reviewed, dict):
+        return None
+    changes = []
+    if reviewed.get("title") != node.title:
+        changes.append("the title")
+    if reviewed.get("kind") != str(node.kind):
+        changes.append("the kind")
+    before, after = _sections(str(reviewed.get("body", ""))), _sections(body)
+    for heading in dict.fromkeys([*before, *after]):
+        name = heading or "the opening text"
+        if heading not in before:
+            changes.append(f"{name} added")
+        elif heading not in after:
+            changes.append(f"{name} removed")
+        elif before[heading] != after[heading]:
+            changes.append(f"{name} edited")
+    return changes
+
+
+def _sections(body: str) -> dict[str, str]:
+    """A description by its `## ` sections, the text before the first one under ''."""
+    sections: dict[str, list[str]] = {"": []}
+    current = ""
+    for line in body.splitlines():
+        if line.startswith("## "):
+            current = line[3:].strip()
+            sections.setdefault(current, [])
+        else:
+            sections[current].append(line)
+    texts = {heading: "\n".join(lines).strip() for heading, lines in sections.items()}
+    if not texts[""]:
+        del texts[""]
+    return texts

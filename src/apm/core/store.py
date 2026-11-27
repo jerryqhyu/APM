@@ -530,6 +530,10 @@ class Store:
     def latest_task_review(self, node_id: NodeId) -> TaskReview | None:
         return self._one(TaskReview, _LATEST, (node_id,))
 
+    def task_reviews(self, node_id: NodeId) -> list[TaskReview]:
+        """Every review of the task, oldest first."""
+        return self._select(TaskReview, "WHERE node_id = ? ORDER BY created, rowid", (node_id,))
+
     def count_errors(self, node_id: NodeId, fingerprint: str) -> int:
         """How many reviews of this content failed to give a verdict."""
         with self._db() as db:

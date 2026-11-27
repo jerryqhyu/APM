@@ -1,6 +1,6 @@
 import type { NodeView, Proposal, Run, RunStatus, StackedOn } from "./types";
 
-export type StateKey = "ready" | "stacked" | "blocked" | "todo" | "in_progress" | "done" | "dropped";
+export type StateKey = "ready" | "stacked" | "blocked" | "todo" | "in_progress" | "review" | "done" | "dropped";
 
 /** `#20`: what a stacked node builds on (its stack top), by pull request where it has one. */
 export function stackedName(node: { stacked_on?: StackedOn[]; stack_top?: string | null }): string {
@@ -10,13 +10,22 @@ export function stackedName(node: { stacked_on?: StackedOn[]; stack_top?: string
 
 /** One word for where a node stands: the stored status, refined by what's computed. */
 export function stateOf(
-  node: Pick<NodeView, "status" | "ready" | "blocked"> & { stacked_on?: StackedOn[]; stack_top?: string | null },
+  node: Pick<NodeView, "status" | "ready" | "blocked"> & {
+    stacked_on?: StackedOn[];
+    stack_top?: string | null;
+    delivery?: NodeView["delivery"];
+    children?: number;
+  },
 ): { key: StateKey; label: string } {
   if (node.status === "todo") {
     if (node.blocked) return { key: "blocked", label: "Blocked" };
     if (node.ready && node.stack_top) return { key: "stacked", label: `Ready · stacked on ${stackedName(node)}` };
     if (node.ready) return { key: "ready", label: "Ready" };
     return { key: "todo", label: "To do" };
+  }
+  // Built and delivered, not merged yet: it waits for you to review its pull request.
+  if (node.status === "in_progress" && !node.children && (node.delivery?.pr || node.delivery?.branch)) {
+    return { key: "review", label: "Pending PR review" };
   }
   if (node.status === "in_progress") return { key: "in_progress", label: "In progress" };
   if (node.status === "done") return { key: "done", label: "Done" };

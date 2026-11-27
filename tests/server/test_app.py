@@ -22,6 +22,7 @@ from apm.core.store import PROJECT, Store, TaskReview, content_fingerprint
 from apm.server.app import archive_name, create_app
 from apm.server.security import host_is_loopback, origin_allowed
 from tests.conftest import tasks_of
+from tests.fake_gh import FakeGh
 from tests.runner.fake import FakeClaude
 
 TOKEN = "t" * 43
@@ -609,6 +610,8 @@ def test_node_detail_reports_the_task_review(client: TestClient, project: Projec
     data = {"summary": "about 120 lines", "children": [], "missing": []}
     Store(project.apm_dir).add_task_review(TaskReview(node, fingerprint, "too_big", data))
     detail = client.get(f"/api/nodes/{node}").json()
+    reviewed_at = detail["review"].pop("reviewed_at")
+    assert reviewed_at > 0
     assert detail["review"] == {**data, "state": "too_big", "verdict": "too_big"}
     assert "too_big" in detail["implement_blocker"]
     client.patch(f"/api/nodes/{node}", json={"title": "Smaller task"})
@@ -660,3 +663,25 @@ def test_a_nodes_runs_can_include_the_conversations_that_changed_it(
         "command": f"cd {tmp_path} && claude --resume abc",
     }
     assert client.get("/api/runs/nope/session").status_code == 404
+
+
+def test_a_task_waiting_for_review_shows_its_pull_request_and_story(
+    project: Project, client: TestClient, fake_gh: FakeGh
+) -> None:
+    url = fake_gh.add(12)
+    fake_gh.review(12, checks=[{"status": "completed", "conclusion": "failure"}])
+    store = Store(project.apm_dir)
+    (task,) = create_nodes(project, [NewNode(title="Ledger")]).created
+    run = store.create_run(node_id=task, agent="apm-implementer")
+    set_status(project, task, Status.IN_PROGRESS, actor="agent:apm-implementer", run=run.id)
+    attach_delivery(project, task, branch="apm/ledger", pr=url)
+
+    detail = client.get(f"/api/nodes/{task}").json()
+    assert detail["builder"]["id"] == run.id
+    assert detail["pr"] is None  # not asked yet
+    assert "Pull request recorded" in [m["text"] for m in detail["timeline"]]
+    status = client.get(f"/api/nodes/{task}/pr").json()
+    assert (status["state"], status["review"], status["checks"]) == ("open", "waiting", "failing")
+    assert client.get(f"/api/nodes/{task}").json()["pr"]["checks"] == "failing"  # now known
+    (view,) = [n for n in client.get("/api/tree").json()["nodes"] if n["id"] == task]
+    assert view["pr"]["state"] == "open"

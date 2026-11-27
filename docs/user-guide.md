@@ -78,6 +78,7 @@ That is the whole loop: talk, shape the plan, build a piece, repeat.
 | **Ready** | To do, and nothing it needs is unfinished. You can start it. |
 | **Ready · stacked on #20** | To do, and what it needs is built and pushed but not merged yet. You can start it now: it builds on that work's branch. It becomes plain **Ready** once that merges. |
 | **Blocked** | To do, but something it needs isn't done yet, and isn't pushed either. A node inside a blocked node is blocked too. |
+| **Pending PR review** | In progress, and its work is delivered: its branch is pushed, usually with a pull request. It waits for you to review and merge. Once the pull request merges, APM marks it **Done**. |
 | **2/5** on a node | Two of the five leaves inside it are done. The review step counts, so a feature reaches 5/5 only once it has been reviewed and has landed. |
 
 **Handle.** The short code on each node, like `1c0b9a44`. Use it to name a node in the terminal or to Claude.
@@ -113,10 +114,18 @@ On the far right you can switch between a **Light**, **Dark** or **Auto** theme.
 
 **Tags.** Labels on a node, such as `backlog`, `area/ui` or `q3`: lowercase letters, digits and `. _ / -`. Add and remove them under the title in **Details** (type and press Enter). Tags are labels, not content: changing them doesn't redo a task's review, and a node under review can still be tagged. Merging nodes keeps every tag.
 
-**Right panel.** The right third of the window, top to bottom, is the conversation. It has two tabs, and next to them the **Actions** menu: buttons for everything you can do to what is selected, and, under **Here**, **Add child** and **Decompose with Claude** for the node you are inside. It stays open while you use it; click anywhere else or press Escape to close it. The tabs:
+**Right panel.** The right third of the window, top to bottom. It is about the node you selected or, with nothing selected, the feature you are inside; at the top level with nothing selected, the whole plan. It has two tabs, and next to them the **Actions** menu: buttons for everything you can do to what is selected, and, under **Here**, **Add child** and **Decompose with Claude** for the node you are inside. It stays open while you use it; click anywhere else or press Escape to close it. The tabs:
 
-- **Chat**: your conversation with Claude, about the selected node or, with nothing selected, the whole plan. The tab shows which.
-- **Details**: the selected node's description, links, delivery and history. With nothing selected, a summary of the plan.
+- **Details** (shown first): the readable account of the node. Under the title, a card says what matters most now and offers the next step:
+  - **Blocked**: the nodes it waits on.
+  - **Ready to build**: **Implement**, and **Review task** if its review is missing or out of date.
+  - **In progress**: a link to the conversation building it, even when that is a chat about the whole plan.
+  - **Pending PR review**: its pull request, with where it stands on GitHub (open or draft, approved or changes requested, checks passing, failing or running), and the conversation that built it.
+  - **Done**: its pull request.
+  - **A feature**: how far it is, **Implement all ready tasks** (each in its own conversation; you confirm first), and its tasks grouped by what they need from you.
+
+  Then the description, the **Task review** (its verdict; or, once the task changed since, what changed and a **Review task** button), settings, links, and a **Timeline**: who did what and when, each step linked to its conversation or pull request. With nothing selected at the top level, Details is an inbox: what needs you (questions from Claude, proposals, pull requests to review), then what is ready to build (with **Implement**), what is being built, and what is blocked and on what.
+- **Chat**: your conversation with Claude about the same node, feature or plan. The tab shows which.
 
 ## Talking to Claude
 
@@ -526,7 +535,7 @@ While `apm serve` is up it can take a feature from review to pull request on its
 | Key | Default | What it does |
 | --- | --- | --- |
 | `task_review` | `true` | Review a task when it is created or its title, kind or description changes, and review unreviewed To do tasks when `apm serve` starts. Turning it off stops only these automatic reviews: the Implement gate, the review state and the **Review task** button stay, so you review a task by hand before building it. |
-| `reconcile` | `true` | Reconcile, and retarget open pull requests, every `reconcile_interval_s` seconds. |
+| `reconcile` | `true` | Reconcile, and retarget open pull requests, every `reconcile_interval_s` seconds. Every minute APM also asks GitHub how each pull request waiting for review stands (shown in Details), and reconciles at once when one merges, so its task turns **Done** without waiting. |
 | `reconcile_interval_s` | `300` | Seconds between those reconciles. Must be above 0. |
 | `feature_review` | `true` | Start a feature's review once its review step becomes Ready. |
 | `accept_follow_ups` | `true` | Accept the follow-up tasks a feature review proposes. |
