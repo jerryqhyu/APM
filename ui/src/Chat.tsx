@@ -321,6 +321,45 @@ function Said({ who, agent, text }: { who: string; agent: string | null; text: s
   );
 }
 
+/** The Claude Code session behind a conversation, and the command that opens it in a terminal:
+ * `claude --resume`, from the directory it ran in.
+ */
+function SessionLine({ runId }: { runId: string }) {
+  const [session, setSession] = useState<{ session_id: string | null; command: string | null } | null>(null);
+  const [copied, setCopied] = useState(false);
+  useEffect(() => {
+    setSession(null);
+    setCopied(false);
+    api<{ session_id: string | null; command: string | null }>(`/api/runs/${runId}/session`)
+      .then(setSession)
+      .catch(() => setSession(null));
+  }, [runId]);
+  if (!session?.session_id || !session.command) return null;
+  const command = session.command;
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(command);
+      setCopied(true);
+    } catch {
+      window.prompt("Copy this command and run it in a terminal:", command);
+    }
+  };
+  return (
+    <div className="turn-note session-line">
+      <span title={command}>
+        Claude Code session <code>{session.session_id.slice(0, 8)}</code>
+      </span>
+      <button
+        className="link"
+        onClick={() => void copy()}
+        title={`${command}\nStop the conversation here first if it is still running.`}
+      >
+        {copied ? "Copied" : "Copy the command to open it in a terminal"}
+      </button>
+    </div>
+  );
+}
+
 // --- the pane ---
 
 export interface ChatContext {
@@ -336,14 +375,20 @@ export function Chat({
   focus,
   onError,
   onChanged,
+  onShown,
+  titleOf,
 }: {
   context: ChatContext;
   modes: Mode[];
   defaultMode: string;
-  /** A run to bring into view, e.g. one just started from a button. */
+  /** A run to bring into view, e.g. one just started from a button, or named in the address. */
   focus: string | null;
   onError: (text: string) => void;
   onChanged: () => void;
+  /** The conversation now in view (its first run), or null for a new one: for the address. */
+  onShown?: (threadId: string | null) => void;
+  /** A node's title, to say where a conversation from elsewhere is. */
+  titleOf?: (id: string) => string | undefined;
 }) {
   const [runs, setRuns] = useState<Run[]>([]);
   const [picked, setPicked] = useState<string | "new" | null>(null);
@@ -357,10 +402,14 @@ export function Chat({
   const end = useRef<HTMLDivElement>(null);
   const key = context.nodeId ?? "project";
 
+  // A node's conversations include those elsewhere that changed it: a chat about the whole plan
+  // that started building it, say.
   const load = useCallback(async () => {
-    const where = context.nodeId ? query({ node_id: context.nodeId }) : query({ scope: "project" });
+    const where = context.nodeId ? query({ node_id: context.nodeId, related: true }) : query({ scope: "project" });
     setRuns(await api<Run[]>(`/api/runs${where}`));
   }, [context.nodeId]);
+  const loaded = useRef(new Set<string>());
+  loaded.current = new Set(runs.map((r) => r.id));
 
   useEffect(() => {
     setRuns([]);
@@ -375,7 +424,8 @@ export function Chat({
   useLiveEvents((event) => {
     if (event.type === "run.started" || event.type === "run.finished") {
       const about = event.run.node_id || null;
-      if (about === context.nodeId) void load();
+      const mine = loaded.current.has(event.run.id) || loaded.current.has(event.run.parent_run ?? "");
+      if (about === context.nodeId || mine) void load();
     }
     if (event.type === "run.request") setRequestsWaiting((before) => new Set(before).add(event.request.run_id));
     if (event.type === "run.request_resolved" || event.type === "run.finished") {
@@ -389,13 +439,25 @@ export function Chat({
   });
 
   const threads = useMemo(() => threadsOf(runs), [runs]);
+  const scope = context.nodeId ?? "";
+  const elsewhere = (t: Thread) => (t.runs[0]!.node_id || "") !== scope;
+  const whereOf = (t: Thread) => {
+    const about = t.runs[0]!.node_id;
+    return about ? `“${titleOf?.(about) ?? "another node"}”` : "the whole plan";
+  };
   const focused = focus ? threads.find((t) => t.runs.some((r) => r.id === focus)) : undefined;
-  // Unless you pick one, you see the run you just started from a button, else your latest chat. Never
-  // a run APM started on its own: your next message would go to that agent.
+  // Unless you pick one, you see the run you just started from a button, else your latest chat, else
+  // a chat elsewhere that is working on this node right now. Never a run APM started on its own: your
+  // next message would go to that agent.
   const thread: Thread | null =
     picked === "new"
       ? null
-      : (threads.find((t) => t.id === picked) ?? focused ?? threads.find((t) => t.agent === ASSISTANT) ?? null);
+      : (threads.find((t) => t.id === picked) ??
+        focused ??
+        threads.find((t) => t.agent === ASSISTANT && !elsewhere(t)) ??
+        // A node being built from a chat elsewhere opens on that work, while it runs.
+        threads.find((t) => t.running && elsewhere(t) && t.agent === ASSISTANT) ??
+        null);
   const running = thread?.runs.find((r) => r.status === "running") ?? null;
   // A follow-up goes to the last turn you could talk to: not the automatic reviewer.
   const last = thread ? [...thread.runs].reverse().find((r) => r.agent !== "apm-critic") : undefined;
@@ -411,6 +473,11 @@ export function Chat({
   }, [thread?.id, thread?.runs.length, running?.id, thread, toEnd]);
   const waiting = running !== null && requestsWaiting.has(running.id);
   const agentLabel = last ? (AGENT_LABEL[last.agent] ?? last.agent) : "";
+  useEffect(() => {
+    onShown?.(thread?.id ?? null);
+    // Only when another conversation comes into view.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [thread?.id]);
 
   const send = async () => {
     const text = message.trim();
@@ -455,11 +522,12 @@ export function Chat({
             key={t.id}
             role="tab"
             aria-selected={thread?.id === t.id}
-            className={cx("thread-chip", thread?.id === t.id && "active")}
-            title={`${AGENT_LABEL[t.agent] ?? t.agent} · ${timeAgo(t.updated)}${t.cost ? ` · ${money(t.cost)}` : ""}`}
+            className={cx("thread-chip", thread?.id === t.id && "active", elsewhere(t) && "elsewhere")}
+            title={`${elsewhere(t) ? `About ${whereOf(t)}, and it changed this node · ` : ""}${AGENT_LABEL[t.agent] ?? t.agent} · ${timeAgo(t.updated)}${t.cost ? ` · ${money(t.cost)}` : ""}`}
             onClick={() => setPicked(t.id)}
           >
             {t.running && <Spinner />}
+            {elsewhere(t) && <span aria-label="From elsewhere">↗</span>}
             <span>{t.title}</span>
           </button>
         ))}
@@ -477,6 +545,7 @@ export function Chat({
               </div>
             )}
             {!running && thread.cost > 0 && <div className="turn-note">This conversation has cost {money(thread.cost)}.</div>}
+            <SessionLine runId={thread.runs.at(-1)!.id} />
           </>
         ) : (
           <div className="chat-empty">
@@ -498,7 +567,15 @@ export function Chat({
       </div>
 
       <div className="composer">
-        {last && last.agent !== ASSISTANT && !running && (
+        {thread && elsewhere(thread) && !running && (
+          <div className="turn-note">
+            <span>This conversation is about {whereOf(thread)}; it changed this node. Your reply continues it.</span>
+            <button className="link" onClick={() => setPicked("new")}>
+              Talk about the {context.nodeId ? "node" : "plan"} instead
+            </button>
+          </div>
+        )}
+        {last && last.agent !== ASSISTANT && !running && thread && !elsewhere(thread) && (
           <div className="turn-note">
             <span>Your reply continues this {agentLabel} run.</span>
             <button className="link" onClick={() => setPicked("new")}>

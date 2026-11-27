@@ -22,6 +22,7 @@ from apm.core import ops
 from apm.core.archive import SUFFIX, export_archive
 from apm.core.config import ApmConfig, read_config
 from apm.core.config_edit import Scalar
+from apm.core.conversations import related_runs, session_of
 from apm.core.eager import eager_view
 from apm.core.errors import ApmError
 from apm.core.files import read_body, render_body
@@ -521,17 +522,34 @@ def create_app(
 
     @app.get("/api/runs")
     def list_runs(
-        node_id: str | None = None, scope: str | None = None, status: str | None = None
+        node_id: str | None = None,
+        scope: str | None = None,
+        status: str | None = None,
+        related: bool = False,
     ) -> list[dict[str, Any]]:
-        """`scope=project` lists the runs that are about the project as a whole."""
+        """`scope=project` lists the runs that are about the project as a whole. With `related`,
+        a node's list also has the conversations elsewhere that changed it, every turn of each.
+        """
         if status not in (None, "running", "succeeded", "failed", "cancelled"):
             return []
         where = PROJECT if scope == "project" else node_id
-        return [asdict(r) for r in store.list_runs(node_id=where, status=status, limit=500)]
+        runs = store.list_runs(node_id=where, status=status, limit=500)
+        if related and node_id:
+            runs += [r for r in related_runs(project, store, locate(node_id)[1]) if r not in runs]
+        return [asdict(r) for r in runs]
 
     @app.get("/api/runs/{run_id}")
     def get_run(run_id: str, after: int = 0) -> dict[str, Any]:
         return run_view(run_id, after)
+
+    @app.get("/api/runs/{run_id}/session")
+    def get_session(run_id: str) -> dict[str, Any]:
+        """The Claude Code session of `run_id`'s conversation, and the command that opens it."""
+        store.get_run(run_id)  # 404 for an unknown run
+        session = session_of(store, run_id)
+        if session is None:
+            return {"session_id": None, "cwd": None, "command": None}
+        return {"session_id": session.session_id, "cwd": session.cwd, "command": session.command}
 
     @app.post("/api/runs", status_code=201)
     async def start_run(body: StartRun) -> dict[str, Any]:

@@ -46,6 +46,8 @@ interface ActionsProps {
   lookup: (id: string) => NodeView | undefined;
   /** Every node of the plan. */
   nodes: NodeView[];
+  /** The node whose inside you are looking at, if any: Add child and Decompose act on it. */
+  here: NodeView | null;
 }
 
 /** The Actions button and its drop-down. It stays open while you use it (Implement all asks
@@ -91,7 +93,7 @@ export function ActionsMenu(props: ActionsProps) {
   );
 }
 
-export function Actions({ selected, running, handlers, lookup, detail, nodes }: ActionsProps) {
+export function Actions({ selected, running, handlers, lookup, detail, nodes, here }: ActionsProps) {
   const one = selected.length === 1 ? selected[0]! : null;
   const ids = selected.map((n) => n.id);
   const sameStatus = selected.length > 0 && selected.every((n) => n.status === selected[0]!.status) ? selected[0]!.status : null;
@@ -305,6 +307,23 @@ export function Actions({ selected, running, handlers, lookup, detail, nodes }: 
             <WriteReportRow feature={one} step={step} onWrite={() => handlers.runAgent("apm-feature-reporter", one.id)} />
           )}
         </>
+      )}
+
+      {here && (
+        <div className="action-row here-row">
+          <span className="row-label">Here</span>
+          <button onClick={() => handlers.add(here.id)} title={`Add a node inside “${here.title}”`}>
+            Add child
+          </button>
+          <button
+            onClick={() => handlers.runAgent("apm-decomposer", here.id)}
+            disabled={running.has(here.id)}
+            title={`Ask Claude to break “${here.title}” into children. You review the proposal first.`}
+          >
+            Decompose with Claude
+          </button>
+          <span className="row-hint">inside “{here.title}”</span>
+        </div>
       )}
     </section>
   );

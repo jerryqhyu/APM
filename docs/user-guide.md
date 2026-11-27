@@ -86,8 +86,11 @@ That is the whole loop: talk, shape the plan, build a piece, repeat.
 
 ## The screen
 
-**Top bar.** The project name, a search box (press `/`), and counters that open a list when clicked:
+Three rounded panels: the outline on the left, the plan in the middle, and the conversation on the right. Drag the gap between two panels to make one wider, or focus it and press ← →. Double-click a gap to go back to the default width. Press the sidebar button at the top left to hide the outline, and again to bring it back. APM remembers the widths, and whether the outline is shown, in this browser.
 
+**Top bar.** The sidebar button, the project name, a search box (press `/`), and buttons that open a list when clicked:
+
+- **Conversations**: every conversation in the plan, newest first, whatever it is about. Pick one to open it in the Chat tab.
 - **Needs you**: Claude is waiting for an answer from you.
 - **Ready**: what can be started now.
 - **Proposals**: breakdowns waiting for your decision.
@@ -98,7 +101,7 @@ On the far right you can switch between a **Light**, **Dark** or **Auto** theme.
 
 **Contents** (left). The whole plan as a tree. Click a node to go to it.
 
-**Graph** (middle). One level of the plan: the nodes inside the node you are in. The path at the top shows where you are; click **All** to go back to the top.
+**Graph** (middle). One level of the plan: the nodes inside the node you are in. The path at the top shows where you are; click **All** to go back to the top. **‹** and **›** next to it go back and forward through the levels you visited, like a browser; your browser's own Back does the same. Picking a node on the same level isn't a step, so Back always takes you to the level you came from.
 
 - **Click** a node to select it. **Shift-click** (or ⌘/Ctrl-click) to select several.
 - **Double-click** a node to go inside it.
@@ -110,7 +113,7 @@ On the far right you can switch between a **Light**, **Dark** or **Auto** theme.
 
 **Tags.** Labels on a node, such as `backlog`, `area/ui` or `q3`: lowercase letters, digits and `. _ / -`. Add and remove them under the title in **Details** (type and press Enter). Tags are labels, not content: changing them doesn't redo a task's review, and a node under review can still be tagged. Merging nodes keeps every tag.
 
-**Right panel.** The right third of the window, top to bottom, is the conversation. It has two tabs, and next to them the **Actions** menu: buttons for everything you can do to what is selected. It stays open while you use it; click anywhere else or press Escape to close it. The tabs:
+**Right panel.** The right third of the window, top to bottom, is the conversation. It has two tabs, and next to them the **Actions** menu: buttons for everything you can do to what is selected, and, under **Here**, **Add child** and **Decompose with Claude** for the node you are inside. It stays open while you use it; click anywhere else or press Escape to close it. The tabs:
 
 - **Chat**: your conversation with Claude, about the selected node or, with nothing selected, the whole plan. The tab shows which.
 - **Details**: the selected node's description, links, delivery and history. With nothing selected, a summary of the plan.
@@ -127,7 +130,7 @@ What Claude can do in a conversation:
 
 Every change it makes is recorded in the plan's history with its name on it, so you can see what happened and undo it.
 
-**It goes turn by turn.** Claude replies, you reply, in the same conversation. Past conversations sit in the row of tabs above; **+ New** starts a fresh one. The row also holds the runs on the node, such as Decompose, Implement and its reviews, each in its own tab. Selecting a node shows your latest chat about it, or a new one, never a run that APM started on its own. In an agent's conversation, the line above the message box says which agent your reply goes to: a reply there continues its work (a task review, for example, runs again with your message). To talk about the node instead, press **+ New**.
+**It goes turn by turn.** Claude replies, you reply, in the same conversation. Past conversations sit in the row of tabs above; **+ New** starts a fresh one. A conversation elsewhere that changed this node shows there too, with ↗ and a dashed border: a chat about the whole plan that started building it, say. Select a node being built that way and Chat opens on that work while it runs. The address in your browser names the conversation in view (`…&chat=…`), so you can bookmark it or send it to yourself. Under each conversation, **Copy the command to open it in a terminal** gives you `cd <where it ran> && claude --resume <session>`: the same Claude Code session, in your terminal. Stop it here first if it is still running. The row also holds the runs on the node, such as Decompose, Implement and its reviews, each in its own tab. Selecting a node shows your latest chat about it, or a new one, never a run that APM started on its own. In an agent's conversation, the line above the message box says which agent your reply goes to: a reply there continues its work (a task review, for example, runs again with your message). To talk about the node instead, press **+ New**.
 
 **When Claude asks you something**, a card appears in the conversation with the question and its options. Pick one, or type your own answer, and press **Answer**.
 
