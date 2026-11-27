@@ -6,10 +6,12 @@ open PR whose base has landed is pointed at the default branch. Plain code, not 
 
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 
 from apm.core.config import read_config
+from apm.core.costs import CostRecord, freeze_cost, read_costs
 from apm.core.delivery import (
     GhError,
     PullRequest,
@@ -30,6 +32,7 @@ from apm.core.ids import handle
 from apm.core.model import Delivery, NodeId, Status
 from apm.core.ops import edit_body, set_status
 from apm.core.project import Project, load_graph
+from apm.core.store import Store
 
 PATCH_ID_SCAN = 500
 """How many recent commits of the default branch a squash merge is looked for in."""
@@ -83,10 +86,21 @@ def reconcile(project: Project, *, actor: str = "user", retarget: bool = False) 
         if (reason := judge.done_reason()) is not None:
             set_status(project, node_id, Status.DONE, note=f"Reconciled: {reason}.", actor=actor)
             report.done.append(Reconciled(node_id, node.title, reason))
+            if judge.merged_pr and not graph.is_review(node_id):
+                _freeze_task_cost(project, node_id, judge.merged_pr)
             if graph.is_review(node_id) and (feature := node.parent) is not None:
                 _finish_feature(project, feature, actor, report)
         report.findings.extend(judge.findings)
     return report
+
+
+def _freeze_task_cost(project: Project, node_id: NodeId, pr_url: str) -> None:
+    """Records the task's cost so far as frozen by the merge of `pr_url`, unless it already is."""
+    if node_id in read_costs(project.apm_dir):
+        return
+    cost = Store(project.apm_dir).node_cost(node_id)
+    now = datetime.now(UTC).isoformat(timespec="seconds")
+    freeze_cost(project.apm_dir, CostRecord(node_id, cost.total, cost.by_agent, now, pr_url))
 
 
 def _finish_feature(project: Project, feature: NodeId, actor: str, report: Report) -> None:
@@ -128,6 +142,8 @@ class _Judge:
         home = home_branch(graph, node_id)
         self.target = (branch_ref(repo_dir, home) if home else None) or default_branch(repo_dir)
         self.findings: list[Finding] = []
+        self.merged_pr: str | None = None
+        """The URL of the pull request whose merge made the node done."""
 
     @property
     def target_name(self) -> str | None:
@@ -142,8 +158,10 @@ class _Judge:
         target = self.target_name
         if pr.merged:
             if target is None or pr.base == target:
+                self.merged_pr = self.delivery.pr
                 return f"PR #{pr.number} merged into {pr.base}"
             if self._on_target(pr.merge_commit):
+                self.merged_pr = self.delivery.pr
                 return f"PR #{pr.number} merged into {pr.base}, which is now on {target}"
             owner = self._owner_of(pr.base)
             where = f"{pr.base} ({owner}'s branch)" if owner else pr.base
