@@ -944,6 +944,38 @@ main {
   --xy-handle-border-color: var(--bg);
 }
 
+/* The chain of the selected node, what it needs and what needs it, stays as it is, its edges a
+   little bolder; everything off the chain dims. */
+.card.rel-dim,
+.port.rel-dim {
+  opacity: 0.3;
+}
+
+.react-flow__edge.up .react-flow__edge-path,
+.react-flow__edge.down .react-flow__edge-path {
+  stroke: var(--fg-muted) !important;
+  stroke-width: 2;
+}
+
+.react-flow__edge.dim {
+  opacity: 0.15;
+}
+
+.relation-legend {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  z-index: 5;
+  display: flex;
+  gap: 12px;
+  padding: 4px 10px;
+  font-size: 12px;
+  color: var(--fg-muted);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
 .react-flow__edge.dep .react-flow__edge-path {
   stroke: var(--fg-subtle);
 }
