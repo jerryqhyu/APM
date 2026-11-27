@@ -20,7 +20,7 @@ import type {
   Status,
 } from "./types";
 import { Empty, StatePill } from "./ui";
-import { STATUS_LABEL, cx, stackedName, stateOf, timeAgo } from "./util";
+import { STATUS_LABEL, cx, proposalSummary, stackedName, stateOf, timeAgo } from "./util";
 
 export interface DetailActions {
   patch: (change: { title?: string; kind?: Kind; status?: Status; body?: string; tags?: string[] }) => Promise<void>;
@@ -83,7 +83,7 @@ export function NodeDetails({ detail, nodes, actions }: { detail: NodeDetail; no
 
       {detail.proposals.map((proposal) => (
         <div key={proposal.id} className="callout proposal">
-          <span>Claude proposed {proposal.data.children.length} children for this node.</span>
+          <span>{proposalSummary(proposal, detail.title)}</span>
           <button className="primary" onClick={() => actions.review(proposal)}>
             Review
           </button>
@@ -242,9 +242,7 @@ export function PlanSummary({
       )}
       {proposals.map((proposal) => (
         <div key={proposal.id} className="callout proposal">
-          <span>
-            Claude proposed {proposal.data.children.length} children for “{byId.get(proposal.node_id)?.title ?? "a deleted node"}”.
-          </span>
+          <span>{proposalSummary(proposal, byId.get(proposal.node_id)?.title ?? "a deleted node")}</span>
           <button className="primary" onClick={() => onReview(proposal)}>
             Review
           </button>

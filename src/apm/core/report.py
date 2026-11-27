@@ -207,6 +207,9 @@ def gather_record(
     """
     graph = load_graph(project)
     subtree = [feature, *graph.descendants(feature)]
+    # A task split in place is gone from the graph, but its conversations and its split belong to
+    # the feature its parts are in.
+    subtree += _split_away(store, graph, set(subtree))
     history, bookkeeping, runs = _history(project, set(subtree), _accepted_by_apm(store, subtree))
     step = graph.review_step(feature)
     delivery = graph[step].delivery if step is not None else None
@@ -306,7 +309,8 @@ def _history(
             runs.add(run)
         actor = commit.trailers.get("APM-Actor", "user")  # settings commits name no actor
         op = commit.trailers.get("APM-Op", "")
-        if actor == "user" or op in ("decompose", "settings") or actor == "agent:apm-assistant":
+        accepted = op in ("decompose", "split", "settings")
+        if actor == "user" or accepted or actor == "agent:apm-assistant":
             who = _who(actor, op, automatic=run in by_apm)
             shown.append(PlanChange(commit.time, who, commit.subject, commit.note))
         else:
@@ -318,12 +322,22 @@ def _who(actor: str, op: str, *, automatic: bool) -> str:
     if actor == "user":
         return "the user"
     agent = actor.removeprefix("agent:")
-    if op == "decompose":
+    if op in ("decompose", "split"):
         who = "APM on its own" if automatic else "the user"
         return f"{who}, accepting {agent}'s proposal"
     if agent == "apm-assistant":
         return "Claude in a chat, as asked there"
     return agent
+
+
+def _split_away(store: Store, graph: Graph, nodes: set[NodeId]) -> list[NodeId]:
+    """The tasks that a split replaced with parts among `nodes`."""
+    gone = []
+    for proposal in store.list_proposals(status="accepted"):
+        acceptance = store.acceptance(proposal.id)
+        if proposal.node_id not in graph and acceptance and nodes & set(acceptance.created):
+            gone.append(proposal.node_id)
+    return gone
 
 
 def _accepted_by_apm(store: Store, subtree: list[NodeId]) -> set[str]:
@@ -463,7 +477,8 @@ def _choice(request: dict[str, Any], answer: dict[str, Any], when: float) -> lis
 
 SOURCES = {
     "apm-decomposer": "Breakdown by Decompose",
-    "apm-task-reviewer": "Split proposed by a task review (the task was too big)",
+    "apm-task-reviewer": "Split proposed by a task review (the task was too big; accepted, the"
+    " parts replace it in its feature)",
     "apm-feature-reviewer": "Follow-up tasks proposed by a feature review",
 }
 
@@ -505,8 +520,12 @@ def _proposal(
     if review:
         revised = " (the breakdown was revised once in response)" if review.get("revised") else ""
         critic = f"{review.get('verdict', '')}{revised}: {review.get('summary', '')}".strip(": ")
+    split_of = data.get("split_of")
+    where = _ref(graph, proposal.node_id)
+    if proposal.node_id not in graph and isinstance(split_of, dict) and split_of.get("title"):
+        where = f"{handle(proposal.node_id)} “{split_of['title']}” (replaced by its split)"
     return ProposalItem(
-        where=_ref(graph, proposal.node_id),
+        where=where,
         source=SOURCES.get(agent, "Proposal"),
         status=status,
         when=proposal.created,
@@ -605,6 +624,8 @@ def _text(value: object) -> str:
 def _reviews(store: Store, graph: Graph, subtree: list[NodeId]) -> Iterator[ReviewTurn]:
     """Every turn of every review of the feature and the features inside it, oldest first."""
     for step in subtree:
+        if step not in graph:  # a task split away
+            continue
         if graph[step].kind is not Kind.REVIEW or (feature := graph[step].parent) is None:
             continue
         runs = [

@@ -220,7 +220,7 @@ The limit can differ per feature: the reviewer is told the one that applies to i
 APM checks this before a task is built. A **task review** (the `apm-task-reviewer` agent, with the `apm-task-sizing` skill) reads the task and the code it will touch, estimates the real lines it needs, and gives one verdict:
 
 - **Pass**: small enough. Implement is allowed.
-- **Too big**: it comes with a proposed split, waiting under **Proposals**. Accepting it turns the task into a small feature with those children and its own review step, and each new child is reviewed in turn.
+- **Too big**: it comes with a proposed split, waiting under **Proposals** and shown dashed next to the task. Accepting replaces the task with those tasks, next to each other in the same feature, so a split never adds a level. The tasks that need no other part take over what the task needed, and whatever needed the task waits for the parts at the end. Each new task is reviewed in turn. Only a top-level node, which no feature holds, becomes a feature with the parts inside it instead.
 - **Unclear**: too vague to estimate. It says what is missing; add it to the description.
 - **Error**: the review failed or was cut off (for example, `apm serve` was stopped). The task is unlocked and shows the error. APM tries once more for the same content, then waits until you edit the task or start a review yourself.
 

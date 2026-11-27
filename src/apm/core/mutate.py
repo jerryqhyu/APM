@@ -39,6 +39,7 @@ type Op = Literal[
     "status",
     "deliver",
     "decompose",
+    "split",
     "edit-body",
     "merge",
     "tags",

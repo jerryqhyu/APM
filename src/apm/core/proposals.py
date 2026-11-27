@@ -16,11 +16,15 @@ from apm.core.graph import Graph
 from apm.core.ids import HandleError
 from apm.core.model import Kind, NodeId
 from apm.core.mutate import Mutation, OpError
-from apm.core.ops import NewNode, decompose
+from apm.core.ops import NewNode, decompose, split_task
 from apm.core.project import Project, load_graph
 from apm.core.store import Proposal, Store
 
 NonEmpty = Annotated[str, Field(min_length=1)]
+
+
+TASK_REVIEWER = "apm-task-reviewer"
+"""Its `too_big` verdict's split is a proposal too, accepted in place (`accept_split`)."""
 
 
 class _Model(BaseModel):
@@ -216,6 +220,38 @@ def accept_decomposition(
         raise ProposalError(str(err)) from None
 
 
+def is_split(store: Store, proposal: Proposal) -> bool:
+    """A task review's split of a task, rather than a breakdown: accepted with `accept_split`."""
+    if "split_of" in proposal.data:
+        return True
+    if proposal.run_id is None:
+        return False
+    with contextlib.suppress(KeyError):  # a run from before the database was cleared
+        return store.get_run(proposal.run_id).agent == TASK_REVIEWER
+    return False
+
+
+def accept_split(
+    project: Project,
+    task: NodeId,
+    decomposition: Decomposition,
+    *,
+    actor: str = "user",
+    run: str | None = None,
+) -> Mutation:
+    """Replaces `task` with the proposed parts, next to each other in its feature, in one commit
+    (`ops.split_task`). A task with no feature around it is broken down instead.
+    """
+    graph = load_graph(project)
+    if graph[task].parent is None:
+        return accept_decomposition(project, task, decomposition, actor=actor, run=run)
+    parts = [_new_node(graph, child) for child in decomposition.children]
+    try:
+        return split_task(project, task, parts, actor=actor, run=run, note=decomposition.rationale)
+    except OpError as err:
+        raise ProposalError(str(err)) from None
+
+
 def _new_node(graph: Graph, child: ProposedChild) -> NewNode:
     deps = []
     for ref in child.depends_on_ids:
@@ -258,7 +294,8 @@ def accept_proposal(
         if children is not None:
             data["children"] = children
         run = store.get_run(proposal.run_id) if proposal.run_id else None
-        result = accept_decomposition(
+        accept = accept_split if is_split(store, proposal) else accept_decomposition
+        result = accept(
             project,
             proposal.node_id,
             parse_decomposition(data),

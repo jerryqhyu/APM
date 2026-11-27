@@ -1,4 +1,4 @@
-import type { NodeView, Run, RunStatus, StackedOn } from "./types";
+import type { NodeView, Proposal, Run, RunStatus, StackedOn } from "./types";
 
 export type StateKey = "ready" | "stacked" | "blocked" | "todo" | "in_progress" | "done" | "dropped";
 
@@ -131,4 +131,17 @@ function threadTitle(first: Run): string {
   }
   const line = typedText(first).trim().split("\n")[0] ?? "";
   return line.length > 44 ? `${line.slice(0, 43)}…` : line || "Chat";
+}
+
+/** A task review's split: accepted, its parts replace the task in its feature, rather than going
+ * inside it as a breakdown's children do.
+ */
+export const isSplit = (proposal: Proposal): boolean => proposal.split ?? !!proposal.data.split_of;
+
+/** What a proposal offers, for a callout or a toast. */
+export function proposalSummary(proposal: Proposal, title: string): string {
+  const count = proposal.data.children.length;
+  return isSplit(proposal)
+    ? `Claude proposes splitting “${title}” into ${count} tasks.`
+    : `Claude proposed ${count} children for “${title}”.`;
 }

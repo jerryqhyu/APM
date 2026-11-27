@@ -501,3 +501,25 @@ def test_a_record_with_nothing_said_says_so(project: Project) -> None:
     assert "No conversation about this feature has anything a person typed or chose." in text
     assert "## Proposals" not in text
     assert "## Feature reviews" not in text
+
+
+def test_a_task_split_in_place_stays_in_its_features_record(project: Project) -> None:
+    store = Store(project.apm_dir)
+    (feature,) = create_nodes(project, [NewNode(title="Cost view")]).created
+    (task,) = create_nodes(project, [NewNode(title="Ledger", parent=feature)]).created
+    asked = turn(store, task, "apm-assistant", "Keep the ledger per agent, please.")
+    review = turn(store, task, "apm-task-reviewer", "Review the task.")
+    children = [
+        {"key": "a", "title": "Sum runs", "intent": "Sum them."},
+        {"key": "b", "title": "Freeze", "intent": "Freeze it.", "depends_on_keys": ["a"]},
+    ]
+    data = {"rationale": "Two parts.", "children": children, "split_of": {"title": "Ledger"}}
+    proposal = store.create_proposal(node_id=task, data=data, run_id=review.id)
+    accept_proposal(project, store, proposal.id)
+    assert task not in load_graph(project)
+
+    record = gather_record(project, store, feature)
+    (item,) = record.proposals
+    assert item.where == f"{handle(task)} “Ledger” (replaced by its split)"
+    assert len(item.became) == 2
+    assert any(asked.prompt in line.text for c in record.conversations for line in c.lines)

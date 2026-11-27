@@ -788,7 +788,7 @@ class Runner:
     async def _review_task(self, spec: AgentSpec, config: ApmConfig, run: Run, **kw: Any) -> None:
         """Runs the task reviewer and saves its verdict for the content it was shown: the
         fingerprint is taken before it starts, so an edit made meanwhile gets a review of its own.
-        A `too_big` split becomes a proposal, accepted like a decomposer's.
+        A `too_big` split becomes a proposal: accepted, it replaces the task in its feature.
         """
         node = load_graph(self.project)[run.node_id]
         fingerprint = content_fingerprint(node, read_body(self.project.apm_dir, run.node_id))
@@ -815,7 +815,13 @@ class Runner:
             )
             self._release_review_lock(run)
             if verdict.verdict == "too_big":
-                split = {"rationale": verdict.summary, "children": data["children"], "warnings": []}
+                split = {
+                    "rationale": verdict.summary,
+                    "children": data["children"],
+                    "warnings": [],
+                    # The task goes once the split is accepted: keep what it was called.
+                    "split_of": {"title": node.title},
+                }
                 proposal = self.store.create_proposal(
                     node_id=run.node_id, data=split, run_id=run.id
                 )
@@ -1086,7 +1092,7 @@ class Runner:
 
 
 def proposal_dict(proposal: Proposal) -> dict[str, Any]:
-    return asdict(proposal)
+    return {**asdict(proposal), "split": "split_of" in proposal.data}
 
 
 def _said(verdict: TaskVerdict) -> str:
@@ -1097,7 +1103,7 @@ def _said(verdict: TaskVerdict) -> str:
         count = len(verdict.children)
         return (
             f"**Too big**: {verdict.summary} A split into {count} tasks waits under Proposals:"
-            " accepting it turns this task into a feature."
+            " accepting it replaces this task with them, in the same feature."
         )
     return f"**Unclear**: {verdict.summary} Missing: " + "; ".join(verdict.missing)
 
