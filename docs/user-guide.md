@@ -106,6 +106,8 @@ On the far right you can switch between a **Light**, **Dark** or **Auto** theme.
 
 - **Click** a node to select it. **Shift-click** (or ⌘/Ctrl-click) to select several.
 - **Double-click** a node to go inside it.
+- **Click** a node to see its chain: what it needs, all the way back, is outlined in cyan, and what needs it, all the way on, in pink, with the edges between them; everything else fades. The corner says how many of each.
+- Edges are routed between the nodes, never under them: an edge that skips a column goes round the nodes in it.
 - **Drag** from one node to another to say the second needs the first.
 - A dashed stub labelled *from* or *to* is a dependency on a node outside this level. Click it to go there.
 - Dashed cards are a **proposal** from Claude, not yet part of the plan.
