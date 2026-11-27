@@ -1,3 +1,5 @@
+<p align="center"><img src="docs/brand/apm-banner.svg" alt="APM: the project manager for building with AI agents" width="100%"></p>
+
 # APM
 
 A local-first project manager built for working with AI agents.

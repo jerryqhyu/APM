@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import mark from "./assets/apm-mark.svg";
 import { type ActionHandlers, ActionsMenu } from "./Actions";
 import {
   ApiError,
@@ -362,6 +363,7 @@ export function App() {
   if (fatal === "token") {
     return (
       <div className="splash">
+        <img className="splash-mark" src={mark} alt="APM" width={72} height={72} />
         <h1>This page needs its access link</h1>
         <p>
           Open the full address that <code>apm serve</code> printed in your terminal. It ends in <code>?token=…</code>,
@@ -373,7 +375,10 @@ export function App() {
   if (!project || !tree || !level) {
     return (
       <div className="splash">
-        <Spinner /> Loading the plan…
+        <img className="splash-mark" src={mark} alt="APM" width={72} height={72} />
+        <span>
+          <Spinner /> Loading the plan…
+        </span>
       </div>
     );
   }
@@ -404,9 +409,7 @@ export function App() {
           <SidebarIcon open={outline === "shown"} />
         </button>
         <div className="brand" title={project.code_dir}>
-          <span className="logo" aria-hidden>
-            ◈
-          </span>
+          <img className="logo" src={mark} alt="" width={22} height={22} />
           <span className="project-name">{project.name}</span>
         </div>
         <Search onPick={goTo} />

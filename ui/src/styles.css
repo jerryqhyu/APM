@@ -575,14 +575,23 @@ body.resizing {
   display: flex;
   align-items: center;
   gap: 8px;
+  /* The search box gives way first: the project's name keeps its room, up to a point. */
+  flex: 0 0 auto;
+  max-width: 40%;
   min-width: 0;
   font-weight: 600;
   font-size: 15px;
 }
 
 .logo {
-  color: var(--accent);
-  font-size: 18px;
+  display: block;
+  flex: none;
+  border-radius: 5px;
+}
+
+.splash-mark {
+  margin-bottom: 8px;
+  border-radius: 16px;
 }
 
 .project-name,
@@ -619,6 +628,7 @@ body.resizing {
 .search {
   position: relative;
   flex: 0 1 320px;
+  min-width: 120px;
   margin-left: 12px;
 }
 
