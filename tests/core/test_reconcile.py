@@ -4,14 +4,16 @@ import pytest
 from typer.testing import CliRunner
 
 from apm.cli import app
-from apm.core.delivery import PrRef, parse_pr_url, read_pr
+from apm.core.costs import read_costs
+from apm.core.delivery import PrRef, feature_branch, parse_pr_url, read_pr
 from apm.core.files import read_body
 from apm.core.git import git, log
 from apm.core.ids import handle
 from apm.core.model import Status
 from apm.core.ops import NewNode, attach_delivery, create_nodes, set_status
 from apm.core.project import Project, load_graph
-from apm.core.reconcile import Report, describe, reconcile
+from apm.core.reconcile import Report, describe, freeze_feature_cost, reconcile
+from apm.core.store import Store
 from tests.fake_gh import FakeGh
 
 
@@ -295,3 +297,48 @@ def test_the_cli_reports_and_with_retarget_retargets(
         second.output
     )
     assert ["api", "-X", "PATCH", "repos/o/r/pulls/21", "-f", "base=main"] in gh.calls
+
+
+# --- frozen feature costs ---
+
+
+def feature_with_review(project: Project, title: str, pr: str) -> tuple[str, str]:
+    """A feature with one done task that cost 1.5, and an in-progress review step delivered by
+    `pr`. Returns the feature and its branch.
+    """
+    feature, task = create_nodes(
+        project, [NewNode(title=title, key="f"), NewNode(title="Task", parent_key="f")]
+    ).created
+    graph = load_graph(project)
+    review = graph.review_step(feature)
+    assert review is not None
+    set_status(project, task, Status.DONE)
+    set_status(project, review, Status.IN_PROGRESS)
+    branch = feature_branch(graph, feature)
+    attach_delivery(project, review, branch=branch, pr=pr)
+    store = Store(project.apm_dir)
+    run = store.create_run(node_id=task, agent="apm-implementer")
+    store.finish_run(run.id, "succeeded", cost_usd=1.5)
+    return feature, branch
+
+
+def test_a_feature_whose_branch_merged_into_main_has_its_cost_frozen(
+    code: Project, gh: FakeGh
+) -> None:
+    merged, branch = feature_with_review(code, "Merged", gh.add(30, merged=True, state="closed"))
+    still_open, _ = feature_with_review(code, "Open", gh.add(31))
+    reconcile(code)
+    costs = read_costs(code.apm_dir)
+    assert set(costs) == {merged}
+    assert still_open not in costs
+    record = costs[merged]
+    assert (record.merged, record.total, record.by_agent) == (
+        branch,
+        1.5,
+        {"apm-implementer": 1.5},
+    )
+
+    run = Store(code.apm_dir).create_run(node_id=merged, agent="apm-feature-reviewer")
+    Store(code.apm_dir).finish_run(run.id, "succeeded", cost_usd=2.0)
+    freeze_feature_cost(code, merged)
+    assert read_costs(code.apm_dir) == costs
