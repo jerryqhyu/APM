@@ -12,7 +12,7 @@ import {
   saveNodeSettings,
   writeReport,
 } from "./api";
-import { Canvas } from "./Canvas";
+import { Canvas, type View } from "./Canvas";
 import { Chat } from "./Chat";
 import { type DetailActions, NodeDetails, PlanSummary } from "./Details";
 import { AddNodeDialog, DeleteDialog, ExportDialog, MergeDialog, PickNodeDialog, RunAgentDialog } from "./Dialogs";
@@ -69,6 +69,7 @@ export function App() {
   const [route, setRouteState] = useState<Route>(readRoute);
   const [dialog, setDialog] = useState<Dialog | null>(null);
   const [tab, setTab] = useState<Tab>("chat");
+  const [view, setView] = useRemembered<View>("apm-view", "graph", ["graph", "list"]);
   const [focusRun, setFocusRun] = useState<string | null>(null);
   const [toasts, setToasts] = useState<{ id: number; text: string }[]>([]);
   const [fatal, setFatal] = useState<string | null>(null);
@@ -446,6 +447,8 @@ export function App() {
           onAdd={() => setDialog({ kind: "add", parent: route.root })}
           onDecompose={() => route.root && setDialog({ kind: "run", agent: "apm-decomposer", node: route.root })}
           onReview={(proposal) => setDialog({ kind: "review", proposal })}
+          view={view}
+          onView={setView}
         />
       </main>
 
@@ -793,4 +796,28 @@ function Search({ onPick }: { onPick: (id: string) => void }) {
       )}
     </div>
   );
+}
+
+/** A choice this browser remembers (in localStorage, when it may). */
+function useRemembered<T extends string>(key: string, fallback: T, allowed: readonly T[]): [T, (value: T) => void] {
+  const [value, setValue] = useState<T>(() => {
+    try {
+      const stored = localStorage.getItem(key) as T | null;
+      return stored && allowed.includes(stored) ? stored : fallback;
+    } catch {
+      return fallback;
+    }
+  });
+  const remember = useCallback(
+    (next: T) => {
+      setValue(next);
+      try {
+        localStorage.setItem(key, next);
+      } catch {
+        // private browsing: the choice lasts for this page only
+      }
+    },
+    [key],
+  );
+  return [value, remember];
 }

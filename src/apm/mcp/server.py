@@ -94,6 +94,7 @@ class NewNodeInput(BaseModel):
     intent: str = Field("", description="Why this exists and what outcome it's for.")
     acceptance: list[str] = Field(default_factory=list, description="Testable criteria.")
     depends_on: list[str] = Field(default_factory=list, description="Handles of existing nodes.")
+    tags: list[str] = Field(default_factory=list, description="Labels, e.g. backlog or area/ui.")
     key: str | None = Field(None, description="Temporary name other new nodes can depend on.")
     depends_on_keys: list[str] = Field(default_factory=list, description="Keys in this batch.")
 
@@ -210,6 +211,7 @@ def build_server(project: Project | None = None, env: Mapping[str, str] | None =
                 depends_on_keys=n.depends_on_keys,
                 parent_key=n.parent_key,
                 body=render_body(intent=n.intent, acceptance=n.acceptance),
+                tags=n.tags,
             )
             for n in nodes
         ]
@@ -237,6 +239,22 @@ def build_server(project: Project | None = None, env: Mapping[str, str] | None =
             if ops.edit_body(found, node_id, body, **by).sha:
                 changed.append("body")
         return f"updated {' and '.join(changed)}" if changed else "nothing to change"
+
+    @tool
+    def apm_tag_node(
+        node: str,
+        add: Annotated[list[str], Field(description="Tags to add.")] = [],  # noqa: B006
+        remove: Annotated[list[str], Field(description="Tags to remove.")] = [],  # noqa: B006
+    ) -> str:
+        """Add or remove a node's tags (labels such as backlog or area/ui). Search finds them
+        with `tag:<name>`.
+        """
+        found, graph = plan()
+        node_id = graph.resolve(node)
+        scope.check("tag", node_id)
+        result = ops.set_tags(found, node_id, add=add, remove=remove, **by)
+        tags = " ".join(f"#{t}" for t in result.graph[node_id].tags) or "no tags"
+        return f"tags: {tags}" if result.sha else f"nothing to change ({tags})"
 
     @tool
     def apm_move_node(

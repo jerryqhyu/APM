@@ -623,3 +623,19 @@ def test_node_detail_reports_the_task_review(client: TestClient, project: Projec
     detail = client.get(f"/api/nodes/{node}").json()
     assert detail["review"] == {"state": "running"}  # the review state stays when it is off
     assert "not been reviewed" in detail["implement_blocker"]  # and so does the gate
+
+
+def test_tags_over_the_api(client: TestClient, project: Project) -> None:
+    made = client.post("/api/nodes", json={"title": "Search page", "tags": ["Backlog"]}).json()
+    assert made["tags"] == ["backlog"]
+    before = commits(project)
+    patched = client.patch(f"/api/nodes/{made['id']}", json={"tags": ["ui", "later"]}).json()
+    assert patched["tags"] == ["later", "ui"]
+    assert commits(project) == before + 1  # backlog removed, later and ui added: one commit
+    assert client.get("/api/tree").json()["nodes"][0]["tags"] == ["later", "ui"]
+    assert [h["title"] for h in client.get("/api/search", params={"q": "tag:ui"}).json()] == [
+        "Search page"
+    ]
+    bad = client.patch(f"/api/nodes/{made['id']}", json={"tags": ["no!"]})
+    assert bad.status_code == 422
+    assert "tag" in bad.json()["error"]

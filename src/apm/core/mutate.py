@@ -41,6 +41,7 @@ type Op = Literal[
     "decompose",
     "edit-body",
     "merge",
+    "tags",
     "settings",
 ]
 """`settings` changes apm.yaml, not the graph: see `apm.core.settings`."""

@@ -516,3 +516,13 @@ def test_a_task_under_review_is_refused(cwd: Project) -> None:
     take_review_lock(cwd.apm_dir, load_graph(cwd).resolve(node), "run-1")
     assert f"error: {node} is under review" in apm("node", "set", node, "--title", "X", code=1)
     apm("node", "status", node, "in_progress")
+
+
+def test_tags_from_the_terminal(cwd: Project) -> None:
+    node = apm("node", "add", "Search page", "--tag", "Backlog", "-t", "ui").split()[0]
+    assert apm("node", "tag", node, "later") == "#backlog #later #ui\n"
+    assert apm("node", "tag", node, "ui", "--remove") == "#backlog #later\n"
+    assert apm("node", "ls", "--tag", "backlog").strip().endswith("#backlog #later")
+    assert apm("node", "ls", "--tag", "nope") == "no nodes with #nope\n"
+    assert "Search page" in apm("search", "tag:later")
+    assert "bad" in apm("node", "tag", node, "bad tag!", code=1)
