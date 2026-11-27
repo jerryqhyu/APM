@@ -15,11 +15,11 @@ from apm.core.project import Project, load_graph
 from apm.core.report import REPORTER
 from apm.runner.auto import IMPLEMENTER, TASK_REVIEWER, AutoQueue
 from apm.runner.runner import FEATURE_REVIEWER, Runner
-from tests.conftest import CodeRepo
+from tests.conftest import CodeRepo, configure
 from tests.core.test_feature_review import built
 from tests.fake_gh import FakeGh
 from tests.runner.fake import FakeClaude
-from tests.runner.test_auto import configure, feature, recording, settle
+from tests.runner.test_auto import feature, recording
 from tests.runner.test_runner import Harness
 
 
@@ -56,7 +56,7 @@ async def test_gaps_are_followed_up_built_merged_and_reviewed_again(
         before = {r.id for r in harness.store.list_runs()}
         queue.scan()
         queue.pump()
-        await settle(harness)
+        await harness.settle()
         runs = [r for r in harness.store.list_runs() if r.id not in before]
         assert {r.status for r in runs} <= {"succeeded"}
         return sorted((r.agent, r.node_id) for r in runs)
@@ -160,7 +160,7 @@ async def test_accept_follow_ups_off_leaves_the_proposal_and_the_rest_runs(
     queue = AutoQueue(harness.runner, debounce_s=0)
     queue.scan()
     queue.pump()
-    await settle(harness)
+    await harness.settle()
     assert [(r.agent, r.node_id) for r in harness.store.list_runs()] == [(FEATURE_REVIEWER, step)]
     assert len(harness.store.list_proposals(status="pending")) == 1  # waits for you
     assert harness.store.follow_ups() == set()

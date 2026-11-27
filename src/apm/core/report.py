@@ -1,27 +1,8 @@
-"""The feature report's record and prompt (plans.md §7.9).
-
-A feature report tells people who weren't there what a feature is and why it exists, the
-decisions people made along the way and why they made them, and how it was built. An agent, the
-feature reporter, writes it. It must not dig for the decisions, and must never invent them, so APM
-gathers everything it knows into the agent's first message, the **record**:
-
-- the feature's description, the descriptions of its decision nodes, and every task: its
-  description, status, pull request and the size its task review gave it;
-- what people said: every message typed in a conversation about the feature or anything in it
-  (chats, and the guidance given to Decompose, Implement and Review feature), with Claude's
-  replies around them; answers to Claude's questions, plans approved, and refusals with their
-  reason; and the turns of chats elsewhere that changed the feature's part of the plan;
-- proposals accepted or rejected, and what was changed in one before it was accepted;
-- the plan's history of the feature, with who made each change and the note that came with it;
-- every turn of the feature's reviews: the verdict, what was missing, and the follow-up tasks
-  that closed the gaps;
-- what the feature branch changes, so the agent knows where to look.
-
-The record stays within `RECORD_LIMIT` characters: Claude's replies are shortened first, then
-left out. A message a person typed is never left out, only shortened.
-
-`report_prompt` wraps the record in what to write at each detail level (`report_detail`), and
-`parse_answer` reads what the agent returns.
+"""The feature report's record and prompt (plans.md §7.10). APM gathers everything it knows about
+a feature into the reporter's first message (descriptions, decisions, what people typed and chose,
+proposals and their edits, the plan's history, review turns, what the branch changes), so the
+agent never digs for decisions or invents them. The record stays within `RECORD_LIMIT`: Claude's
+replies are cut first; a message a person typed is only ever shortened.
 """
 
 import contextlib

@@ -14,9 +14,16 @@ from pathlib import Path
 
 import yaml
 
-from apm.core.config import parse_config
+from apm.core.config import default_repo, parse_config, read_config
 from apm.core.errors import ApmError
-from apm.core.files import CONFIG_FILE, GRAPH_FILE, read_graph_file, write_file_atomic
+from apm.core.files import (
+    CONFIG_FILE,
+    GRAPH_FILE,
+    cached_parse,
+    graph_path,
+    read_graph_file,
+    write_file_atomic,
+)
 from apm.core.git import CommitMessage, GitError, add, commit, git
 from apm.core.graph import Graph
 from apm.core.lock import CACHE_DIR
@@ -112,7 +119,12 @@ def link_plan(code_dir: Path) -> Project:
 
 
 def load_graph(project: Project) -> Graph:
-    return Graph(read_graph_file(project.apm_dir))
+    """The plan's graph, parsed again only when graph.ndjson changes."""
+    return cached_parse(graph_path(project.apm_dir), _graph)
+
+
+def _graph(path: Path) -> Graph:
+    return Graph(read_graph_file(path.parent))
 
 
 def _initial_config(name: str, remote: str | None) -> str:
@@ -126,6 +138,17 @@ def _initial_config(name: str, remote: str | None) -> str:
     )
     parse_config(text)  # never write a config that can't be read back
     return text
+
+
+def code_repo(project: Project, error: type[ApmError] = ProjectError) -> Path:
+    """The default code repo's directory. Raises `error` if it isn't a git repository."""
+    config = read_config(project.apm_dir)
+    path = (project.apm_dir / config.code.repos[default_repo(config)].path).resolve()
+    try:
+        git(path, ["rev-parse", "--git-dir"])
+    except GitError:
+        raise error(f"{path} is not a git repository") from None
+    return path
 
 
 def _origin(code_dir: Path) -> str | None:

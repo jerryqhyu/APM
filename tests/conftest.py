@@ -147,3 +147,9 @@ def code_repo(project: Project, tmp_path: Path) -> CodeRepo:
 def tasks_of(graph: Graph, node_id: str) -> tuple[str, ...]:
     """`node_id`'s children without its review step: the ones a test made itself."""
     return tuple(c for c in graph.children(node_id) if not graph.is_review(c))
+
+
+def configure(project: Project, text: str) -> None:
+    """Appends YAML to the project's apm.yaml."""
+    config = project.apm_dir / "apm.yaml"
+    config.write_text(config.read_text() + text)

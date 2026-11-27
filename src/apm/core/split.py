@@ -1,21 +1,7 @@
-"""The git side of eager mode (plans.md §7.9): carving a finished eager build into a chain of task
-commits, checking a chain before anything is recorded, and moving task branches on.
-
-Everything here is plain git, run by APM itself:
-
-- `mechanical_split`: when the builder made its commits task by task (each with an `APM-Node`
-  trailer, in an order the dependencies allow), the split is deterministic: those commits are the
-  chain, a task's several commits squashed into one. No agent is needed. Anything else (one big
-  commit, commits that mix tasks) goes to the splitter agent.
-- `check_chain`: what APM verifies before it believes a split, however it was made: one commit per
-  task, each on the one before, each with its task's trailer, none empty, in dependency order, and
-  the last one's tree exactly the eager branch's.
-- `publish`: pushes task branches without ever rewriting one. A new branch must not exist yet; an
-  existing one only moves forward from the commit APM left it at, so a commit someone else pushed
-  is never overwritten: git refuses the push.
-- `rebuilt_commits`: after a redo, a task's new content goes on top of its branch as a merge
-  commit (its old tip, and the new tip of the task before it), so the branch only moves forward
-  and its pull request still shows only its own part.
+"""The git side of eager mode (plans.md §7.9), all plain git: `mechanical_split` (when the builder
+committed task by task), `check_chain` (what APM verifies before it believes any split),
+`publish` (task branches only ever move forward, never forced) and `rebuilt_commits` (a redo puts
+a task's new content on top of its branch as a merge commit).
 """
 
 import re
@@ -24,12 +10,22 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 from apm.core.errors import ApmError
-from apm.core.git import CommitMessage, GitError, format_commit_message, git, rev_parse
+from apm.core.git import (
+    CommitMessage,
+    GitError,
+    format_commit_message,
+    git,
+    has_origin,
+    parents_of,
+    ref_tip,
+    rev_parse,
+    tree_of,
+)
+from apm.core.git import publish as publish_branches
 from apm.core.ids import HandleError, resolve_handle
 from apm.core.model import NodeId
 
 TRAILER = "APM-Node"
-NO_SHA = "0" * 40
 DIFF_LIMIT = 20_000
 """How much of a diff goes into an agent's message, in characters."""
 
@@ -53,18 +49,6 @@ class Piece:
 # --- reading commits ---
 
 
-def tree_of(repo_dir: Path, rev: str) -> str:
-    return git(repo_dir, ["rev-parse", f"{rev}^{{tree}}"]).strip()
-
-
-def parents_of(repo_dir: Path, sha: str) -> list[str]:
-    return git(repo_dir, ["rev-list", "--parents", "-n", "1", sha]).split()[1:]
-
-
-def message_of(repo_dir: Path, sha: str) -> str:
-    return git(repo_dir, ["log", "-1", "--format=%B", sha])
-
-
 def subject_of(repo_dir: Path, sha: str) -> str:
     return git(repo_dir, ["log", "-1", "--format=%s", sha]).strip()
 
@@ -80,15 +64,6 @@ def exists(repo_dir: Path, sha: str) -> bool:
         return rev_parse(repo_dir, sha) is not None
     except GitError:
         return False
-
-
-def patch_id(repo_dir: Path, start: str, end: str) -> str | None:
-    """The stable patch id of the change from `start` to `end`; None if there is none."""
-    diff = git(repo_dir, ["diff", "--no-color", start, end])
-    if not diff.strip():
-        return None
-    out = git(repo_dir, ["patch-id", "--stable"], stdin=diff).split()
-    return out[0] if out else None
 
 
 def diff_text(repo_dir: Path, start: str, end: str, limit: int = DIFF_LIMIT) -> str:
@@ -297,19 +272,7 @@ class Move:
 
 def remote_tip(repo_dir: Path, branch: str) -> str | None:
     """`branch`'s tip on `origin` as last fetched, else locally if there is no `origin`."""
-    ref = f"refs/remotes/origin/{branch}" if has_origin(repo_dir) else f"refs/heads/{branch}"
-    try:
-        return rev_parse(repo_dir, ref)
-    except GitError:
-        return None
-
-
-def has_origin(repo_dir: Path) -> bool:
-    try:
-        git(repo_dir, ["remote", "get-url", "origin"])
-    except GitError:
-        return False
-    return True
+    return ref_tip(repo_dir, f"refs/remotes/origin/{branch}" if has_origin(repo_dir) else branch)
 
 
 def publish(repo_dir: Path, moves: Sequence[Move]) -> None:
@@ -327,19 +290,10 @@ def publish(repo_dir: Path, moves: Sequence[Move]) -> None:
         if now != move.old:
             raise SplitError(_in_the_way(move, now))
         todo.append(move)
-    if not todo:
-        return
-    if not has_origin(repo_dir):
-        for move in todo:
-            git(repo_dir, ["update-ref", f"refs/heads/{move.branch}", move.new, move.old or NO_SHA])
-        return
-    refspecs = [f"{m.new}:refs/heads/{m.branch}" for m in todo]
     try:
-        git(repo_dir, ["push", "--quiet", "--atomic", "origin", *refspecs])
+        publish_branches(repo_dir, {m.branch: (m.new, m.old) for m in todo})
     except GitError as err:
         raise SplitError(f"git refused to move the task branches: {err.stderr.strip()}") from None
-    fetched = [f"+refs/heads/{m.branch}:refs/remotes/origin/{m.branch}" for m in todo]
-    git(repo_dir, ["fetch", "--quiet", "origin", *fetched])
 
 
 def _in_the_way(move: Move, now: str | None) -> str:

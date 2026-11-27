@@ -59,15 +59,10 @@ def review_all_tasks(
 def implement_feature(
     queue: RunQueue, node_id: NodeId, *, mode: str | None = None, message: str = ""
 ) -> Batch:
-    """Implement all: starts the implementer on every task of the feature that is ready now,
-    stacked ones included, and that passes the Implement gate (a passing task review of its
-    current content). Blocked tasks, and those that fail the gate, are skipped with why.
-
-    Eager mode: a feature it applies to (`feature_settings(...).eager`), this one or one inside
-    it, gets one eager build of all its To do tasks instead (`apm.runner.eager`), once every one
-    of them passes the gate; if one doesn't, none starts and each says why. Once a feature has
-    been split, its tasks come from the split, and only To do tasks added since are built one by
-    one.
+    """Implement all: the implementer on every task that is ready now (stacked ones too) and
+    passes the Implement gate; the rest are skipped with why. An eager feature (this one or one
+    inside it) gets one eager build of its To do tasks instead, once all of them pass the gate;
+    once split, only tasks added since are built one by one.
     """
     project, store = queue.runner.project, queue.runner.store
     graph, config = load_graph(project), read_config(project.apm_dir)

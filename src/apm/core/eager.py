@@ -1,16 +1,8 @@
-"""Eager mode (plans.md §7.9): a feature is built in one agent run on one branch, the *eager
-branch*, then split into one branch and one pull request per task. The task branches form a
-chain, each built on the one before, so each pull request (targeting the task before it, the
-first one the feature branch) shows only its own part. When a task's pull request changes after
-the split, the tasks after it are rebuilt on top of it: a *redo*.
-
-This module is the plain code around the two agents (`apm-eager-builder`, `apm-splitter`): what a
-build covers and the gate before it starts, branch names, recording a verified split, redo
-detection and planning, and what the UI shows. The git side is `apm.core.split`; the runs are
-`apm.runner.eager`.
-
-Its state lives in the store (`eager_builds`, `eager_slices`), not in the plan: it describes
-branches in this machine's clone.
+"""Eager mode (plans.md §7.9): a feature built in one run on an *eager branch*, then split into a
+chain of task branches, one pull request each, every one showing only its own part; a *redo*
+rebuilds the tasks after one whose pull request changed. The plain code around the agents: scope
+and gate, branch names, recording a verified split, redo detection and planning, and the UI's view.
+Git is `apm.core.split`, the runs `apm.runner.eager`, the state the store's eager tables.
 """
 
 import re
@@ -22,7 +14,7 @@ from typing import Any, Literal
 
 import networkx as nx
 
-from apm.core.config import ApmConfig, default_repo, read_config
+from apm.core.config import ApmConfig
 from apm.core.delivery import (
     PullRequest,
     branch_tip,
@@ -31,25 +23,23 @@ from apm.core.delivery import (
     read_pr,
 )
 from apm.core.errors import ApmError
-from apm.core.git import GitError, git, is_ancestor
+from apm.core.git import GitError, is_ancestor, parents_of, patch_id, ref_tip, tree_of
 from apm.core.graph import Graph
 from apm.core.ids import handle
 from apm.core.model import NodeId, Status
 from apm.core.ops import attach_delivery, set_status
 from apm.core.project import Project, load_graph
+from apm.core.project import code_repo as find_code_repo
 from apm.core.settings import feature_settings
 from apm.core.split import (
     Move,
     Piece,
     diff_text,
     exists,
-    parents_of,
-    patch_id,
     publish,
     rebuilt_commits,
     remote_tip,
     source_lines,
-    tree_of,
 )
 from apm.core.store import EagerBuild, EagerSlice, Store
 from apm.core.task_review import implement_blocker
@@ -230,14 +220,7 @@ def redirect(store: Store, config: ApmConfig, graph: Graph, task: NodeId) -> Nod
 
 
 def code_repo(project: Project) -> Path:
-    config = read_config(project.apm_dir)
-    repo = config.code.repos[default_repo(config)]
-    repo_dir = (project.apm_dir / repo.path).resolve()
-    try:
-        git(repo_dir, ["rev-parse", "--git-dir"])
-    except GitError:
-        raise EagerRefused(f"{repo_dir} is not a git repository") from None
-    return repo_dir
+    return find_code_repo(project, EagerRefused)
 
 
 # --- starting a round: the eager branch ---
@@ -289,7 +272,7 @@ def built_tip(repo_dir: Path, build: EagerBuild) -> str:
     """
     fetch_origin(repo_dir)
     tip = remote_tip(repo_dir, build.branch)
-    local = branch_tip_local(repo_dir, build.branch)
+    local = ref_tip(repo_dir, f"refs/heads/{build.branch}")
     if local is not None and local != tip and tip is not None and is_ancestor(repo_dir, tip, local):
         publish(repo_dir, [Move(build.branch, local, tip)])
         tip = local
@@ -302,14 +285,6 @@ def built_tip(repo_dir: Path, build: EagerBuild) -> str:
             f"{build.branch} no longer starts from {build.base_sha[:12]}: it was rewritten"
         )
     return tip
-
-
-def branch_tip_local(repo_dir: Path, branch: str) -> str | None:
-    try:
-        out = git(repo_dir, ["rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"])
-    except GitError:
-        return None
-    return out.strip() or None
 
 
 # --- recording a verified split ---

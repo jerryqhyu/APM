@@ -10,6 +10,7 @@ from apm.core.project import Project, load_graph
 from apm.runner import auto
 from apm.runner.auto import TASK_REVIEWER, AutoQueue
 from apm.runner.runner import FEATURE_REVIEWER, RunnerBusy
+from tests.conftest import configure
 from tests.runner.fake import FakeClaude
 from tests.runner.test_runner import Harness, option
 
@@ -22,18 +23,8 @@ class Clock:
         return self.now
 
 
-def configure(project: Project, text: str) -> None:
-    config = project.apm_dir / "apm.yaml"
-    config.write_text(config.read_text() + text)
-
-
 def tasks(project: Project, *titles: str) -> tuple[NodeId, ...]:
     return create_nodes(project, [NewNode(title=t) for t in titles]).created
-
-
-async def settle(harness: Harness) -> None:
-    for run in harness.store.list_runs(status="running"):
-        await harness.runner.wait(run.id)
 
 
 async def test_drive_queues_every_due_task_at_startup(
@@ -49,7 +40,7 @@ async def test_drive_queues_every_due_task_at_startup(
             break
         await asyncio.sleep(0.01)
     driver.cancel()
-    await settle(harness)
+    await harness.settle()
     runs = harness.store.list_runs()
     assert sorted(r.node_id for r in runs) == sorted([first, second])
     assert {r.agent for r in runs} == {TASK_REVIEWER}
@@ -70,7 +61,7 @@ async def test_a_burst_of_edits_gives_one_run_on_the_final_content(
         assert harness.store.list_runs() == []
     clock.now += 3
     queue.pump()
-    await settle(harness)
+    await harness.settle()
     for _ in range(3):  # rescans of the same content start nothing new
         clock.now += 10
         queue.scan()
@@ -92,7 +83,7 @@ async def test_queued_runs_wait_for_room_under_max_concurrent(
         queue.pump()
         assert harness.runner.active() == 1
         assert len(queue.queued) == 3 - len(harness.store.list_runs())
-        await settle(harness)
+        await harness.settle()
     runs = harness.store.list_runs()
     assert len(runs) == 3
     assert {r.status for r in runs} == {"succeeded"}
@@ -119,7 +110,7 @@ async def test_runs_use_the_agents_budget(project: Project, fake_claude: FakeCla
     queue = AutoQueue(harness.runner, debounce_s=0)
     queue.scan()
     queue.pump()
-    await settle(harness)
+    await harness.settle()
     (call,) = fake_claude.calls
     assert option(call, "--max-budget-usd") == "0.75"
 
@@ -237,7 +228,7 @@ async def cycle(queue: AutoQueue, harness: Harness, clock: Clock, times: int = 3
         clock.now += 10
         queue.scan()
         queue.pump()
-        await settle(harness)
+        await harness.settle()
 
 
 async def test_an_errored_task_review_is_retried_once_without_a_restart(
@@ -289,5 +280,5 @@ async def test_drive_rescans_when_a_run_finishes(
             break
         await asyncio.sleep(0.01)
     driver.cancel()
-    await settle(harness)
+    await harness.settle()
     assert len(harness.store.list_runs()) == 2

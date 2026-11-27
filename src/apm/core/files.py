@@ -4,8 +4,9 @@ bodies. A body is `nodes/<id>.md`: prose only, plain markdown with no frontmatte
 
 import os
 import secrets
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from pathlib import Path
+from typing import Any
 
 from apm.core.ids import is_node_id
 from apm.core.model import Node, NodeId
@@ -43,6 +44,29 @@ def read_graph_file(apm_dir: Path) -> list[Node]:
             ]
         ) from None
     return parse_graph(text, GRAPH_FILE)
+
+
+_CACHE: dict[tuple[Path, Callable[..., Any]], tuple[tuple[int, int, int], Any]] = {}
+_CACHE_SIZE = 32
+
+
+def cached_parse[T](path: Path, parse: Callable[[Path], T]) -> T:
+    """`parse(path)`, reused until the file changes (its inode, mtime or size). The result must be
+    treated as read-only. A missing file is parsed every time, so `parse` reports it.
+    """
+    try:
+        st = path.stat()
+    except FileNotFoundError:
+        return parse(path)
+    key, stamp = (path, parse), (st.st_ino, st.st_mtime_ns, st.st_size)
+    hit = _CACHE.get(key)
+    if hit is not None and hit[0] == stamp:
+        return hit[1]
+    value = parse(path)
+    if len(_CACHE) >= _CACHE_SIZE:
+        _CACHE.pop(next(iter(_CACHE)))
+    _CACHE[key] = (stamp, value)
+    return value
 
 
 def write_graph_file(apm_dir: Path, nodes: Iterable[Node]) -> None:

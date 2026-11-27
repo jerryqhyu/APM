@@ -1,17 +1,7 @@
-"""Project archives: a whole project saved as one `.apm.zip` file.
-
-An archive holds:
-
-- `manifest.json`: what wrote the archive and what is in it (see `export_archive`).
-- The plan files as committed at the plan repo's HEAD: `apm.yaml`, `graph.ndjson`, `nodes/*.md`.
-- `plan.bundle`: a git bundle of every ref in the plan repo, so its full history comes along.
-- With runs only: `runs.ndjson` (one run per line, with all its events) and `proposals.ndjson`.
-
-Only those files are written. Machine-specific state stays behind: the code repo's `.apm-link`,
-and everything under `.apm/.cache/` (the server token, the write lock, the database itself).
-Task reviews never go in, even with runs: an imported project's tasks are reviewed again.
-
-`import_archive` restores such a file into a folder with no plan, all or nothing.
+"""Project archives (plans.md §3.10): the plan files at HEAD, a git bundle of the plan repo's
+history and a manifest, in one `.apm.zip`; with runs, their transcripts and proposals too. Nothing
+machine-specific goes in (`.apm-link`, `.apm/.cache/`, task reviews). `import_archive` restores one
+into a folder with no plan, all or nothing.
 """
 
 import json
@@ -173,14 +163,10 @@ class _Contents:
 
 
 def import_archive(src: Path, code_dir: Path) -> Imported:
-    """Restores the project in the archive at `src` as `<code_dir>/.apm` and links it from
-    `code_dir`, the way `apm init` does.
-
-    All or nothing: the archive is checked in full (versions, every entry, the bundle, the counts)
-    and the plan repo and its database are built in a temporary folder that only becomes `.apm/`
-    once everything is in place. `code_dir` must not have a plan already. Imported runs are history:
-    one that was running at export is stored as cancelled, and nothing is started or resumed.
-    Import reads only `src` and never contacts a remote.
+    """Restores the archive at `src` as `<code_dir>/.apm`, linked like `apm init` does, all or
+    nothing: everything is checked and built in a temporary folder first. `code_dir` must have no
+    plan. Imported runs are history (one running at export is stored as cancelled), and nothing
+    contacts a remote.
     """
     code_dir = code_dir.resolve()
     apm_dir = code_dir / DEFAULT_APM_DIR

@@ -15,7 +15,7 @@ import contextlib
 import json
 import os
 import signal
-from collections.abc import Callable, Coroutine
+from collections.abc import Callable, Coroutine, Iterator
 from dataclasses import asdict, dataclass
 from functools import partial
 from pathlib import Path
@@ -263,12 +263,19 @@ class Runner:
 
     def _session_started(self, run_id: str) -> bool:
         """True if any turn of the conversation up to `run_id` got as far as Claude starting."""
+        return self._conversation_event(run_id, "system") is not None
+
+    def _conversation_events(self, run_id: str) -> Iterator[dict[str, Any]]:
+        """The events of the conversation up to `run_id`, from that turn back to the first."""
         run: Run | None = self.store.get_run(run_id)
         while run is not None:
-            if any(e.data.get("type") == "system" for e in self.store.list_events(run.id)):
-                return True
+            for event in self.store.list_events(run.id):
+                yield event.data
             run = self.store.get_run(run.parent_run) if run.parent_run else None
-        return False
+
+    def _conversation_event(self, run_id: str, kind: str) -> dict[str, Any] | None:
+        """The first event of type `kind` in the conversation, up to `run_id`."""
+        return next((e for e in self._conversation_events(run_id) if e.get("type") == kind), None)
 
     def _slot(self, spec: AgentSpec, node_id: NodeId, conversation: str) -> str:
         """What a run occupies while it is active. Two conversations can go on side by side, but
@@ -346,8 +353,7 @@ class Runner:
                 del self._slots[run_id]
             # A pipeline cancelled before its first step never got to record how it ended.
             if self.store.get_run(run.id).status == "running":
-                cut_off = self.store.finish_run(run.id, "cancelled")
-                self._emit({"type": "run.finished", "run": asdict(cut_off)})
+                self._finish(run.id, "cancelled")
 
         task.add_done_callback(finished)
 
@@ -396,8 +402,7 @@ class Runner:
         try:
             parse_decomposition(answer)
         except ProposalError as err:
-            self.store.finish_run(run.id, "failed", error=str(err))
-            self._emit({"type": "run.finished", "run": asdict(self.store.get_run(run.id))})
+            self._finish(run.id, "failed", error=str(err))
             return
 
         review = None
@@ -465,8 +470,7 @@ class Runner:
             target = await asyncio.to_thread(find_target, self.project, run.node_id, branch)
             cwd = await asyncio.to_thread(prepare_worktree, self.project, run.node_id, target)
         except Exception as err:  # refused, or git failed: the user can fix either
-            failed = self.store.finish_run(run.id, "failed", error=str(err))
-            self._emit({"type": "run.finished", "run": asdict(failed)})
+            self._finish(run.id, "failed", error=str(err))
             return None
         if target.step is not None:
             with contextlib.suppress(Exception):  # the status is a courtesy, not the review
@@ -490,13 +494,7 @@ class Runner:
 
     def _review_target_of(self, run_id: str) -> dict[str, Any] | None:
         """The commit a review conversation is about, as its first turn recorded it."""
-        run: Run | None = self.store.get_run(run_id)
-        while run is not None:
-            for event in self.store.list_events(run.id):
-                if event.data.get("type") == "apm_review_target":
-                    return event.data
-            run = self.store.get_run(run.parent_run) if run.parent_run else None
-        return None
+        return self._conversation_event(run_id, "apm_review_target")
 
     async def _record_feature_review(self, run: Run, answer: dict[str, Any]) -> None:
         """After every turn of a review: the verdict goes into the feature's description and the
@@ -514,8 +512,7 @@ class Runner:
         try:
             review = parse_feature_review(answer)
         except ReviewRefused as err:
-            failed = self.store.finish_run(run.id, "failed", error=str(err))
-            self._emit({"type": "run.finished", "run": asdict(failed)})
+            self._finish(run.id, "failed", error=str(err))
             return
         conversation = self._conversation(run.id)
         earlier = [
@@ -720,8 +717,7 @@ class Runner:
                     prepare_report, self.project, self.store, run.node_id, message or ""
                 )
             except Exception as err:  # refused, or git failed: the user can fix either
-                failed = self.store.finish_run(run.id, "failed", error=str(err))
-                self._emit({"type": "run.finished", "run": asdict(failed)})
+                self._finish(run.id, "failed", error=str(err))
                 return str(err)
             target, worktree = prepared.target, prepared.worktree
             run = self.store.set_prompt(run.id, prepared.prompt)
@@ -739,16 +735,14 @@ class Runner:
             why = (
                 f"the reporter took longer than {(timeout or 0) / 60:g} minutes, so APM stopped it"
             )
-            failed = self.store.finish_run(run.id, "failed", error=why)
-            self._emit({"type": "run.finished", "run": asdict(failed)})
+            self._finish(run.id, "failed", error=why)
             return why
         if answer is None:
             return self.store.get_run(run.id).error or "the reporter failed"
         try:
             report = parse_answer(answer)
         except ReportRefused as err:
-            failed = self.store.finish_run(run.id, "failed", error=str(err))
-            self._emit({"type": "run.finished", "run": asdict(failed)})
+            self._finish(run.id, "failed", error=str(err))
             return str(err)
         return await self._save_report(run, target, report, worktree)
 
@@ -787,16 +781,6 @@ class Runner:
                 level = "warning"
                 text += f" It is in the pull request ({pr}), but APM couldn't link it there: {err}."
         self._notice(run.id, level, text)
-        return None
-
-    def _conversation_event(self, run_id: str, kind: str) -> dict[str, Any] | None:
-        """The first event of type `kind` in the conversation `run_id` belongs to, up to it."""
-        run: Run | None = self.store.get_run(run_id)
-        while run is not None:
-            for event in self.store.list_events(run.id):
-                if event.data.get("type") == kind:
-                    return event.data
-            run = self.store.get_run(run.parent_run) if run.parent_run else None
         return None
 
     # --- a task review ---
@@ -928,20 +912,18 @@ class Runner:
                     answer, error = None, "the agent returned no structured answer"
                 if refused := conclude(answer, error):
                     status, error = "failed", refused
-            finished = self.store.finish_run(
+            self._finish(
                 run.id,
                 status,
                 cost_usd=result.get("total_cost_usd"),
                 error=error,
                 session_id=result.get("session_id"),
             )
-            self._emit({"type": "run.finished", "run": asdict(finished)})
         if status != "succeeded":
             return None
         answer = result.get("structured_output")
         if spec.schema is not None and not isinstance(answer, dict):
-            self.store.finish_run(run.id, "failed", error="the agent returned no structured answer")
-            self._emit({"type": "run.finished", "run": asdict(self.store.get_run(run.id))})
+            self._finish(run.id, "failed", error="the agent returned no structured answer")
             return None
         return answer if isinstance(answer, dict) else {}
 
@@ -968,13 +950,10 @@ class Runner:
         """Where a run's session lives: an implementer's is in its worktree, and a session can
         only be resumed from the directory it started in.
         """
-        run: Run | None = self.store.get_run(run_id)
-        while run is not None:
-            for event in self.store.list_events(run.id):
-                cwd = event.data.get("cwd")
-                if event.data.get("type") == "system" and isinstance(cwd, str):
-                    return Path(cwd) if Path(cwd).is_dir() else None
-            run = self.store.get_run(run.parent_run) if run.parent_run else None
+        for event in self._conversation_events(run_id):
+            cwd = event.get("cwd")
+            if event.get("type") == "system" and isinstance(cwd, str):
+                return Path(cwd) if Path(cwd).is_dir() else None
         return None
 
     # --- questions and permission prompts ---
@@ -1094,6 +1073,12 @@ class Runner:
             fingerprint = content_fingerprint(graph[run.node_id], read_body(apm_dir, run.node_id))
             data = {"error": "interrupted: its host process exited"}
             self.store.add_task_review(TaskReview(run.node_id, fingerprint, "error", data, run.id))
+
+    def _finish(self, run_id: str, status: RunStatus, **outcome: Any) -> Run:
+        """Records how a run ended, and says so."""
+        finished = self.store.finish_run(run_id, status, **outcome)
+        self._emit({"type": "run.finished", "run": asdict(finished)})
+        return finished
 
     def _emit(self, event: dict[str, Any]) -> None:
         with contextlib.suppress(Exception):  # a broken listener must not break a run

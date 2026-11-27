@@ -1,20 +1,7 @@
-"""Reconciling the plan with the code repo (plans.md §7.5): a node is done once its work is where
-it belongs: its feature's branch for a task inside a feature, else the default branch (a review
-step's work, the feature branch, belongs one level up). That is its *home*.
-
-This is plain code, not an agent: the question "did it merge?" has a definite answer.
-
-- A node with a pull request is done when the PR is merged into the default branch, or into a
-  branch that has since landed there. A PR merged into another branch (a stack) leaves the node in
-  progress, with a note saying where its work is.
-- Otherwise it is done when its delivery commits are on the default branch: the commits themselves,
-  or, after a squash or a rebase, the same changes (compared by patch id).
-- An open PR that still targets a branch which has landed is reported, and with `retarget=True`
-  pointed at the default branch.
-
-Pull requests are read through the GitHub REST API (`apm.core.delivery.read_pr`), which works
-where `gh pr`'s GraphQL calls are refused. Without `gh`, reconcile falls back to what local git
-can tell.
+"""Reconciling the plan with the code repo (plans.md §7.5): a node is done once its work is in its
+*home* (its feature's branch, else the default branch): its PR merged there (or into a branch that
+landed there), or its commits or the same changes (by patch id) are on it. With `retarget`, an
+open PR whose base has landed is pointed at the default branch. Plain code, not an agent.
 """
 
 from collections.abc import Sequence
@@ -37,7 +24,7 @@ from apm.core.delivery import (
     set_pr_base,
 )
 from apm.core.files import read_body
-from apm.core.git import GitError, git, is_ancestor, rev_parse
+from apm.core.git import GitError, git, is_ancestor, patch_id, rev_parse
 from apm.core.graph import Graph
 from apm.core.ids import handle
 from apm.core.model import Delivery, NodeId, Status
@@ -266,7 +253,7 @@ def _same_changes_on(repo_dir: Path, commits: Sequence[str], target: str) -> boo
     try:
         if all(_cherry_picked(repo_dir, commit, target) for commit in commits):
             return True
-        combined = _patch_id(repo_dir, git(repo_dir, ["diff", f"{commits[0]}^", commits[-1]]))
+        combined = patch_id(repo_dir, f"{commits[0]}^", commits[-1])
         if combined is None:
             return False
         log = git(
@@ -289,10 +276,3 @@ def _cherry_picked(repo_dir: Path, commit: str, target: str) -> bool:
         out = git(repo_dir, ["cherry", target, commit])
     lines = [line for line in out.splitlines() if line.strip()]
     return bool(lines) and all(line.startswith("-") for line in lines)
-
-
-def _patch_id(repo_dir: Path, diff: str) -> str | None:
-    if not diff.strip():
-        return None
-    out = git(repo_dir, ["patch-id", "--stable"], stdin=diff).split()
-    return out[0] if out else None

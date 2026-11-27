@@ -18,30 +18,25 @@ from apm.core.config import read_config
 from apm.core.delivery import feature_branch
 from apm.core.eager import eager_view, plan_redo
 from apm.core.files import read_body
-from apm.core.git import CommitMessage, git
+from apm.core.git import CommitMessage, git, tree_of
 from apm.core.ids import handle
 from apm.core.model import NodeId, Status
 from apm.core.ops import NewNode, create_nodes, decompose
 from apm.core.project import Project, load_graph
 from apm.core.reconcile import reconcile
-from apm.core.split import commit_tree, tree_of
+from apm.core.split import commit_tree
 from apm.core.store import EagerBuild
 from apm.runner.agents import EAGER_BUILDER, SPLITTER, RunRefused
 from apm.runner.auto import AutoQueue
 from apm.runner.feature_runs import IMPLEMENTER, implement_feature
 from apm.runner.queue import RunQueue
 from apm.runner.runner import Runner
-from tests.conftest import CodeRepo
+from tests.conftest import CodeRepo, configure
 from tests.fake_gh import FakeGh
 from tests.runner.fake import FakeClaude
 from tests.runner.test_runner import Harness
 
 EAGER_ON = "features:\n  eager: true\n"
-
-
-def configure(project: Project, text: str) -> None:
-    config = project.apm_dir / "apm.yaml"
-    config.write_text(config.read_text() + text)
 
 
 def git_out(repo: CodeRepo, *args: str) -> str:
@@ -157,20 +152,6 @@ def per_task(agents: Agents, tasks: Sequence[NodeId]) -> Callable[[EagerBuild], 
     return build
 
 
-async def settle(harness: Harness) -> None:
-    for _ in range(3):
-        for run in harness.store.list_runs(status="running"):
-            await harness.runner.wait(run.id)
-
-
-def notices(harness: Harness, run_id: str) -> list[tuple[str, str]]:
-    return [
-        (e.data["level"], e.data["text"])
-        for e in harness.store.list_events(run_id)
-        if e.data.get("type") == "apm_notice"
-    ]
-
-
 def posted(fake_gh: FakeGh) -> list[tuple[str, str]]:
     """(head, base) of each pull request opened, in order."""
     calls = [c for c in fake_gh.calls if c[:3] == ["api", "-X", "POST"]]
@@ -191,7 +172,7 @@ async def test_a_feature_is_built_split_and_opened_as_a_chain_of_pull_requests(
     batch = implement_feature(RunQueue(harness.runner), feature)
     assert [(r.agent, r.node_id) for r in batch.started] == [(EAGER_BUILDER, feature)]
     assert batch.skipped == ()
-    await settle(harness)
+    await harness.settle()
 
     build = harness.store.eager_build(feature)
     assert build is not None
@@ -229,7 +210,7 @@ async def test_a_feature_is_built_split_and_opened_as_a_chain_of_pull_requests(
         (slices[2].branch, slices[1].branch),
     ]
     (run,) = harness.store.list_runs()
-    said = [text for _, text in notices(harness, run.id)]
+    said = [text for _, text in harness.notices(run.id)]
     assert any("APM split it itself" in text for text in said)
     assert "#101" in said[-1]
     assert "#103" in said[-1]
@@ -270,7 +251,7 @@ async def test_a_build_that_isnt_one_commit_per_task_goes_to_the_splitter(
     )
 
     implement_feature(RunQueue(harness.runner), feature)
-    await settle(harness)
+    await harness.settle()
 
     build = harness.store.eager_build(feature)
     assert build is not None
@@ -306,7 +287,7 @@ async def test_a_split_whose_trees_dont_match_is_refused_and_nothing_is_delivere
     )
 
     implement_feature(RunQueue(harness.runner), feature)
-    await settle(harness)
+    await harness.settle()
 
     build = harness.store.eager_build(feature)
     assert build is not None
@@ -322,7 +303,7 @@ async def test_a_split_whose_trees_dont_match_is_refused_and_nothing_is_delivere
     assert "Eager split failed" in read_body(project.apm_dir, feature)
     splitter = next(r for r in harness.store.list_runs() if r.agent == SPLITTER)
     assert splitter.status == "failed"
-    assert any("The split failed" in text for _, text in notices(harness, splitter.id))
+    assert any("The split failed" in text for _, text in harness.notices(splitter.id))
 
 
 # --- the gate, and Implement on one task ---
@@ -360,7 +341,7 @@ async def test_implement_on_one_task_builds_the_feature_then_refuses_once_split(
     assert (run.agent, run.node_id) == (EAGER_BUILDER, feature)
     with pytest.raises(RunRefused, match="eager build of its feature is running"):
         harness.runner.start(IMPLEMENTER, tasks[0])
-    await settle(harness)
+    await harness.settle()
 
     with pytest.raises(RunRefused, match="its tasks come from the split; use Redo"):
         harness.runner.start(IMPLEMENTER, tasks[0])
@@ -371,7 +352,7 @@ async def test_implement_on_one_task_builds_the_feature_then_refuses_once_split(
     harness.review(later)
     run = harness.runner.start(IMPLEMENTER, later)
     assert (run.agent, run.node_id) == (IMPLEMENTER, later)
-    await settle(harness)
+    await harness.settle()
 
 
 async def test_eager_off_changes_nothing(
@@ -383,7 +364,7 @@ async def test_eager_off_changes_nothing(
     assert [(r.agent, r.node_id) for r in batch.started] == [(IMPLEMENTER, tasks[0])]
     reasons = [s.reason for s in batch.skipped]
     assert all(r.startswith("blocked") for r in reasons)
-    await settle(harness)
+    await harness.settle()
     assert harness.store.eager_builds() == []
     assert all(c["agent"] == IMPLEMENTER for c in fake_claude.calls)
 
@@ -398,7 +379,7 @@ async def split_three(
     feature, tasks = three_tasks(code_repo.project, harness)
     agents.build = per_task(agents, tasks)
     harness.runner.start(EAGER_BUILDER, feature)
-    await settle(harness)
+    await harness.settle()
     return feature, tasks
 
 
@@ -442,7 +423,7 @@ async def test_redo_rebuilds_only_the_tasks_after_a_change_and_never_rewrites_a_
     agents.build = rebuild_per_task(agents)
     run = await harness.runner.eager.redo(feature)
     assert (run.agent, run.node_id) == (EAGER_BUILDER, feature)
-    await settle(harness)
+    await harness.settle()
 
     build = harness.store.eager_build(feature)
     assert build is not None
@@ -504,7 +485,7 @@ async def test_redo_after_a_merge_with_changes_starts_from_the_feature_branch(
     assert plan.tasks == (index, rank)
     agents.build = rebuild_per_task(agents)
     await harness.runner.eager.redo(feature)
-    await settle(harness)
+    await harness.settle()
 
     assert git_out(code_repo, "rev-parse", f"origin/{old[parse].branch}") == old[parse].commit
     tip = git_out(code_repo, "rev-parse", f"origin/{old[index].branch}")
@@ -571,7 +552,7 @@ async def test_a_task_merged_as_split_is_left_alone_when_a_later_one_changes(
     assert (plan.change.node_id, plan.tasks) == (index, (rank,))
     agents.build = rebuild_per_task(agents)
     await harness.runner.eager.redo(feature)
-    await settle(harness)
+    await harness.settle()
 
     assert git_out(code_repo, "rev-parse", f"origin/{old[parse].branch}") == old[parse].commit
     assert git_out(code_repo, "rev-parse", f"origin/{old[index].branch}") == fix
@@ -606,7 +587,7 @@ async def test_apm_serve_redoes_a_changed_task_on_its_own(
     assert (pending["node_id"], pending["tasks"]) == (parse, [index, rank])
     queue.scan()
     queue.pump()
-    await settle(harness)
+    await harness.settle()
 
     build = harness.store.eager_build(feature)
     assert build is not None
@@ -643,7 +624,7 @@ async def test_with_eager_redo_off_nothing_starts_but_redo_by_hand_works(
     assert build.round == 1
 
     await harness.runner.eager.redo(feature)
-    await settle(harness)
+    await harness.settle()
     build = harness.store.eager_build(feature)
     assert build is not None
     assert (build.state, build.round) == ("split", 2)
@@ -668,7 +649,7 @@ async def test_redo_after_a_failed_split_splits_the_same_build_again(
 
     agents.split = split({tasks[0]: [files[tasks[0]]], tasks[1]: [files[tasks[1]]], tasks[2]: []})
     implement_feature(RunQueue(harness.runner), feature)
-    await settle(harness)
+    await harness.settle()
     failed = harness.store.eager_build(feature)
     assert failed is not None
     assert failed.state == "split_failed"
@@ -679,7 +660,7 @@ async def test_redo_after_a_failed_split_splits_the_same_build_again(
     agents.split = split({t: [files[t]] for t in tasks})
     run = await harness.runner.eager.redo(feature)
     assert (run.agent, run.node_id) == (SPLITTER, feature)
-    await settle(harness)
+    await harness.settle()
 
     build = harness.store.eager_build(feature)
     assert build is not None

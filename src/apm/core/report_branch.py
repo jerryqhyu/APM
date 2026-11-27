@@ -1,24 +1,11 @@
-"""Where a feature report goes, and getting it there (plans.md §7.9).
-
-The report is committed as `docs/features/<slug>-<handle>.md` on the feature's own branch, so it
-lands with the feature, and the feature's pull request links it. Plain code around the reporter:
-
-- `check_reportable` / `find_target`: which branch the report goes on, and refusing when there is
-  nothing to report on yet. A review step's report is its feature's.
-- `prepare_report`: a checkout of the feature branch for the agent to read, and its first
-  message, with the record (`apm.core.report`).
-- `save_report`: APM itself writes the file, commits it with an `APM-Node` trailer and pushes the
-  branch: a plain push, never a force-push. It is kept in the store either way, so the UI can show
-  it, with why it couldn't be committed if it couldn't.
-- `link_report`: puts a link to the report at the top of the feature's pull request description.
-- `report_status`: where a feature's report stands (not written, writing, written at a commit),
-  with its link on GitHub, for the UI and the terminal.
+"""Where a feature report goes (plans.md §7.10): `docs/features/<slug>-<handle>.md` on the
+feature's branch, linked from the feature's pull request. The plain code around the reporter:
+the target branch, the checkout and first message, committing (never forced), linking, status.
 """
 
 import contextlib
 import json
 import re
-import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -37,11 +24,11 @@ from apm.core.delivery import (
     parse_pr_url,
 )
 from apm.core.errors import ApmError
-from apm.core.git import CommitMessage, GitError, commit, git
+from apm.core.git import CommitMessage, GitError, checkout_detached, commit, git, publish
 from apm.core.graph import Graph
 from apm.core.ids import handle
 from apm.core.model import NodeId, Status
-from apm.core.project import Project, load_graph
+from apm.core.project import Project, code_repo, load_graph
 from apm.core.report import (
     REPORTER,
     BranchChanges,
@@ -124,13 +111,7 @@ class ReportTarget:
 
 
 def repo_dir(project: Project) -> Path:
-    config = read_config(project.apm_dir)
-    path = (project.apm_dir / config.code.repos[default_repo(config)].path).resolve()
-    try:
-        git(path, ["rev-parse", "--git-dir"])
-    except GitError:
-        raise ReportRefused(f"{path} is not a git repository") from None
-    return path
+    return code_repo(project, ReportRefused)
 
 
 def find_target(project: Project, feature: NodeId) -> ReportTarget:
@@ -171,26 +152,12 @@ def report_path(repo: Path, sha: str, graph: Graph, feature: NodeId) -> str:
     return f"{REPORT_DIR}/{words or 'feature'}{suffix}"
 
 
-def worktree_path(project: Project, feature: NodeId) -> Path:
-    """One per feature: the next report replaces it."""
-    return repo_dir(project) / ".claude" / "worktrees" / f"{WORKTREE_PREFIX}{handle(feature)}"
-
-
 def prepare_worktree(project: Project, target: ReportTarget) -> Path:
-    """A detached checkout of the feature branch's tip, for the agent to read and for APM to
-    commit the report in.
+    """A detached checkout of the feature branch's tip (one per feature, the next report replaces
+    it), for the agent to read and for APM to commit the report in.
     """
-    repo = repo_dir(project)
-    path = worktree_path(project, target.feature)
-    if path.exists():
-        with contextlib.suppress(GitError):
-            git(repo, ["worktree", "remove", "--force", "--force", str(path)])
-        shutil.rmtree(path, ignore_errors=True)
-    with contextlib.suppress(GitError):
-        git(repo, ["worktree", "prune"])
-    path.parent.mkdir(parents=True, exist_ok=True)
-    git(repo, ["worktree", "add", "--quiet", "--detach", str(path), target.sha])
-    return path
+    name = f"{WORKTREE_PREFIX}{handle(target.feature)}"
+    return checkout_detached(repo_dir(project), name, target.sha)
 
 
 def branch_changes(project: Project, target: ReportTarget) -> BranchChanges:
@@ -302,26 +269,13 @@ def commit_report(
         )
         sha = commit(worktree, message)
         try:
-            _push(repo, worktree, target.branch, sha, tip)
+            publish(repo, {target.branch: (sha, tip)})
         except GitError:
             if attempt == 2:
                 raise
             continue  # the branch moved on: write it again on the new tip
         return sha
     raise AssertionError("unreachable")
-
-
-def _push(repo: Path, worktree: Path, branch: str, sha: str, tip: str) -> None:
-    """A plain push to `origin`, or, with no `origin`, moving the local branch if it is still at
-    `tip`.
-    """
-    try:
-        git(repo, ["remote", "get-url", "origin"])
-    except GitError:
-        git(repo, ["update-ref", f"refs/heads/{branch}", sha, tip])
-        return
-    git(worktree, ["push", "--quiet", "origin", f"{sha}:refs/heads/{branch}"])
-    git(repo, ["fetch", "--quiet", "origin", f"+refs/heads/{branch}:refs/remotes/origin/{branch}"])
 
 
 # --- linking it ---

@@ -159,10 +159,8 @@ def mutate(
     timeout: float = 10.0,
 ) -> Mutation:
     """Runs `fn` on a draft of the plan under the write lock, then validates, writes and commits.
-
-    `fn` changes the draft and returns the rest of the commit subject, e.g. "1c0b9a44: done" for
-    `status 1c0b9a44: done`. `note` becomes the commit body. Raises `InvariantError` if the result
-    breaks a hard invariant, leaving the plan repo exactly as it was.
+    `fn` returns the rest of the commit subject ("1c0b9a44: done"); `note` is the body. Raises
+    `InvariantError` on a broken hard invariant, leaving the plan repo as it was.
     """
     apm_dir = project.apm_dir
     with acquire_write_lock(apm_dir, timeout=timeout):

@@ -1,19 +1,6 @@
-"""The eager pipeline (plans.md §7.9): build → split → verify → record → pull requests.
-
-Implement on a feature that eager mode applies to starts one `apm-eager-builder` run that builds
-every To do task on one eager branch. Then APM splits that branch into one commit per task: by
-itself when the builder committed task by task (the usual case, since it is told to), otherwise
-through an `apm-splitter` run. Either way APM checks the chain (`apm.core.split.check_chain`)
-before anything is recorded; a chain that fails is reported in the chat and the feature's Notes,
-and nothing is delivered. A good chain is pushed as one branch per task, each task is recorded
-and set in progress, and one pull request per task is opened, each targeting the task before it.
-
-A redo runs the same pipeline on the tasks after one whose pull request changed: from that task's
-new tip (or the feature branch, once it merged), and it moves their branches forward instead of
-replacing them. A split that failed can be tried again on its own ("split again").
-
-All of it is one pipeline in the runner's slot for `apm-eager-builder` on the feature, so it
-counts once under `runner.max_concurrent`, like a decomposer and its critic.
+"""The runs of eager mode (plans.md §7.9): the builder, the split (mechanical, or the splitter
+agent), verification, recording and the PR chain, and redo. The plain decisions are in
+`apm.core.eager`, the git in `apm.core.split`.
 """
 
 import asyncio

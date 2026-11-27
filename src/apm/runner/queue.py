@@ -1,14 +1,6 @@
-"""Runs you asked for that wait their turn under `runner.max_concurrent`.
-
-A feature-level action (Review all tasks, Implement all) can ask for more runs than may go at
-once. They go through a `RunQueue`: what fits starts now, the rest waits, oldest first, and starts
-as runs finish. `apm serve` pumps it from its automation loop (`AutoQueue.drive`), ahead of the
-automatic runs; `apm review-tasks` and `apm implement` pump it themselves.
-
-It is kept apart from `AutoQueue` on purpose. An entry here is a run you asked for, once: it isn't
-debounced, isn't dropped because the automation wouldn't start it, and doesn't count as the
-automatic run of a version (so a task whose content had its automatic review can still be
-reviewed by hand, and the other way round).
+"""Runs you asked for (Review all tasks, Implement all) that wait their turn under
+`runner.max_concurrent`, oldest first. Kept apart from `AutoQueue`: an entry is not debounced, and
+doesn't count as the automatic run of a version.
 """
 
 from collections.abc import Iterable

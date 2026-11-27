@@ -1,19 +1,8 @@
-"""The runs `apm serve` starts on its own.
-
-Automations push `(agent, node, version)` onto one `AutoQueue`. A push whose version (what the
-run would work on, e.g. a task's content fingerprint) changed restarts that run's wait, so a burst
-of edits ends in one run on the final content. `pump` starts the runs whose wait is over while
-there is room under `runner.max_concurrent`; a run that can't start yet stays queued. One version
-gets one automatic run per server: a run that errored is tried again after an edit or a restart,
-except a task review, which `due_task_reviews` retries once for the same content (`MAX_ERRORS`).
-
-It also reconciles (retargeting open PRs) every `reconcile_interval_s`, and queues a feature
-review whenever a review step becomes ready, again after its follow-ups are done. The follow-ups
-that review proposed (and APM accepted) are built once their task review passes. After each
-reconcile it looks for task pull requests of eager features that changed since their split, and
-with `automation.eager_redo` queues a redo for each change (once per change).
-
-Runs you asked for that are waiting for room (`manual`, a `RunQueue`) start first.
+"""The runs `apm serve` starts on its own. Automations push `(agent, node, version)` onto one
+`AutoQueue`; a changed version restarts that run's wait (debounce), and `pump` starts what is due
+within `runner.max_concurrent`. One version gets one automatic run per server (a task review is
+retried once, see `due_task_reviews`). It also reconciles every `reconcile_interval_s`, starts
+feature reviews when review steps become ready, builds accepted follow-ups and redoes eager builds.
 """
 
 import asyncio

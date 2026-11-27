@@ -8,13 +8,14 @@ about the plan itself.
 import hashlib
 import json
 import sqlite3
+import threading
 import time
 import uuid
 from collections.abc import Generator, Iterable
 from contextlib import contextmanager
-from dataclasses import astuple, dataclass, field
+from dataclasses import dataclass, field, fields
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, get_origin
 
 from apm.core.lock import CACHE_DIR
 from apm.core.model import Node, NodeId
@@ -274,10 +275,62 @@ def content_fingerprint(node: Node, body: str) -> str:
     return hashlib.sha256(content.encode()).hexdigest()
 
 
+@dataclass(frozen=True, slots=True)
+class _Table:
+    """How a record class maps onto its table: columns in table order, the field each holds, and
+    which fields are stored as JSON (a tuple field is read back as a tuple)."""
+
+    name: str
+    columns: tuple[str, ...]
+    fields: tuple[str, ...]
+    json: frozenset[str]
+    tuples: frozenset[str]
+
+    def row(self, record: object) -> tuple[object, ...]:
+        return tuple(
+            _dump(getattr(record, f)) if f in self.json else getattr(record, f) for f in self.fields
+        )
+
+    def record(self, cls: type, row: sqlite3.Row) -> Any:
+        values = {}
+        for column, f in zip(self.columns, self.fields, strict=True):
+            value = row[column]
+            if f in self.json and value is not None:
+                value = json.loads(value)
+                value = tuple(value) if f in self.tuples else value
+            values[f] = value
+        return cls(**values)
+
+
+def _table(cls: Any, name: str, json_fields: str = "", **renamed: str) -> _Table:
+    names = tuple(f.name for f in fields(cls))
+    as_json = frozenset(json_fields.split())
+    tuples = frozenset(f.name for f in fields(cls) if get_origin(f.type) is tuple) & as_json
+    return _Table(name, tuple(renamed.get(n, n) for n in names), names, as_json, tuples)
+
+
+_TABLES: dict[type, _Table] = {
+    Run: _table(Run, "runs"),
+    Proposal: _table(Proposal, "proposals", "data review", data="json"),
+    TaskReview: _table(TaskReview, "task_reviews", "data"),
+    Acceptance: _table(Acceptance, "acceptances", "children created", created="created_nodes"),
+    FeatureReport: _table(FeatureReport, "reports"),
+    EagerBuild: _table(EagerBuild, "eager_builds", "tasks warnings pending"),
+    EagerSlice: _table(EagerSlice, "eager_slices", commit="commit_sha", parent="parent_sha"),
+}
+
+
+def _dump(value: object) -> str | None:
+    if value is None:
+        return None
+    return json.dumps(list(value) if isinstance(value, tuple) else value, ensure_ascii=False)
+
+
 class Store:
     def __init__(self, apm_dir: Path) -> None:
         self.path = apm_dir / CACHE_DIR / DB_FILE
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._local = threading.local()
         with self._db() as db:
             db.executescript(_SCHEMA)
             # Databases from before version 2 have no `mode` column.
@@ -290,15 +343,49 @@ class Store:
 
     @contextmanager
     def _db(self) -> Generator[sqlite3.Connection]:
-        """A short-lived connection per call: safe from any thread or process."""
-        db = sqlite3.connect(self.path, timeout=10.0)
-        db.row_factory = sqlite3.Row
+        """A transaction on this thread's connection, opened on first use and then reused. Nested
+        calls join the outer transaction, so it stays all or nothing.
+        """
+        local = self._local
+        if getattr(local, "db", None) is None:
+            local.db = sqlite3.connect(self.path, timeout=10.0)
+            local.db.row_factory = sqlite3.Row
+            local.db.execute("PRAGMA journal_mode=WAL")
+            local.depth = 0
+        if local.depth:
+            yield local.db
+            return
+        local.depth = 1
         try:
-            db.execute("PRAGMA journal_mode=WAL")
-            with db:
-                yield db
+            with local.db:
+                yield local.db
         finally:
-            db.close()
+            local.depth = 0
+
+    def _insert(self, records: Iterable[object], *, replace: bool = False) -> None:
+        with self._db() as db:
+            for record in records:
+                table = _TABLES[type(record)]
+                marks = ", ".join("?" * len(table.columns))
+                verb = "INSERT OR REPLACE" if replace else "INSERT"
+                columns = ", ".join(table.columns)
+                db.execute(
+                    f"{verb} INTO {table.name}({columns}) VALUES({marks})", table.row(record)
+                )
+
+    def _select[T](self, cls: type[T], tail: str = "", params: Iterable[object] = ()) -> list[T]:
+        table = _TABLES[cls]
+        with self._db() as db:
+            rows = db.execute(f"SELECT * FROM {table.name} {tail}", tuple(params)).fetchall()
+        return [table.record(cls, row) for row in rows]
+
+    def _one[T](self, cls: type[T], tail: str, params: Iterable[object]) -> T | None:
+        found = self._select(cls, tail + " LIMIT 1", params)
+        return found[0] if found else None
+
+    def _update(self, sql: str, params: Iterable[object]) -> int:
+        with self._db() as db:
+            return db.execute(sql, tuple(params)).rowcount
 
     # --- runs ---
 
@@ -328,23 +415,7 @@ class Store:
             pid=pid,
             mode=mode,
         )
-        with self._db() as db:
-            db.execute(
-                "INSERT INTO runs(id, node_id, agent, session_id, status, started, prompt,"
-                " parent_run, pid, mode) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (
-                    run.id,
-                    run.node_id,
-                    run.agent,
-                    run.session_id,
-                    run.status,
-                    run.started,
-                    run.prompt,
-                    run.parent_run,
-                    run.pid,
-                    run.mode,
-                ),
-            )
+        self._insert([run])
         return run
 
     def finish_run(
@@ -356,49 +427,42 @@ class Store:
         error: str | None = None,
         session_id: str | None = None,
     ) -> Run:
-        with self._db() as db:
-            db.execute(
-                "UPDATE runs SET status = ?, ended = ?, cost_usd = ?, error = ?,"
-                " session_id = COALESCE(?, session_id) WHERE id = ?",
-                (status, time.time(), cost_usd, error, session_id, run_id),
-            )
+        self._update(
+            "UPDATE runs SET status = ?, ended = ?, cost_usd = ?, error = ?,"
+            " session_id = COALESCE(?, session_id) WHERE id = ?",
+            (status, time.time(), cost_usd, error, session_id, run_id),
+        )
         return self.get_run(run_id)
 
     def set_prompt(self, run_id: str, prompt: str) -> Run:
         """Replaces a run's first message before it is sent: the runner adds what it works out
         once the run has started (an implementer's base branch).
         """
-        with self._db() as db:
-            db.execute("UPDATE runs SET prompt = ? WHERE id = ?", (prompt, run_id))
+        self._update("UPDATE runs SET prompt = ? WHERE id = ?", (prompt, run_id))
         return self.get_run(run_id)
 
     def get_run(self, run_id: str) -> Run:
-        with self._db() as db:
-            row = db.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
-        if row is None:
+        run = self._one(Run, "WHERE id = ?", (run_id,))
+        if run is None:
             raise KeyError(f"unknown run {run_id}")
-        return _run(row)
+        return run
 
     def list_runs(
         self, *, node_id: NodeId | None = None, status: RunStatus | None = None, limit: int = 100
     ) -> list[Run]:
         """Newest first."""
-        clauses, params = _where(node_id=node_id, status=status)
-        with self._db() as db:
-            rows = db.execute(
-                f"SELECT * FROM runs {clauses} ORDER BY started DESC LIMIT ?", (*params, limit)
-            ).fetchall()
-        return [_run(row) for row in rows]
+        where, params = _where(node_id=node_id, status=status)
+        return self._select(Run, f"{where} ORDER BY started DESC LIMIT ?", (*params, limit))
 
     def add_event(self, run_id: str, data: dict[str, Any]) -> RunEvent:
         with self._db() as db:
-            row = db.execute(
+            seq = db.execute(
                 "SELECT COALESCE(MAX(seq), 0) + 1 FROM run_events WHERE run_id = ?", (run_id,)
-            ).fetchone()
-            event = RunEvent(seq=row[0], ts=time.time(), data=data)
+            ).fetchone()[0]
+            event = RunEvent(seq=seq, ts=time.time(), data=data)
             db.execute(
                 "INSERT INTO run_events(run_id, seq, ts, json) VALUES(?, ?, ?, ?)",
-                (run_id, event.seq, event.ts, json.dumps(data, ensure_ascii=False)),
+                (run_id, seq, event.ts, _dump(data)),
             )
         return event
 
@@ -421,86 +485,50 @@ class Store:
         review: dict[str, Any] | None = None,
     ) -> Proposal:
         proposal = Proposal(
-            id=uuid.uuid4().hex[:12],
-            node_id=node_id,
-            run_id=run_id,
-            data=data,
-            review=review,
-            status="pending",
-            created=time.time(),
-            resolved=None,
+            uuid.uuid4().hex[:12], node_id, run_id, data, review, "pending", time.time(), None
         )
-        with self._db() as db:
-            db.execute(
-                "INSERT INTO proposals(id, node_id, run_id, json, review, status, created)"
-                " VALUES(?, ?, ?, ?, ?, ?, ?)",
-                (
-                    proposal.id,
-                    node_id,
-                    run_id,
-                    json.dumps(data, ensure_ascii=False),
-                    None if review is None else json.dumps(review, ensure_ascii=False),
-                    proposal.status,
-                    proposal.created,
-                ),
-            )
+        self._insert([proposal])
         return proposal
 
     def get_proposal(self, proposal_id: str) -> Proposal:
-        with self._db() as db:
-            row = db.execute("SELECT * FROM proposals WHERE id = ?", (proposal_id,)).fetchone()
-        if row is None:
+        proposal = self._one(Proposal, "WHERE id = ?", (proposal_id,))
+        if proposal is None:
             raise KeyError(f"unknown proposal {proposal_id}")
-        return _proposal(row)
+        return proposal
 
     def list_proposals(
         self, *, node_id: NodeId | None = None, status: ProposalStatus | None = None
     ) -> list[Proposal]:
         """Newest first."""
-        clauses, params = _where(node_id=node_id, status=status)
-        with self._db() as db:
-            rows = db.execute(
-                f"SELECT * FROM proposals {clauses} ORDER BY created DESC", params
-            ).fetchall()
-        return [_proposal(row) for row in rows]
+        where, params = _where(node_id=node_id, status=status)
+        return self._select(Proposal, f"{where} ORDER BY created DESC", params)
 
     def resolve_proposal(self, proposal_id: str, status: ProposalStatus) -> Proposal:
         """Marks a pending proposal accepted or rejected. Raises `ValueError` if it was already
         resolved, so one proposal can't be accepted twice.
         """
-        with self._db() as db:
-            done = db.execute(
-                "UPDATE proposals SET status = ?, resolved = ? WHERE id = ? AND status = 'pending'",
-                (status, time.time(), proposal_id),
-            )
+        done = self._update(
+            "UPDATE proposals SET status = ?, resolved = ? WHERE id = ? AND status = 'pending'",
+            (status, time.time(), proposal_id),
+        )
         proposal = self.get_proposal(proposal_id)
-        if done.rowcount == 0:
+        if done == 0:
             raise ValueError(f"proposal {proposal_id} is already {proposal.status}")
         return proposal
 
     def reopen_proposal(self, proposal_id: str) -> None:
         """Puts a proposal back to pending, when accepting it failed."""
-        with self._db() as db:
-            db.execute(
-                "UPDATE proposals SET status = 'pending', resolved = NULL WHERE id = ?",
-                (proposal_id,),
-            )
+        self._update(
+            "UPDATE proposals SET status = 'pending', resolved = NULL WHERE id = ?", (proposal_id,)
+        )
 
     # --- task reviews (not archived: an imported project's tasks are simply reviewed again) ---
 
     def add_task_review(self, review: TaskReview) -> None:
-        values = list(astuple(review))
-        values[3] = json.dumps(review.data, ensure_ascii=False)
-        with self._db() as db:
-            db.execute("INSERT INTO task_reviews VALUES(?, ?, ?, ?, ?, ?)", values)
+        self._insert([review])
 
     def latest_task_review(self, node_id: NodeId) -> TaskReview | None:
-        with self._db() as db:
-            row = db.execute(
-                "SELECT * FROM task_reviews WHERE node_id = ? ORDER BY created DESC, rowid DESC",
-                (node_id,),
-            ).fetchone()
-        return None if row is None else TaskReview(**{**row, "data": json.loads(row["data"])})
+        return self._one(TaskReview, _LATEST, (node_id,))
 
     def count_errors(self, node_id: NodeId, fingerprint: str) -> int:
         """How many reviews of this content failed to give a verdict."""
@@ -527,99 +555,47 @@ class Store:
     # --- what was accepted from a proposal (not archived, like task reviews) ---
 
     def record_acceptance(
-        self,
-        proposal_id: str,
-        children: list[dict[str, Any]] | None,
-        created: Iterable[NodeId],
+        self, proposal_id: str, children: list[dict[str, Any]] | None, created: Iterable[NodeId]
     ) -> None:
         """Remembers what was accepted, so a feature report can say what you changed first."""
-        with self._db() as db:
-            db.execute(
-                "INSERT OR REPLACE INTO acceptances VALUES(?, ?, ?, ?)",
-                (
-                    proposal_id,
-                    None if children is None else json.dumps(children, ensure_ascii=False),
-                    json.dumps(list(created)),
-                    time.time(),
-                ),
-            )
+        acceptance = Acceptance(proposal_id, children, tuple(created), time.time())
+        self._insert([acceptance], replace=True)
 
     def acceptance(self, proposal_id: str) -> Acceptance | None:
-        with self._db() as db:
-            row = db.execute(
-                "SELECT * FROM acceptances WHERE proposal_id = ?", (proposal_id,)
-            ).fetchone()
-        if row is None:
-            return None
-        children = None if row["children"] is None else json.loads(row["children"])
-        created = tuple(json.loads(row["created_nodes"]))
-        return Acceptance(proposal_id, children, created, row["accepted"])
+        return self._one(Acceptance, "WHERE proposal_id = ?", (proposal_id,))
 
     # --- feature reports (not archived: the report itself is committed to the feature branch) ---
 
     def add_report(self, report: FeatureReport) -> None:
-        with self._db() as db:
-            db.execute("INSERT INTO reports VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", astuple(report))
+        self._insert([report])
 
     def latest_report(self, node_id: NodeId) -> FeatureReport | None:
-        with self._db() as db:
-            row = db.execute(
-                "SELECT * FROM reports WHERE node_id = ? ORDER BY created DESC, rowid DESC",
-                (node_id,),
-            ).fetchone()
-        return None if row is None else FeatureReport(**dict(row))
+        return self._one(FeatureReport, _LATEST, (node_id,))
 
     # --- eager builds (not archived: they describe branches in this machine's clone) ---
 
     def save_eager_build(self, build: EagerBuild) -> EagerBuild:
         """Records a feature's eager build, replacing the one before."""
-        values = list(astuple(build))
-        values[7] = json.dumps(list(build.tasks))
-        values[10] = json.dumps(list(build.warnings), ensure_ascii=False)
-        values[11] = (
-            None if build.pending is None else json.dumps(build.pending, ensure_ascii=False)
-        )
-        with self._db() as db:
-            db.execute(
-                "INSERT OR REPLACE INTO eager_builds VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                values,
-            )
+        self._insert([build], replace=True)
         return build
 
     def eager_build(self, feature_id: NodeId) -> EagerBuild | None:
-        with self._db() as db:
-            row = db.execute(
-                "SELECT * FROM eager_builds WHERE feature_id = ?", (feature_id,)
-            ).fetchone()
-        return None if row is None else _eager_build(row)
+        return self._one(EagerBuild, "WHERE feature_id = ?", (feature_id,))
 
     def eager_builds(self) -> list[EagerBuild]:
-        with self._db() as db:
-            rows = db.execute("SELECT * FROM eager_builds ORDER BY feature_id").fetchall()
-        return [_eager_build(row) for row in rows]
+        return self._select(EagerBuild, "ORDER BY feature_id")
 
     def save_eager_slices(self, slices: Iterable[EagerSlice]) -> None:
         """Records task slices, replacing what was recorded for the same tasks."""
-        with self._db() as db:
-            db.executemany(
-                "INSERT OR REPLACE INTO eager_slices VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (astuple(s) for s in slices),
-            )
+        self._insert(slices, replace=True)
 
     def eager_slices(self, feature_id: NodeId) -> list[EagerSlice]:
         """A feature's slices in chain order."""
-        with self._db() as db:
-            rows = db.execute(
-                "SELECT * FROM eager_slices WHERE feature_id = ? ORDER BY position",
-                (feature_id,),
-            ).fetchall()
-        return [EagerSlice(*row) for row in rows]
+        return self._select(EagerSlice, "WHERE feature_id = ? ORDER BY position", (feature_id,))
 
     def eager_slice_of(self, node_id: NodeId) -> EagerSlice | None:
         """The slice a task was delivered as, if an eager build split it."""
-        with self._db() as db:
-            row = db.execute("SELECT * FROM eager_slices WHERE node_id = ?", (node_id,)).fetchone()
-        return None if row is None else EagerSlice(*row)
+        return self._one(EagerSlice, "WHERE node_id = ?", (node_id,))
 
     # --- restoring (from an archive, see `apm.core.archive`) ---
 
@@ -632,47 +608,15 @@ class Store:
         """
         with self._db() as db:
             for run, events in runs:
-                db.execute(
-                    "INSERT INTO runs(id, node_id, agent, session_id, status, started, ended,"
-                    " cost_usd, error, prompt, parent_run, pid, mode)"
-                    " VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (
-                        run.id,
-                        run.node_id,
-                        run.agent,
-                        run.session_id,
-                        run.status,
-                        run.started,
-                        run.ended,
-                        run.cost_usd,
-                        run.error,
-                        run.prompt,
-                        run.parent_run,
-                        run.pid,
-                        run.mode,
-                    ),
-                )
+                self._insert([run])
                 db.executemany(
                     "INSERT INTO run_events(run_id, seq, ts, json) VALUES(?, ?, ?, ?)",
-                    ((run.id, e.seq, e.ts, json.dumps(e.data, ensure_ascii=False)) for e in events),
+                    ((run.id, e.seq, e.ts, _dump(e.data)) for e in events),
                 )
-            db.executemany(
-                "INSERT INTO proposals(id, node_id, run_id, json, review, status, created,"
-                " resolved) VALUES(?, ?, ?, ?, ?, ?, ?, ?)",
-                (
-                    (
-                        p.id,
-                        p.node_id,
-                        p.run_id,
-                        json.dumps(p.data, ensure_ascii=False),
-                        None if p.review is None else json.dumps(p.review, ensure_ascii=False),
-                        p.status,
-                        p.created,
-                        p.resolved,
-                    )
-                    for p in proposals
-                ),
-            )
+            self._insert(proposals)
+
+
+_LATEST = "WHERE node_id = ? ORDER BY created DESC, rowid DESC"
 
 
 def _where(**filters: object) -> tuple[str, tuple[object, ...]]:
@@ -680,38 +624,3 @@ def _where(**filters: object) -> tuple[str, tuple[object, ...]]:
     if not used:
         return "", ()
     return "WHERE " + " AND ".join(f"{key} = ?" for key in used), tuple(used.values())
-
-
-def _run(row: sqlite3.Row) -> Run:
-    return Run(**{key: row[key] for key in row.keys()})  # noqa: SIM118 (Row isn't a dict)
-
-
-def _eager_build(row: sqlite3.Row) -> EagerBuild:
-    return EagerBuild(
-        feature_id=row["feature_id"],
-        round=row["round"],
-        branch=row["branch"],
-        base=row["base"],
-        base_sha=row["base_sha"],
-        sha=row["sha"],
-        state=row["state"],
-        tasks=tuple(json.loads(row["tasks"])),
-        run_id=row["run_id"],
-        error=row["error"],
-        warnings=tuple(json.loads(row["warnings"])),
-        pending=None if row["pending"] is None else json.loads(row["pending"]),
-        updated=row["updated"],
-    )
-
-
-def _proposal(row: sqlite3.Row) -> Proposal:
-    return Proposal(
-        id=row["id"],
-        node_id=row["node_id"],
-        run_id=row["run_id"],
-        data=json.loads(row["json"]),
-        review=None if row["review"] is None else json.loads(row["review"]),
-        status=row["status"],
-        created=row["created"],
-        resolved=row["resolved"],
-    )
