@@ -1,9 +1,10 @@
-// Reviewing what the decomposer proposed: edit or drop children, then accept or reject.
+// Reviewing a proposal (a breakdown, or a task review's split): edit or drop children, then accept
+// or reject.
 
 import { useState } from "react";
 import type { Proposal, ProposedChild } from "./types";
 import { Modal } from "./ui";
-import { cx } from "./util";
+import { cx, isSplit } from "./util";
 
 interface Draft extends ProposedChild {
   keep: boolean;
@@ -61,7 +62,7 @@ export function ProposalReview({
   return (
     <Modal
       wide
-      title={`Proposed breakdown of “${parentTitle}”`}
+      title={isSplit(proposal) ? `Proposed split of “${parentTitle}”` : `Proposed breakdown of “${parentTitle}”`}
       onClose={onClose}
       footer={
         <>
@@ -70,11 +71,19 @@ export function ProposalReview({
             Reject
           </button>
           <button className="primary" onClick={accept} disabled={busy || kept.length === 0}>
-            Accept {kept.length} {kept.length === 1 ? "child" : "children"}
+            {isSplit(proposal)
+              ? `Split into ${kept.length} ${kept.length === 1 ? "task" : "tasks"}`
+              : `Accept ${kept.length} ${kept.length === 1 ? "child" : "children"}`}
           </button>
         </>
       }
     >
+      {isSplit(proposal) && (
+        <p className="hint">
+          Accepting replaces “{parentTitle}” with these tasks, next to each other in its feature. They take over what it
+          needed, and what needed it waits for them.
+        </p>
+      )}
       {proposal.data.rationale && <p className="rationale">{proposal.data.rationale}</p>}
 
       {review && (

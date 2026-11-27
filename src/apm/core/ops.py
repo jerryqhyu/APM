@@ -73,6 +73,60 @@ def decompose(
     return mutate(project, "decompose", apply, actor=actor, run=run, note=note)
 
 
+def split_task(
+    project: Project,
+    task: NodeId,
+    parts: Sequence[NewNode],
+    *,
+    actor: str = "user",
+    run: str | None = None,
+    note: str = "",
+) -> Mutation:
+    """Replaces a To do task with `parts`, next to each other in its feature, in one commit: how a
+    task review's split is accepted, so a split never adds a level to the plan.
+
+    The parts that need no other part take over what the task needed. What needed the task needs
+    the parts no other part needs, which between them wait on all of them. The parts carry the
+    task's tags, and the task is deleted.
+    """
+
+    def apply(draft: Draft) -> str:
+        node = draft[task]
+        _refuse_review_step(draft, task, "split")
+        if node.parent is None:
+            raise OpError(f"{handle(task)} is a feature, not a task: decompose it instead")
+        if not draft.graph.is_leaf(task):
+            raise OpError(f"{handle(task)} has children: it is a feature, not a task")
+        if node.status is not Status.TODO or node.delivery is not None:
+            raise OpError(f"{handle(task)} has started: only a To do task can be split")
+        refuse_under_review(project.apm_dir, [task])
+        needed = {key for part in parts for key in part.depends_on_keys}
+        placed = [
+            replace(
+                part,
+                parent=node.parent,
+                depends_on=[
+                    *(d for d in part.depends_on if d != node.id),
+                    *(node.depends_on if not part.depends_on_keys else ()),
+                ],
+                tags=[*node.tags, *part.tags],
+            )
+            for part in parts
+        ]
+        created = _create(draft, placed)
+        last = [c for c, part in zip(created, parts, strict=True) if part.key not in needed]
+        for dependent in draft.graph.dependents(node.id):
+            other = draft[dependent]
+            if other.kind is Kind.REVIEW:
+                continue  # a review step waits on every task by itself (`review_steps.maintain`)
+            kept = {d for d in other.depends_on if d != node.id}
+            draft.put(replace(other, depends_on=canonical_ids(kept | set(last))))
+        draft.remove(node.id)
+        return f"{handle(task)}: {node.title} → {_count(len(created), 'task', 'tasks')}"
+
+    return mutate(project, "split", apply, actor=actor, run=run, note=note)
+
+
 def _create(draft: Draft, nodes: Sequence[NewNode]) -> list[NodeId]:
     if not nodes:
         raise OpError("nothing to create")

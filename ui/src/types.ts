@@ -147,10 +147,12 @@ export interface Proposal {
   id: string;
   node_id: string;
   run_id: string | null;
-  data: { rationale: string; children: ProposedChild[]; warnings: string[] };
+  data: { rationale: string; children: ProposedChild[]; warnings: string[]; split_of?: { title: string } };
   review: { verdict: string; summary: string; issues: ReviewIssue[]; revised?: boolean } | null;
   status: "pending" | "accepted" | "rejected";
   created: number;
+  /** A task review's split: accepted, its parts replace the task in its feature. */
+  split?: boolean;
 }
 
 export interface NodeDetail extends NodeView {

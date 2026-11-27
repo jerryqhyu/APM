@@ -23,7 +23,7 @@ import { type Box, type Link, type Positions, layout } from "./layout";
 import type { Level, LevelPort, NodeView, Proposal, ProposedChild } from "./types";
 import { NodeList } from "./NodeList";
 import { Spinner, StatePill } from "./ui";
-import { cx, stateOf } from "./util";
+import { cx, isSplit, proposalSummary, stateOf } from "./util";
 
 const CARD = { width: 240, height: 100 };
 const CHIP = { width: 176, height: 30 };
@@ -185,7 +185,11 @@ function CanvasInner({
 }: CanvasProps) {
   const flow = useReactFlow();
   const rootId = level.root?.id ?? null;
-  const proposal = proposals.find((p) => p.node_id === rootId) ?? null;
+  // A breakdown shows inside its node; a split shows next to the task it would replace.
+  const proposal =
+    proposals.find((p) => !isSplit(p) && p.node_id === rootId) ??
+    proposals.find((p) => isSplit(p) && level.nodes.some((n) => n.id === p.node_id)) ??
+    null;
   const proposedOn = useMemo(() => new Set(proposals.map((p) => p.node_id)), [proposals]);
 
   // What to lay out: plan nodes, port chips, and the ghost children of a pending proposal.
@@ -379,8 +383,13 @@ function CanvasInner({
       {proposal && (
         <div className="banner proposal">
           <span>
-            <strong>Claude proposed {proposal.data.children.length} children.</strong> They are shown dashed and are
-            not part of the plan until you accept them.
+            <strong>
+              {isSplit(proposal)
+                ? proposalSummary(proposal, level.nodes.find((n) => n.id === proposal.node_id)?.title ?? "a task")
+                : `Claude proposed ${proposal.data.children.length} children.`}
+            </strong>{" "}
+            They are shown dashed and are not part of the plan until you accept them
+            {isSplit(proposal) ? ": then they replace the task, here." : "."}
           </span>
           <button className="primary" onClick={() => onReview(proposal)}>
             Review proposal

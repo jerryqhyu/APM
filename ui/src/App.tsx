@@ -23,7 +23,7 @@ import { SettingsDialog } from "./Settings";
 import { type Theme, useTheme } from "./theme";
 import type { AgentRequest, Level, NodeDetail, NodeView, Project, Proposal, Run, Status, Tree } from "./types";
 import { Spinner } from "./ui";
-import { cx, errorText, stackedName } from "./util";
+import { cx, errorText, isSplit, proposalSummary, stackedName } from "./util";
 
 interface Route {
   /** The node whose inside the graph shows; null = the top level. */
@@ -190,8 +190,7 @@ export function App() {
     if (event.type === "run.event") return; // the conversation handles these itself
     refresh().catch(fail);
     if (event.type === "proposal.created") {
-      const title = byId.get(event.proposal.node_id)?.title ?? "a node";
-      toast(`Claude proposed ${event.proposal.data.children.length} children for “${title}”.`);
+      toast(proposalSummary(event.proposal, byId.get(event.proposal.node_id)?.title ?? "a node"));
     }
     if (event.type === "run.request") toast("Claude is waiting for your answer.");
     if (event.type === "run.finished" && event.run.status === "failed" && !event.run.parent_run) {
@@ -623,9 +622,16 @@ export function App() {
           parentTitle={byId.get(dialog.proposal.node_id)?.title ?? "a deleted node"}
           onClose={() => setDialog(null)}
           onAccept={async (children) => {
-            await api(`/api/proposals/${dialog.proposal.id}/accept`, { method: "POST", body: { children } });
+            const { proposal } = dialog;
+            const done = await api<{ created: string[] }>(`/api/proposals/${proposal.id}/accept`, {
+              method: "POST",
+              body: { children },
+            });
             setDialog(null);
-            setRoute({ root: dialog.proposal.node_id, selected: [dialog.proposal.node_id] });
+            // A split replaces the task where it was; a breakdown fills the node: go and see them.
+            if (isSplit(proposal) && byId.get(proposal.node_id)?.parent) {
+              setRoute({ root: byId.get(proposal.node_id)!.parent, selected: done.created.slice(0, 1) });
+            } else setRoute({ root: proposal.node_id, selected: [proposal.node_id] });
           }}
           onReject={async () => {
             await api(`/api/proposals/${dialog.proposal.id}/reject`, { method: "POST" });

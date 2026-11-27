@@ -31,7 +31,7 @@ from apm.core.lifting import check_all
 from apm.core.model import Kind, NodeId, Status
 from apm.core.mutate import commit_hand_edits
 from apm.core.project import Project, load_graph
-from apm.core.proposals import accept_proposal, close_orphaned, reject_proposal
+from apm.core.proposals import accept_proposal, close_orphaned, is_split, reject_proposal
 from apm.core.reconcile import Report, describe, reconcile
 from apm.core.report import REPORTER
 from apm.core.report_branch import report_status
@@ -45,7 +45,7 @@ from apm.core.settings import (
     set_override,
     settings_view,
 )
-from apm.core.store import PROJECT, Store
+from apm.core.store import PROJECT, Proposal, Store
 from apm.core.task_review import implement_blocker, review_state
 from apm.core.views import all_nodes_view, level_json, node_history, node_ref, node_view, search
 from apm.runner.agents import AGENTS, MODES
@@ -232,6 +232,12 @@ def create_app(
         graph = load_graph(project)
         return graph, graph.resolve(node)
 
+    def proposal_view(proposal: Proposal) -> dict[str, Any]:
+        """A proposal, and whether it is a task review's split, which replaces the task in its
+        feature when accepted rather than adding children under it.
+        """
+        return {**asdict(proposal), "split": is_split(store, proposal)}
+
     def node_detail(graph: Graph, node_id: NodeId) -> dict[str, Any]:
         state = graph.states[node_id]
         config, body = read_config(project.apm_dir), read_body(project.apm_dir, node_id)
@@ -253,7 +259,7 @@ def create_app(
             },
             "history": [asdict(h) for h in node_history(project, node_id)],
             "proposals": [
-                asdict(p) for p in store.list_proposals(node_id=node_id, status="pending")
+                proposal_view(p) for p in store.list_proposals(node_id=node_id, status="pending")
             ],
             "settings": node_settings(config, graph, node_id),
             "eager": eager_view(store, config, graph, node_id),
@@ -570,11 +576,11 @@ def create_app(
         if status not in (None, "pending", "accepted", "rejected"):
             return []
         close_orphaned(store, load_graph(project))
-        return [asdict(p) for p in store.list_proposals(node_id=node_id, status=status)]
+        return [proposal_view(p) for p in store.list_proposals(node_id=node_id, status=status)]
 
     @app.get("/api/proposals/{proposal_id}")
     def get_proposal(proposal_id: str) -> dict[str, Any]:
-        return asdict(store.get_proposal(proposal_id))
+        return proposal_view(store.get_proposal(proposal_id))
 
     @app.post("/api/proposals/{proposal_id}/accept")
     def accept(proposal_id: str, body: AcceptProposal | None = None) -> dict[str, Any]:

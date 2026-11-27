@@ -10,7 +10,7 @@ from apm.core.config import read_config
 from apm.core.files import read_body
 from apm.core.ids import handle
 from apm.core.model import NodeId
-from apm.core.ops import NewNode, create_nodes, edit_body
+from apm.core.ops import NewNode, create_nodes, edit_body, link
 from apm.core.project import Project, load_graph
 from apm.core.proposals import accept_proposal
 from apm.core.review_lock import TaskUnderReview, review_lock_path, take_review_lock, under_review
@@ -75,11 +75,11 @@ def fingerprint(project: Project, task: NodeId) -> str:
 
 
 async def review(
-    project: Project, fake_claude: FakeClaude, *modes: str
+    project: Project, fake_claude: FakeClaude, *modes: str, parent: NodeId | None = None
 ) -> tuple[Harness, NodeId, str]:
     fake_claude.mode(*modes)
     harness = Harness(project)
-    task = create_nodes(project, [NewNode(title="Parse lines")]).created[0]
+    task = create_nodes(project, [NewNode(title="Parse lines", parent=parent)]).created[0]
     run = harness.runner.start("apm-task-reviewer", task)
     await harness.runner.wait(run.id)
     return harness, task, run.id
@@ -119,7 +119,31 @@ async def test_the_fingerprint_is_taken_when_the_run_starts(
     assert stored.fingerprint == before == fingerprint(project, task)
 
 
-async def test_too_big_proposes_a_split_that_turns_the_task_into_a_feature(
+async def test_too_big_proposes_a_split_that_replaces_the_task_in_its_feature(
+    project: Project, fake_claude: FakeClaude
+) -> None:
+    feature, after = create_nodes(project, [NewNode(title="I/O"), NewNode(title="After")]).created
+    harness, task, run_id = await review(project, fake_claude, "too-big", parent=feature)
+    (proposal,) = harness.store.list_proposals()
+    assert proposal.data["split_of"] == {"title": "Parse lines"}
+    ((_, text),) = harness.notices(run_id)
+    assert "replaces this task with them, in the same feature" in text
+    link(project, after, task)  # something elsewhere waits on the task
+
+    accept_proposal(project, harness.store, proposal.id)
+    graph = load_graph(project)
+    assert task not in graph
+    parse, write = (n for n in graph.children(feature) if graph[n].title in ("Parse", "Write"))
+    assert graph.is_leaf(parse)  # no new level
+    assert graph.is_leaf(write)
+    assert graph[write].depends_on == (parse,)
+    assert graph[after].depends_on == (write,)  # what waited on the task waits on its last part
+    step = graph.review_step(feature)
+    assert step is not None
+    assert set(graph[step].depends_on) == {parse, write}
+
+
+async def test_a_split_of_a_top_level_node_makes_it_a_feature(
     project: Project, fake_claude: FakeClaude
 ) -> None:
     harness, task, run_id = await review(project, fake_claude, "too-big")
