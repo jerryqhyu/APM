@@ -44,6 +44,26 @@ export interface NodeView {
   review_step: string | null;
   /** The feature's branch, once APM has made it. */
   feature_branch: string | null;
+  /** Where its pull request stands on GitHub, as last seen. Null when unknown or it has none. */
+  pr: PrStatus | null;
+}
+
+/** A pull request on GitHub (src/apm/core/pr_status.py). */
+export interface PrStatus {
+  url: string;
+  state: "open" | "draft" | "merged" | "closed";
+  review: "approved" | "changes_requested" | "waiting";
+  checks: "passing" | "failing" | "running" | "none";
+  checked: number;
+}
+
+/** One moment of a node's story (src/apm/core/timeline.py). */
+export interface Moment {
+  time: number;
+  text: string;
+  who: string;
+  run: string | null;
+  url: string | null;
 }
 
 export interface NodeRef {
@@ -163,8 +183,21 @@ export interface NodeDetail extends NodeView {
   proposals: Proposal[];
   under_review: boolean;
   /** Null while task review is off. */
-  review: { state: "none" | "running" | "stale" | "pass" | "too_big" | "unclear" | "error"; summary?: string; missing?: string[]; error?: string } | null;
+  review: {
+    state: "none" | "running" | "stale" | "pass" | "too_big" | "unclear" | "error";
+    verdict?: "pass" | "too_big" | "unclear" | "error";
+    summary?: string;
+    missing?: string[];
+    error?: string;
+    reviewed_at?: number;
+    /** What changed since the review, when it is stale: `the title`, `Approach edited`. */
+    changes?: string[] | null;
+  } | null;
   implement_blocker: string | null;
+  /** The conversation building it, while it is in progress. */
+  builder: Run | null;
+  /** What happened to it, oldest first. */
+  timeline: Moment[];
   settings: NodeSettings;
   /** A feature's eager build, or a task's place in one; null when eager mode doesn't apply. */
   eager: EagerFeature | EagerTaskInfo | null;

@@ -791,7 +791,8 @@ class Runner:
         A `too_big` split becomes a proposal: accepted, it replaces the task in its feature.
         """
         node = load_graph(self.project)[run.node_id]
-        fingerprint = content_fingerprint(node, read_body(self.project.apm_dir, run.node_id))
+        body = read_body(self.project.apm_dir, run.node_id)
+        fingerprint = content_fingerprint(node, body)
         said: list[tuple[str, str]] = []
 
         def conclude(answer: Any, error: str | None) -> str | None:
@@ -810,6 +811,8 @@ class Runner:
                 said.append(("warning", f"APM couldn't record a task verdict: {err}"))
                 return str(err)
             data = verdict.model_dump(mode="json")
+            # What it reviewed, so a later edit can say what changed since (`review_changes`).
+            data["reviewed"] = {"title": node.title, "kind": str(node.kind), "body": body}
             self.store.add_task_review(
                 TaskReview(run.node_id, fingerprint, verdict.verdict, data, run.id)
             )
@@ -1089,6 +1092,10 @@ class Runner:
     def _emit(self, event: dict[str, Any]) -> None:
         with contextlib.suppress(Exception):  # a broken listener must not break a run
             self._on_event(event)
+
+    def announce(self, event: dict[str, Any]) -> None:
+        """Tells the UI about something the runner's owner noticed (a pull request's status)."""
+        self._emit(event)
 
 
 def proposal_dict(proposal: Proposal) -> dict[str, Any]:

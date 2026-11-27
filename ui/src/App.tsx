@@ -88,7 +88,8 @@ export function App() {
   const sideRef = useRef<HTMLElement>(null);
   const outlineRef = useRef<HTMLDivElement>(null);
   const [dialog, setDialog] = useState<Dialog | null>(null);
-  const [tab, setTab] = useState<Tab>("chat");
+  // Details first: the readable account of a node. Chat is one click away.
+  const [tab, setTab] = useState<Tab>(() => (hashParams().get("chat") ? "chat" : "details"));
   const [view, setView] = useRemembered<View>("apm-view", "graph", ["graph", "list"]);
   // The conversation to show: one you just started, or the one the address names (`#…&chat=`).
   const [focusRun, setFocusRun] = useState<string | null>(() => hashParams().get("chat"));
@@ -103,6 +104,8 @@ export function App() {
   const selectedSet = useMemo(() => new Set(route.selected), [route.selected]);
   const selectedNodes = route.selected.map((id) => byId.get(id)).filter((n): n is NodeView => n !== undefined);
   const primary = route.selected.length === 1 ? route.selected[0]! : null;
+  // What the right panel is about: the node you picked, else the feature you are inside.
+  const focusId = primary ?? (route.selected.length === 0 ? route.root : null);
 
   const toast = useCallback((text: string) => {
     const id = ++toastId.current;
@@ -181,8 +184,8 @@ export function App() {
   // live "plan changed" event arrives). While one reload runs, any number of further requests
   // become a single reload after it.
   const reload = useCallback(async () => {
-    await Promise.all([loadPlan(), loadLevel(route.root), loadDetail(primary)]);
-  }, [loadPlan, loadLevel, loadDetail, route.root, primary]);
+    await Promise.all([loadPlan(), loadLevel(route.root), loadDetail(focusId)]);
+  }, [loadPlan, loadLevel, loadDetail, route.root, focusId]);
   const reloadRef = useRef(reload);
   reloadRef.current = reload;
   const inFlight = useRef<Promise<void> | null>(null);
@@ -348,6 +351,12 @@ export function App() {
       showRun(await redoEager(detail.id));
       await refresh();
     },
+    runAgent: (agent, id) => setDialog({ kind: "run", agent, node: id }),
+    implementAll: handlers.implementAll,
+    openRun: (runId) => {
+      setFocusRun(runId);
+      setTab("chat");
+    },
   };
 
   if (fatal === "token") {
@@ -372,7 +381,7 @@ export function App() {
   const readyNodes = nodes.filter((n) => n.ready && n.children === 0);
   const issues = [...tree.errors, ...tree.warnings];
   const runOf = (request: AgentRequest) => runningRuns.find((r) => r.id === request.run_id);
-  const chatNode = primary ? (byId.get(primary) ?? null) : null;
+  const chatNode = focusId ? (byId.get(focusId) ?? null) : null;
 
   return (
     <div
@@ -518,10 +527,6 @@ export function App() {
       <aside className="side" ref={sideRef}>
         <div className="side-head">
           <div className="tabs" role="tablist">
-            <button role="tab" aria-selected={tab === "chat"} className={cx("tab", tab === "chat" && "active")} onClick={() => setTab("chat")}>
-              Chat
-              <span className="tab-sub">{chatNode ? chatNode.title : "whole plan"}</span>
-            </button>
             <button
               role="tab"
               aria-selected={tab === "details"}
@@ -529,6 +534,10 @@ export function App() {
               onClick={() => setTab("details")}
             >
               Details
+            </button>
+            <button role="tab" aria-selected={tab === "chat"} className={cx("tab", tab === "chat" && "active")} onClick={() => setTab("chat")}>
+              Chat
+              <span className="tab-sub">{chatNode ? chatNode.title : "whole plan"}</span>
             </button>
           </div>
           <ActionsMenu
@@ -554,7 +563,7 @@ export function App() {
           />
         </div>
         <div className={cx("tab-panel", "scroll", tab !== "details" && "hidden")}>
-          {detail && detailActions && primary ? (
+          {detail && detailActions && focusId ? (
             <NodeDetails detail={detail} nodes={nodes} actions={detailActions} />
           ) : selectedNodes.length > 1 ? (
             <article className="details">
@@ -577,8 +586,15 @@ export function App() {
               nodes={nodes}
               issues={issues}
               proposals={proposals}
+              requests={requests}
+              runs={runningRuns}
               onGoTo={goTo}
               onReview={(proposal) => setDialog({ kind: "review", proposal })}
+              onOpenRun={(runId) => {
+                const run = runningRuns.find((r) => r.id === runId);
+                if (run) showRun(run);
+              }}
+              onImplement={(id) => setDialog({ kind: "run", agent: "apm-implementer", node: id })}
             />
           )}
         </div>

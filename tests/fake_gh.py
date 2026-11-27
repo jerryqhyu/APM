@@ -11,6 +11,8 @@ It answers the REST calls APM makes:
   FAKE_GH_PRS (see `FakeGh.add`); 404 if it isn't there.
 - `gh api -X PATCH repos/<o>/<r>/pulls/<n> -f base=<branch>`: retargets it in that file; with
   `-f body=<text>`, rewrites its description there.
+- `gh api repos/<o>/<r>/pulls/<n>/reviews` and `.../commits/<sha>/check-runs`: that pull request's
+  `reviews` and `checks` as `FakeGh.add` (or `FakeGh.review`) put them in the file.
 - FAKE_GH=fail: every call fails the way GitHub refuses a pull request with no changes.
 
 Every call's arguments are appended to FAKE_GH_LOG as one JSON line.
@@ -21,6 +23,7 @@ import os
 import re
 import shutil
 import sys
+from collections.abc import Sequence
 from pathlib import Path
 
 import pytest
@@ -39,6 +42,8 @@ def main() -> int:
         return 1
     if (one := _one_pr(args)) is not None:
         return one
+    if (extra := _pr_extras(args)) is not None:
+        return extra
     if args[:3] == ["api", "-X", "GET"]:
         print(os.environ.get("FAKE_GH_OPEN", "[]"))
         return 0
@@ -115,6 +120,30 @@ def _one_pr(args: list[str]) -> int | None:
     return 0
 
 
+_REVIEWS = re.compile(r"^(repos/[^/]+/[^/]+/pulls/\d+)/reviews$")
+_CHECKS = re.compile(r"^repos/[^/]+/[^/]+/commits/([^/]+)/check-runs$")
+
+
+def _pr_extras(args: list[str]) -> int | None:
+    """A pull request's reviews, or the check runs on its head commit; None if it isn't either."""
+    path = args[-1] if args and args[0] == "api" else ""
+    store = Path(os.environ.get("FAKE_GH_PRS", "/nonexistent"))
+    prs = json.loads(store.read_text()) if store.exists() else {}
+    if match := _REVIEWS.match(path):
+        print(json.dumps(prs.get(match[1], {}).get("reviews", [])))
+        return 0
+    if match := _CHECKS.match(path):
+        runs = [
+            c
+            for pr in prs.values()
+            if pr.get("head", {}).get("sha") == match[1]
+            for c in pr.get("checks", [])
+        ]
+        print(json.dumps({"total_count": len(runs), "check_runs": runs}))
+        return 0
+    return None
+
+
 class FakeGh:
     """Puts the fake `gh` first on PATH and reads back what it was called with."""
 
@@ -185,10 +214,26 @@ class FakeGh:
             "merged": merged,
             "merge_commit_sha": merge_commit,
             "base": {"ref": base},
+            "head": {"sha": f"head{number}"},
             "body": body,
         }
         self.prs.write_text(json.dumps(prs))
         return url
+
+    def review(
+        self,
+        number: int,
+        *,
+        reviews: Sequence[dict] = (),
+        checks: Sequence[dict] = (),
+        repo: str = "o/r",
+    ) -> None:
+        """Gives pull request `number` reviews (`{"state": "APPROVED", "user": {"login": …}}`)
+        and check runs on its head (`{"status": "completed", "conclusion": "success"}`).
+        """
+        prs = json.loads(self.prs.read_text())
+        prs[f"repos/{repo}/pulls/{number}"] |= {"reviews": list(reviews), "checks": list(checks)}
+        self.prs.write_text(json.dumps(prs))
 
     def pr(self, number: int, repo: str = "o/r") -> dict:
         """Pull request `number` as the fake holds it now."""
