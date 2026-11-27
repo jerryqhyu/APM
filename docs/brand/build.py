@@ -3,211 +3,224 @@ look the same everywhere. Run it after changing a shape or a colour:
 
     python docs/brand/build.py
 
-It writes the files next to it, the favicon into ui/public/ and the mark into ui/src/assets/. The
-PNGs (app icons, the social preview) are renders of these: `node docs/brand/render-pngs.cjs`.
+It writes the files next to it, the favicon into ui/public/, and the shapes the UI draws its logo
+from into ui/src/brand.ts. The PNGs (app icons, the social preview) are renders of these:
+`node docs/brand/render-pngs.cjs`.
 
-The idea: a schedule. Bars that start later as they go down, in the colours of the states work
-moves through in APM (done, review, building, ready, waiting), and a blocky 1970s wordmark whose
-feet are cut into stripes that widen as they fall.
+The idea: three racing stripes, red, white and blue, whose ends are cut on the slant of an italic
+APM beside them, as on a 1970s sports logo. The stripes alone are the icon.
 """
 
+import json
+import math
+from collections.abc import Sequence
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-PUBLIC = HERE.parent.parent / "ui" / "public"
-UI_ASSETS = HERE.parent.parent / "ui" / "src" / "assets"
+ROOT = HERE.parent.parent
+PUBLIC = ROOT / "ui" / "public"
 
-INK = "#17181c"
-CREAM = "#f1eadb"
-STATES = ["#8c6cf2", "#f26b2e", "#2f8fe8", "#29b46e", "#f2b33d"]
-"""Done, review, building, ready, waiting: the order work moves through, top to bottom."""
+NAVY = "#13203d"
+WHITE = "#f5f1e8"
+RED = "#e23b2e"
+BLUE = "#2763d1"
+STRIPES = (RED, WHITE, BLUE)
 
-# --- the wordmark: cap height 200, letters built from paths ---
-
-H = 200
-STEM = 58  # vertical strokes
-BAR = 50  # horizontal strokes
-GAPS = [(116, 4), (134, 6), (154, 8), (176, 10)]
-"""The stripes cut through the letters' feet: (top, height), widening towards the baseline."""
-TRACK = 24
-
-
-def _a(x: float) -> tuple[str, float]:
-    w, r = 196, 74
-    outer = (
-        f"M{x},{H} V{r} A{r},{r} 0 0 1 {x + r},0 H{x + w - r} A{r},{r} 0 0 1 {x + w},{r} V{H}"
-        f" H{x + w - STEM} V{GAPS[1][0]} H{x + STEM} V{H} Z"
-    )
-    counter = f"M{x + STEM},{BAR} H{x + w - STEM} V96 H{x + STEM} Z"
-    return f"{outer} {counter}", w
+H = 100  # cap height: the stripes fill it too
+SLANT = math.tan(math.radians(14))  # the italic: x leans this far per unit of height
+STEM = 24
+STRIPE, STRIPE_GAP = 28, 8  # three stripes and two gaps make the cap height
+STRIPE_LENGTH = 96  # the shortest (bottom) stripe; each above it reaches further on the slant
+GAP = 10  # between the stripes and the A
 
 
-def _p(x: float) -> tuple[str, float]:
-    w, r, bowl = 186, 72, 132
-    outer = (
-        f"M{x},{H} V0 H{x + w - r} A{r},{r} 0 0 1 {x + w},{r} V{bowl - r}"
-        f" A{r},{r} 0 0 1 {x + w - r},{bowl} H{x + STEM} V{H} Z"
-    )
-    counter = f"M{x + STEM},{BAR} H{x + w - STEM - 6} V{bowl - BAR + 4} H{x + STEM} Z"
-    return f"{outer} {counter}", w
+def _italic(points: list[tuple[float, float]], x0: float) -> list[tuple[float, float]]:
+    """Upright points → italic, leaning right by `SLANT` per unit above the baseline."""
+    return [(x + (H - y) * SLANT + x0, y) for x, y in points]
 
 
-def _m(x: float) -> tuple[str, float]:
-    w, notch = 256, 84
-    gap = (w - 3 * STEM) / 2
-    shoulder = notch + 34
-    inner = shoulder + gap * 0.62
-    d = (
-        f"M{x},{H} V0 H{x + STEM + gap / 2} L{x + w / 2},{notch}"
-        f" L{x + w - STEM - gap / 2},0 H{x + w} V{H} H{x + w - STEM} V{shoulder}"
-        f" L{x + w / 2 + STEM / 2},{inner} V{H}"
-        f" H{x + w / 2 - STEM / 2} V{inner} L{x + STEM},{shoulder} V{H} Z"
-    )
-    return d, w
+def _poly(points: Sequence[tuple[float, float]]) -> str:
+    return "M" + " L".join(f"{x:.2f},{y:.2f}" for x, y in points) + " Z"
 
 
-def wordmark_path() -> tuple[str, float]:
-    parts, x = [], 0.0
-    for letter in (_a, _p, _m):
+def _a(x0: float) -> tuple[str, float]:
+    w, leg = 92, 30
+    top = w - STEM
+
+    def inner(y: float) -> float:  # the leg's inner edge, `leg` right of its outer edge
+        return top * (1 - y / H) + leg
+
+    outer = [(0, H), (top, 0), (w, 0), (w, H), (top, H), (top, 84), (inner(84), 84), (inner(H), H)]
+    counter = [(inner(64), 64), (top, 64), (top, H * leg / top)]
+    return f"{_poly(_italic(outer, x0))} {_poly(_italic(counter, x0))}", w
+
+
+def _arc(cx: float, cy: float, r: float) -> list[tuple[float, float]]:
+    """The right half of a circle, top to bottom."""
+    return [
+        (cx + r * math.sin(t), cy - r * math.cos(t)) for t in (i * math.pi / 16 for i in range(17))
+    ]
+
+
+def _p(x0: float) -> tuple[str, float]:
+    w, bowl, bar = 86, 62, 20
+    r = bowl / 2
+    outer = [(0, H), (0, 0), *_arc(w - r, r, r), (STEM, bowl), (STEM, H)]
+    counter = [(STEM, bar), *_arc(w - r, r, r - bar), (STEM, bowl - bar)]
+    return f"{_poly(_italic(outer, x0))} {_poly(_italic(counter, x0))}", w
+
+
+def _m(x0: float) -> tuple[str, float]:
+    w, v = 118, 30
+    mid = w / 2
+    outer = [
+        (0, H), (0, 0), (STEM + 6, 0), (mid, 56), (w - STEM - 6, 0), (w, 0), (w, H),
+        (w - STEM, H), (w - STEM, 42), (mid + v / 2 - 4, H), (mid - v / 2 + 4, H),
+        (STEM, 42), (STEM, H),
+    ]  # fmt: skip
+    return _poly(_italic(outer, x0)), w
+
+
+def stripes(x0: float = 0, length: float = STRIPE_LENGTH) -> list[tuple[str, str]]:
+    """The three stripes, filling the cap height, their right ends on the italic's slant:
+    (path, colour) each.
+    """
+    out = []
+    for i, colour in enumerate(STRIPES):
+        top = i * (STRIPE + STRIPE_GAP)
+        bottom = top + STRIPE
+        right = x0 + length
+        pts = [
+            (x0, top),
+            (right + (H - top) * SLANT, top),
+            (right + (H - bottom) * SLANT, bottom),
+            (x0, bottom),
+        ]
+        out.append((_poly(pts), colour))
+    return out
+
+
+def wordmark(x0: float) -> tuple[str, float]:
+    """The italic APM from `x0`: its path, and where it ends (including the lean)."""
+    parts, x = [], x0
+    for letter, space in ((_a, 6), (_p, 10), (_m, 0)):
         d, w = letter(x)
         parts.append(d)
-        x += w + TRACK
-    return " ".join(parts), x - TRACK
+        x += w + space
+    return " ".join(parts), x + H * SLANT
 
 
-WORD_D, WORD_W = wordmark_path()
+WORD_X = STRIPE_LENGTH + GAP
+WORD_D, LOGO_W = wordmark(WORD_X)
+WORD_ONLY_D, WORD_ONLY_W = wordmark(0)
 
 
-def wordmark(color: str, ident: str, *, striped: bool = True) -> str:
-    """The letters at the origin, `WORD_W` wide and `H` tall. Striped feet are cut out through a
-    mask, so whatever is behind shows through.
-    """
-    if not striped:
-        return f'<path fill="{color}" fill-rule="evenodd" d="{WORD_D}"/>'
-    cuts = "".join(
-        f'<rect x="-1" y="{y}" width="{WORD_W + 2}" height="{h}" fill="#000"/>' for y, h in GAPS
-    )
-    box = f'x="-1" y="-1" width="{WORD_W + 2}" height="{H + 2}"'
+def svg(w: float, h: float, body: str, *, x: float = 0, y: float = 0) -> str:
     return (
-        f'<defs><mask id="{ident}" maskUnits="userSpaceOnUse" {box}>'
-        f'<rect {box} fill="#fff"/>{cuts}</mask></defs>'
-        f'<path fill="{color}" fill-rule="evenodd" mask="url(#{ident})" d="{WORD_D}"/>'
+        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="{x:g} {y:g} {w:g} {h:g}"'
+        f' width="{w:g}" height="{h:g}" role="img" aria-label="APM">'
+        f"<title>APM</title>{body}</svg>\n"
     )
 
 
-# --- the mark: a schedule of five bars ---
+def _stripes_svg(x0: float = 0, length: float = STRIPE_LENGTH) -> str:
+    return "".join(f'<path d="{d}" fill="{c}"/>' for d, c in stripes(x0, length))
 
 
-def cascade(x: float, y: float, w: float, h: float, *, rows: int = 5, length: float = 0.56) -> str:
-    """Bars that start later as they go down, in the states' colours, filling the box."""
-    thick = h / (rows * 1.3)
-    gap = (h - rows * thick) / (rows - 1)
-    long = w * length
-    shift = (w - long) / (rows - 1)
-    return "".join(
-        f'<rect x="{x + i * shift:.2f}" y="{y + i * (thick + gap):.2f}" width="{long:.2f}"'
-        f' height="{thick:.2f}" fill="{STATES[i]}"/>'
-        for i in range(rows)
-    )
+def logo(word: str) -> str:
+    """Stripes and wordmark, `LOGO_W` wide and `H` tall, on nothing."""
+    return f'{_stripes_svg()}<path fill="{word}" fill-rule="evenodd" d="{WORD_D}"/>'
 
 
-def tile(size: float, *, square: bool = False) -> str:
-    """The mark: the schedule on a rounded ink square. `square` is for app icons, which the
-    system rounds or crops itself: full bleed, with the bars inside the safe zone.
+def badge() -> str:
+    """The logo on a navy plate: for light backgrounds, where the white stripe would vanish."""
+    pad = 26
+    w, h = LOGO_W + 2 * pad, H + 2 * pad
+    plate = f'<rect width="{w:.2f}" height="{h}" rx="{pad * 0.9:.1f}" fill="{NAVY}"/>'
+    return svg(w, h, f'{plate}<g transform="translate({pad},{pad})">{logo(WHITE)}</g>')
+
+
+def mark(size: float, *, square: bool = False) -> str:
+    """The stripes alone on a navy square: the icon. `square` is full bleed, for app icons the
+    system rounds or crops itself, with the stripes inside the safe zone.
     """
-    pad = size * (0.24 if square else 0.18)
-    inner = size - 2 * pad
+    inset = 0.24 if square else 0.17
+    span = size * (1 - 2 * inset)  # the stripes' width, slant included
+    scale = span / (STRIPE_LENGTH * 1.4 + H * SLANT)
+    x = (size - span) / 2
+    y = (size - H * scale) / 2
     corner = 0 if square else size * 0.22
-    return f'<rect width="{size}" height="{size}" rx="{corner:.2f}" fill="{INK}"/>' + cascade(
-        pad, pad, inner, inner
+    stripes_body = _stripes_svg(0, STRIPE_LENGTH * 1.4)
+    return (
+        f'<rect width="{size}" height="{size}" rx="{corner:.2f}" fill="{NAVY}"/>'
+        f'<g transform="translate({x:.2f},{y:.2f}) scale({scale:.4f})">{stripes_body}</g>'
     )
 
 
 def favicon() -> str:
-    """Three bars on 32 px: five turn to mush at 16. Done, building, ready."""
-    bars = "".join(
-        f'<rect x="{6 + i * 5}" y="{7 + i * 7}" width="15" height="5" fill="{c}"/>'
-        for i, c in enumerate([STATES[0], STATES[2], STATES[3]])
-    )
-    return f'<rect width="32" height="32" rx="7" fill="{INK}"/>{bars}'
-
-
-# --- compositions ---
-
-
-def svg(w: float, h: float, body: str, title: str) -> str:
+    """The icon at 32: the stripes larger in the square, so they still read at 16."""
+    scale = 24 / (STRIPE_LENGTH * 1.25 + H * SLANT)
+    body = _stripes_svg(0, STRIPE_LENGTH * 1.25)
     return (
-        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {w:g} {h:g}" width="{w:g}"'
-        f' height="{h:g}" role="img" aria-label="{title}"><title>{title}</title>{body}</svg>\n'
+        f'<rect width="32" height="32" rx="7" fill="{NAVY}"/>'
+        f'<g transform="translate(4,{(32 - H * scale) / 2:.2f}) scale({scale:.4f})">{body}</g>'
     )
-
-
-def lockup(word: str, ident: str) -> tuple[str, float, float]:
-    """The mark beside the wordmark, the mark as tall as the letters with their stripes."""
-    size = H * 1.24
-    scale = 1.0
-    gap = 56
-    body = (
-        f"<g>{tile(size)}</g>"
-        f'<g transform="translate({size + gap},{(size - H) / 2:.2f}) scale({scale})">'
-        f"{wordmark(word, ident)}</g>"
-    )
-    return body, size + gap + WORD_W, size
-
-
-def stacked() -> str:
-    """A poster: the schedule wide across the top, the wordmark under it."""
-    w = h = 1080
-    margin = 120
-    word_scale = (w - 2 * margin) / WORD_W
-    word_h = H * word_scale
-    stripes = cascade(margin, 150, w - 2 * margin, 430, length=0.62)
-    word = (
-        f'<g transform="translate({margin},{h - margin - word_h:.2f}) scale({word_scale:.4f})">'
-        f"{wordmark(CREAM, 'stacked')}</g>"
-    )
-    return svg(w, h, f'<rect width="{w}" height="{h}" fill="{INK}"/>{stripes}{word}', "APM")
 
 
 def banner() -> str:
-    """The README and social preview: wordmark and line on the left, the schedule running off the
-    right edge.
+    """The README and social preview: navy, the stripes running in from the left edge into the
+    wordmark, and the line under it.
     """
     w, h = 1280, 640
-    left, word_scale = 96, 0.9
-    word_right = left + WORD_W * word_scale
-    bars = "".join(
-        f'<rect x="{word_right + 90 + i * 44:.0f}" y="{150 + i * 72}" width="{w}" height="50"'
-        f' fill="{c}"/>'
-        for i, c in enumerate(STATES)
-    )
-    word = (
-        f'<g transform="translate({left},150) scale({word_scale})">{wordmark(CREAM, "banner")}</g>'
-    )
+    scale = 2.1
+    x, y = (w - LOGO_W * 2.1) / 2 + 40, 150
+    bars = _stripes_svg(-x / scale, STRIPE_LENGTH + x / scale)
+    word = f'<path fill="{WHITE}" fill-rule="evenodd" d="{WORD_D}"/>'
     font = "Futura, 'Avenir Next', 'Helvetica Neue', Arial, sans-serif"
     line = "".join(
-        f'<text x="{left}" y="{y}" fill="{CREAM}" fill-opacity="0.78" font-family="{font}"'
-        f' font-size="34" font-weight="600" letter-spacing="0.5">{text}</text>'
-        for y, text in ((420, "The project manager for building"), (464, "with AI agents."))
+        f'<text x="{x + WORD_X * scale:.0f}" y="{ty}" fill="{WHITE}" fill-opacity="0.82"'
+        f' font-family="{font}"'
+        f' font-size="36" font-style="italic" font-weight="700" letter-spacing="0.5">'
+        f"{text}</text>"
+        for ty, text in ((430, "The project manager for building"), (476, "with AI agents."))
     )
-    return svg(w, h, f'<rect width="{w}" height="{h}" fill="{INK}"/>{bars}{word}{line}', "APM")
+    art = f'<g transform="translate({x},{y}) scale({scale})">{bars}{word}</g>'
+    return svg(w, h, f'<rect width="{w}" height="{h}" fill="{NAVY}"/>{art}{line}')
+
+
+def ui_shapes() -> str:
+    """The logo's shapes for the UI, which draws it inline so it can follow the theme."""
+    data = {
+        "width": round(LOGO_W, 2),
+        "height": H,
+        "stripes": [{"d": d, "fill": c} for d, c in stripes()],
+        "word": WORD_D,
+        "white": WHITE,
+        "navy": NAVY,
+    }
+    return (
+        "// Written by docs/brand/build.py: change the logo there, not here.\n\n"
+        f"export const LOGO = {json.dumps(data, indent=2)} as const;\n"
+    )
 
 
 def write() -> list[Path]:
     files = {
-        HERE / "apm-mark.svg": svg(512, 512, tile(512), "APM"),
-        HERE / "apm-mark-square.svg": svg(512, 512, tile(512, square=True), "APM"),
-        UI_ASSETS / "apm-mark.svg": svg(512, 512, tile(512), "APM"),
-        HERE / "apm-favicon.svg": svg(32, 32, favicon(), "APM"),
-        HERE / "apm-wordmark-cream.svg": svg(WORD_W, H, wordmark(CREAM, "wm"), "APM"),
-        HERE / "apm-wordmark-ink.svg": svg(WORD_W, H, wordmark(INK, "wm"), "APM"),
-        HERE / "apm-logo-stacked.svg": stacked(),
+        HERE / "apm-mark.svg": svg(512, 512, mark(512)),
+        HERE / "apm-mark-square.svg": svg(512, 512, mark(512, square=True)),
+        HERE / "apm-favicon.svg": svg(32, 32, favicon()),
+        HERE / "apm-logo-on-dark.svg": svg(LOGO_W, H, logo(WHITE)),
+        HERE / "apm-logo-on-light.svg": badge(),
+        HERE / "apm-wordmark-white.svg": svg(
+            WORD_ONLY_W, H, f'<path fill="{WHITE}" fill-rule="evenodd" d="{WORD_ONLY_D}"/>'
+        ),
+        HERE / "apm-wordmark-navy.svg": svg(
+            WORD_ONLY_W, H, f'<path fill="{NAVY}" fill-rule="evenodd" d="{WORD_ONLY_D}"/>'
+        ),
         HERE / "apm-banner.svg": banner(),
-        PUBLIC / "favicon.svg": svg(32, 32, favicon(), "APM"),
+        PUBLIC / "favicon.svg": svg(32, 32, favicon()),
+        ROOT / "ui" / "src" / "brand.ts": ui_shapes(),
     }
-    for name, word in (("apm-logo-on-dark.svg", CREAM), ("apm-logo-on-light.svg", INK)):
-        body, lw, lh = lockup(word, "logo")
-        files[HERE / name] = svg(lw, lh, body, "APM")
     for path, text in files.items():
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text, encoding="utf-8")
@@ -216,4 +229,4 @@ def write() -> list[Path]:
 
 if __name__ == "__main__":
     for path in write():
-        print(path.relative_to(HERE.parent.parent))
+        print(path.relative_to(ROOT))

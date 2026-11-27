@@ -10,6 +10,7 @@
   --canvas: light-dark(#f6f8fa, #111111);
   /* Around the panels: the window itself. */
   --chrome: light-dark(#e4e7eb, #000000);
+  --logo-plate: light-dark(#13203d, transparent);
   --panel-radius: 12px;
   --border: light-dark(#d0d7de, #363636);
   --border-muted: light-dark(#e3e7eb, #272727);
@@ -583,15 +584,40 @@ body.resizing {
   font-size: 15px;
 }
 
-.logo {
+/* The logo sits on a navy plate where the page is light: the white stripe would vanish there. */
+.apm-logo {
   display: block;
   flex: none;
-  border-radius: 5px;
 }
 
-.splash-mark {
+.apm-logo-plate {
+  fill: var(--logo-plate);
+}
+
+.splash .apm-logo {
   margin-bottom: 8px;
-  border-radius: 16px;
+}
+
+.brand .project-name {
+  padding-left: 10px;
+  border-left: 1px solid var(--border);
+  color: var(--fg-muted);
+  font-weight: 500;
+}
+
+.menu-button.icon-button {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 7px;
+  color: var(--fg-muted);
+}
+
+.menu-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 8px;
 }
 
 .project-name,
