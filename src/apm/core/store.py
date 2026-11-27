@@ -332,6 +332,7 @@ class Store:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._local = threading.local()
         with self._db() as db:
+            db.execute("PRAGMA journal_mode=WAL")  # kept in the file: set once, not per connection
             db.executescript(_SCHEMA)
             # Databases from before version 2 have no `mode` column.
             if "mode" not in {row["name"] for row in db.execute("PRAGMA table_info(runs)")}:
@@ -343,24 +344,23 @@ class Store:
 
     @contextmanager
     def _db(self) -> Generator[sqlite3.Connection]:
-        """A transaction on this thread's connection, opened on first use and then reused. Nested
-        calls join the outer transaction, so it stays all or nothing.
+        """One transaction on a connection of its own, closed when it ends, so nothing is left
+        open (and the database's files settle) whatever happens to this Store. Nested calls on the
+        same thread join the outer transaction, so it stays all or nothing.
         """
-        local = self._local
-        if getattr(local, "db", None) is None:
-            local.db = sqlite3.connect(self.path, timeout=10.0)
-            local.db.row_factory = sqlite3.Row
-            local.db.execute("PRAGMA journal_mode=WAL")
-            local.depth = 0
-        if local.depth:
-            yield local.db
+        outer = getattr(self._local, "db", None)
+        if outer is not None:
+            yield outer
             return
-        local.depth = 1
+        db = sqlite3.connect(self.path, timeout=10.0)
+        db.row_factory = sqlite3.Row
+        self._local.db = db
         try:
-            with local.db:
-                yield local.db
+            with db:
+                yield db
         finally:
-            local.depth = 0
+            self._local.db = None
+            db.close()
 
     def _insert(self, records: Iterable[object], *, replace: bool = False) -> None:
         with self._db() as db:
