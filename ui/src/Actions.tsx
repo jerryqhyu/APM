@@ -1,6 +1,8 @@
-// The actions panel: every way to change the graph directly, for whatever is selected. One node,
-// several nodes, or (with nothing selected) the plan as a whole.
+// The actions: every way to change the graph directly, for whatever is selected. One node, several
+// nodes, or (with nothing selected) the plan as a whole. They sit in a drop-down next to the Chat
+// and Details tabs, so the conversation keeps the column.
 
+import { useEffect, useRef, useState } from "react";
 import { eagerFeature, eagerTask } from "./Eager";
 import { FeatureControls } from "./FeatureControls";
 import { WriteReportRow } from "./FeatureReport";
@@ -36,14 +38,7 @@ export interface ActionHandlers {
 
 const STATUSES: Status[] = ["todo", "in_progress", "done", "dropped"];
 
-export function Actions({
-  selected,
-  running,
-  handlers,
-  lookup,
-  detail,
-  nodes,
-}: {
+interface ActionsProps {
   selected: NodeView[];
   detail: NodeDetail | null;
   running: Set<string>;
@@ -51,7 +46,52 @@ export function Actions({
   lookup: (id: string) => NodeView | undefined;
   /** Every node of the plan. */
   nodes: NodeView[];
-}) {
+}
+
+/** The Actions button and its drop-down. It stays open while you use it (Implement all asks
+ * first, in place), and closes on a click outside it, a dialog included, or on Escape.
+ */
+export function ActionsMenu(props: ActionsProps) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const away = (event: MouseEvent) => {
+      if (!ref.current?.contains(event.target as Node)) setOpen(false);
+    };
+    const escape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+    // Capture: the graph stops mousedown from bubbling up to the window.
+    window.addEventListener("mousedown", away, true);
+    window.addEventListener("keydown", escape);
+    return () => {
+      window.removeEventListener("mousedown", away, true);
+      window.removeEventListener("keydown", escape);
+    };
+  }, [open]);
+  const count = props.selected.length;
+  return (
+    <div className="menu actions-menu" ref={ref}>
+      <button
+        className={cx("menu-button", open && "on")}
+        aria-expanded={open}
+        aria-haspopup="dialog"
+        title={`Change ${count === 1 ? "the selected node" : count ? `the ${count} selected nodes` : "the plan"}, or start Claude on it`}
+        onClick={() => setOpen(!open)}
+      >
+        Actions <span aria-hidden>▾</span>
+      </button>
+      {open && (
+        <div className="menu-list actions-pop" role="dialog" aria-label="Actions">
+          <Actions {...props} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+export function Actions({ selected, running, handlers, lookup, detail, nodes }: ActionsProps) {
   const one = selected.length === 1 ? selected[0]! : null;
   const ids = selected.map((n) => n.id);
   const sameStatus = selected.length > 0 && selected.every((n) => n.status === selected[0]!.status) ? selected[0]!.status : null;
@@ -250,7 +290,6 @@ export function Actions({
                   Review feature
                 </button>
               )}
-              <span className="row-hint">or just say what you want below</span>
             </div>
           )}
           {one && one.children > 0 && !isStep && (

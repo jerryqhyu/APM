@@ -57,7 +57,7 @@ This puts an `apm` command on your PATH. To update later, run `git pull`, build 
 
 3. In the **Chat** tab on the right, tell Claude what you want to build, for example: *"I want to add search and tags to this app. Plan it with me."* Claude reads your code, adds nodes to the plan, and tells you what it did. The graph in the middle updates as it goes.
 
-4. Double-click a node to go inside it. Click a node to select it; the right column then shows its actions, a conversation about it, and its details.
+4. Double-click a node to go inside it. Click a node to select it; the right column then shows a conversation about it and its details, and its **Actions** menu.
 
 5. Pick a node with nothing inside it that says **Ready**, and press **Implement**. Claude builds it on its own branch and reports back in the conversation.
 
@@ -110,7 +110,7 @@ On the far right you can switch between a **Light**, **Dark** or **Auto** theme.
 
 **Tags.** Labels on a node, such as `backlog`, `area/ui` or `q3`: lowercase letters, digits and `. _ / -`. Add and remove them under the title in **Details** (type and press Enter). Tags are labels, not content: changing them doesn't redo a task's review, and a node under review can still be tagged. Merging nodes keeps every tag.
 
-**Right panel.** An **Actions** bar on top, with buttons for everything you can do to what is selected. Below it, two tabs:
+**Right panel.** The right third of the window, top to bottom, is the conversation. It has two tabs, and next to them the **Actions** menu: buttons for everything you can do to what is selected. It stays open while you use it; click anywhere else or press Escape to close it. The tabs:
 
 - **Chat**: your conversation with Claude, about the selected node or, with nothing selected, the whole plan. The tab shows which.
 - **Details**: the selected node's description, links, delivery and history. With nothing selected, a summary of the plan.
@@ -151,7 +151,7 @@ Reading the plan, changing the plan through APM, and reading your code never ask
 
 ## Changing the graph yourself
 
-Select a node and use the **Actions** panel. Every button changes the plan immediately, and each change is one entry in the history.
+Select a node and open **Actions**, at the top right. Every button changes the plan immediately, and each change is one entry in the history.
 
 | Button | What it does |
 |---|---|
@@ -249,7 +249,7 @@ Two things to know:
 
 ### A whole feature at once
 
-Select a feature (a node with children). The **Tasks** row of the Actions panel works on every task inside it, nested features included, but not review steps:
+Select a feature (a node with children). The **Tasks** row of the **Actions** menu works on every task inside it, nested features included, but not review steps:
 
 | Button | What it does |
 |---|---|
@@ -378,7 +378,7 @@ A long record is kept to a sensible size: Claude's replies in long conversations
 
 **When it is written.** On its own, once the feature's review passes: APM opens the feature's pull request first, then writes the report, commits it to the feature branch (a new commit, pushed without force, so it joins the open pull request) and links it from the pull request's description. The pull request never waits for the report. If the report fails or takes more than 30 minutes, the review's conversation says so and how to write it by hand. A feature inside a feature gets its report on its own branch, which goes into the enclosing feature's branch with it.
 
-**By hand**, press **Write report** on a feature (in the Actions panel, under **Review all tasks** and **Implement all**), or run `apm report <feature>`. It works whenever the feature branch has work on it, before or after the review, and whether or not reports are on. You can add guidance ("say more about the file format"). Each time, APM rewrites the report and adds a new commit. A reply in the report's conversation rewrites it too.
+**By hand**, press **Write report** on a feature (in the **Actions** menu, under **Review all tasks** and **Implement all**), or run `apm report <feature>`. It works whenever the feature branch has work on it, before or after the review, and whether or not reports are on. You can add guidance ("say more about the file format"). Each time, APM rewrites the report and adds a new commit. A reply in the report's conversation rewrites it too.
 
 **Where to see it.** A feature's **Details** show its report: not written yet, being written, or written at a commit, with a link to the file on GitHub, and **Show** displays it. `apm report <feature> --show` prints it. Claude's work on it is in the feature's conversation.
 
@@ -489,7 +489,7 @@ features:                    # how features are built and reported (see below)
 - `allowed_tools` are commands an agent may run without asking. Give the implementer the commands that run your tests.
 - `budget_usd` stops a run that would cost more.
 
-**Changing settings.** You can edit `apm.yaml` by hand, or press **Settings…** in the Actions panel with nothing selected, or use `apm settings set` (see [From the terminal](#from-the-terminal)). The panel and the command change only what you changed: your comments, your layout and every other value stay as they were. A value APM wouldn't accept, such as a task size limit of 3, is refused with the reason, and the file is left alone. Each change is one entry in the plan's history (`settings: task size limit 80 lines`); edits you had made to `apm.yaml` by hand go into that entry too, and it says so. `apm check` reports a broken `apm.yaml`.
+**Changing settings.** You can edit `apm.yaml` by hand, or press **Settings…** in the **Actions** menu with nothing selected, or use `apm settings set` (see [From the terminal](#from-the-terminal)). The panel and the command change only what you changed: your comments, your layout and every other value stay as they were. A value APM wouldn't accept, such as a task size limit of 3, is refused with the reason, and the file is left alone. Each change is one entry in the plan's history (`settings: task size limit 80 lines`); edits you had made to `apm.yaml` by hand go into that entry too, and it says so. `apm check` reports a broken `apm.yaml`.
 
 ### Features
 
@@ -548,7 +548,7 @@ An archive is the whole project in one `.apm.zip` file: the plan and its full hi
 apm export plan.apm.zip
 ```
 
-Or, in the UI, select nothing and press **Export archive…** in the Actions panel, then **Download**. The file is named after the project.
+Or, in the UI, select nothing and press **Export archive…** in the **Actions** menu, then **Download**. The file is named after the project.
 
 **Include runs if you want them.** Add `--with-runs` (in the UI, tick **Include runs**) to bring agent conversations, their transcripts and proposals along too. **Transcripts can hold tool output and secrets**: file contents, tokens, keys. Check the file before you share it.
 

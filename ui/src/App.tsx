@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { type ActionHandlers, Actions } from "./Actions";
+import { type ActionHandlers, ActionsMenu } from "./Actions";
 import {
   ApiError,
   api,
@@ -453,27 +453,29 @@ export function App() {
       </main>
 
       <aside className="side">
-        <Actions
-          selected={selectedNodes}
-          running={running}
-          handlers={handlers}
-          lookup={(id) => byId.get(id)}
-          detail={detail}
-          nodes={nodes}
-        />
-        <div className="tabs" role="tablist">
-          <button role="tab" aria-selected={tab === "chat"} className={cx("tab", tab === "chat" && "active")} onClick={() => setTab("chat")}>
-            Chat
-            <span className="tab-sub">{chatNode ? chatNode.title : "whole plan"}</span>
-          </button>
-          <button
-            role="tab"
-            aria-selected={tab === "details"}
-            className={cx("tab", tab === "details" && "active")}
-            onClick={() => setTab("details")}
-          >
-            Details
-          </button>
+        <div className="side-head">
+          <div className="tabs" role="tablist">
+            <button role="tab" aria-selected={tab === "chat"} className={cx("tab", tab === "chat" && "active")} onClick={() => setTab("chat")}>
+              Chat
+              <span className="tab-sub">{chatNode ? chatNode.title : "whole plan"}</span>
+            </button>
+            <button
+              role="tab"
+              aria-selected={tab === "details"}
+              className={cx("tab", tab === "details" && "active")}
+              onClick={() => setTab("details")}
+            >
+              Details
+            </button>
+          </div>
+          <ActionsMenu
+            selected={selectedNodes}
+            running={running}
+            handlers={handlers}
+            lookup={(id) => byId.get(id)}
+            detail={detail}
+            nodes={nodes}
+          />
         </div>
         <div className={cx("tab-panel", tab !== "chat" && "hidden")}>
           <Chat
@@ -501,7 +503,7 @@ export function App() {
                   </li>
                 ))}
               </ul>
-              <p className="hint">Use the actions above to merge them, set their status, or delete them.</p>
+              <p className="hint">Use Actions above to merge them, set their status, or delete them.</p>
             </article>
           ) : (
             <PlanSummary
@@ -710,8 +712,9 @@ function Menu({
     const close = (event: MouseEvent) => {
       if (!ref.current?.contains(event.target as Node)) setOpen(false);
     };
-    window.addEventListener("mousedown", close);
-    return () => window.removeEventListener("mousedown", close);
+    // Capture: the graph stops mousedown from bubbling up to the window.
+    window.addEventListener("mousedown", close, true);
+    return () => window.removeEventListener("mousedown", close, true);
   }, [open]);
   return (
     <div className="menu" ref={ref}>
