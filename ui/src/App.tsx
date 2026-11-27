@@ -18,6 +18,7 @@ import { type DetailActions, NodeDetails, PlanSummary } from "./Details";
 import { AddNodeDialog, DeleteDialog, ExportDialog, MergeDialog, PickNodeDialog, RunAgentDialog } from "./Dialogs";
 import { Grip, type Nav, SidebarIcon, navState, navigate, setHashParam, startNav, useStoredNumber } from "./layout-chrome";
 import { useLiveConnection, useLiveEvents } from "./live";
+import { GearIcon, Logo } from "./Logo";
 import { Outline } from "./Outline";
 import { ProposalReview } from "./ProposalReview";
 import { SettingsDialog } from "./Settings";
@@ -362,6 +363,7 @@ export function App() {
   if (fatal === "token") {
     return (
       <div className="splash">
+        <Logo height={64} />
         <h1>This page needs its access link</h1>
         <p>
           Open the full address that <code>apm serve</code> printed in your terminal. It ends in <code>?token=…</code>,
@@ -373,7 +375,10 @@ export function App() {
   if (!project || !tree || !level) {
     return (
       <div className="splash">
-        <Spinner /> Loading the plan…
+        <Logo height={64} />
+        <span>
+          <Spinner /> Loading the plan…
+        </span>
       </div>
     );
   }
@@ -404,10 +409,9 @@ export function App() {
           <SidebarIcon open={outline === "shown"} />
         </button>
         <div className="brand" title={project.code_dir}>
-          <span className="logo" aria-hidden>
-            ◈
-          </span>
-          <span className="project-name">{project.name}</span>
+          <Logo height={30} />
+          {/* The project's own name, unless it is APM itself. */}
+          {project.name.trim().toLowerCase() !== "apm" && <span className="project-name">{project.name}</span>}
         </div>
         <Search onPick={goTo} />
         <div className="topbar-right">
@@ -465,7 +469,15 @@ export function App() {
               ))}
             </Menu>
           )}
-          <ThemeToggle theme={theme} onChange={setTheme} />
+          <Menu label={<GearIcon />} ariaLabel="Settings" title="Settings" icon>
+            <div className="menu-row">
+              <span>Theme</span>
+              <ThemeToggle theme={theme} onChange={setTheme} />
+            </div>
+            <button className="menu-item" onClick={handlers.openSettings}>
+              Project settings…
+            </button>
+          </Menu>
           <span
             className={cx("live", connected ? "on" : "off")}
             title={connected ? "Live: changes appear as they happen" : "Reconnecting…"}
@@ -825,13 +837,19 @@ function ConversationsMenu({
 
 function Menu({
   label,
+  ariaLabel,
+  icon,
   title,
   tone,
   spinner,
   onOpen,
   children,
 }: {
-  label: string;
+  label: React.ReactNode;
+  /** What a screen reader says, when the label is an icon. */
+  ariaLabel?: string;
+  /** The button is just an icon. */
+  icon?: boolean;
   title: string;
   tone?: "warn" | "bad" | "accent";
   spinner?: boolean;
@@ -853,8 +871,9 @@ function Menu({
   return (
     <div className="menu" ref={ref}>
       <button
-        className={cx("menu-button", tone)}
+        className={cx("menu-button", tone, icon && "icon-button")}
         title={title}
+        aria-label={ariaLabel}
         aria-expanded={open}
         onClick={() => {
           if (!open) onOpen?.();
