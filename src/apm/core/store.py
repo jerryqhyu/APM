@@ -146,6 +146,16 @@ class Run:
 
 
 @dataclass(frozen=True, slots=True)
+class NodeCost:
+    """What the runs on one node have cost so far."""
+
+    total: float
+    """USD."""
+    by_agent: dict[str, float]
+    """USD per agent type; they add up to `total`."""
+
+
+@dataclass(frozen=True, slots=True)
 class RunEvent:
     seq: int
     ts: float
@@ -468,6 +478,17 @@ class Store:
         """Newest first."""
         where, params = _where(node_id=node_id, status=status)
         return self._select(Run, f"{where} ORDER BY started DESC LIMIT ?", (*params, limit))
+
+    def node_cost(self, node_id: NodeId) -> NodeCost:
+        """The node's own runs' costs, by agent. A run with no cost yet counts as 0."""
+        with self._db() as db:
+            rows = db.execute(
+                "SELECT agent, COALESCE(SUM(cost_usd), 0) FROM runs WHERE node_id = ?"
+                " GROUP BY agent ORDER BY agent",
+                (node_id,),
+            ).fetchall()
+        by_agent: dict[str, float] = dict(rows)
+        return NodeCost(total=sum(by_agent.values()), by_agent=by_agent)
 
     def add_event(self, run_id: str, data: dict[str, Any]) -> RunEvent:
         with self._db() as db:
