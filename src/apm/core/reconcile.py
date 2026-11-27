@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Literal
 
 from apm.core.config import read_config
-from apm.core.costs import CostRecord, freeze_cost, read_costs
+from apm.core.costs import CostRecord, freeze_cost, live_cost, read_costs
 from apm.core.delivery import (
     GhError,
     PullRequest,
@@ -19,6 +19,7 @@ from apm.core.delivery import (
     branch_ref,
     branch_tip,
     default_branch,
+    feature_branch,
     fetch_origin,
     home_branch,
     pr_number,
@@ -89,6 +90,8 @@ def reconcile(project: Project, *, actor: str = "user", retarget: bool = False) 
             if judge.merged_pr and not graph.is_review(node_id):
                 _freeze_task_cost(project, node_id, judge.merged_pr)
             if graph.is_review(node_id) and (feature := node.parent) is not None:
+                if graph.feature_of(node_id) is None:
+                    freeze_feature_cost(project, feature)
                 _finish_feature(project, feature, actor, report)
         report.findings.extend(judge.findings)
     return report
@@ -101,6 +104,20 @@ def _freeze_task_cost(project: Project, node_id: NodeId, pr_url: str) -> None:
     cost = Store(project.apm_dir).node_cost(node_id)
     now = datetime.now(UTC).isoformat(timespec="seconds")
     freeze_cost(project.apm_dir, CostRecord(node_id, cost.total, cost.by_agent, now, pr_url))
+
+
+def freeze_feature_cost(project: Project, feature: NodeId) -> None:
+    """Records `feature`'s cost so far, its subtree's included, as frozen by the merge of its
+    branch into the default branch, unless it already is.
+    """
+    frozen = read_costs(project.apm_dir)
+    if feature in frozen:
+        return
+    graph = load_graph(project)
+    cost = live_cost(graph, Store(project.apm_dir), frozen, feature)
+    now = datetime.now(UTC).isoformat(timespec="seconds")
+    record = CostRecord(feature, cost.total, cost.by_agent, now, feature_branch(graph, feature))
+    freeze_cost(project.apm_dir, record)
 
 
 def _finish_feature(project: Project, feature: NodeId, actor: str, report: Report) -> None:
