@@ -199,6 +199,16 @@ Select a node and press **Decompose**. You can add guidance ("three steps at mos
 
 Nothing is written yet. Press **Review** to see the reasoning, the reviewer's notes, and each proposed child. You can edit any child, untick ones you don't want, then **Accept** or **Reject**. Accepting adds the children in one step, together with the node's review step if it doesn't have one yet.
 
+Each proposed child comes with a full brief, because whoever builds it, usually Claude starting cold, reads little else:
+
+- **Intent**: why it exists.
+- **Context**: what to know first, such as the code it builds on (with file paths) and the decisions already made.
+- **Approach**: how to build it, such as the files and functions to change, the edge cases and the tests.
+- **Acceptance criteria**.
+- **Out of scope**: what belongs to another child instead.
+
+The same goes for the parts of a split a task review proposes, and for the follow-ups a feature review proposes. In **Details**, a description reads as a document. Headings with nothing under them, such as an empty **Notes**, are hidden.
+
 Decompose versus conversation: use Decompose when you want a reviewed proposal to look over before anything changes. Use the conversation when you want to shape things back and forth.
 
 ## Task review: keeping tasks small

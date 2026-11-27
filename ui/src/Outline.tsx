@@ -50,6 +50,10 @@ export function Outline({
           onClick={(e) => onPick(node.id, e.shiftKey || e.metaKey || e.ctrlKey)}
           title={`${node.title} · ${state.label}`}
         >
+          {/* A guide line down from each enclosing node's twisty, so nesting reads at a glance. */}
+          {Array.from({ length: depth }, (_, level) => (
+            <span key={level} className="guide" style={{ left: 8 + level * 14 + 7 }} aria-hidden />
+          ))}
           {node.children > 0 ? (
             <button
               className="twisty"

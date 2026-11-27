@@ -28,9 +28,11 @@ task's current content passes.
 - **pass**: you can see what to build, and it needs at most about the limit in real lines.
   `children` and `missing` are empty.
 - **too_big**: it clearly needs more real lines than the limit. Propose a split in `children`: two
-  or more smaller tasks, each within the limit, each with a `key`, a title, an intent and testable
-  acceptance criteria (see the `apm-decompose` skill). Together they must do exactly what the
-  task asked, no more. Use `depends_on_keys` between them and `depends_on_ids` for existing
+  or more smaller tasks, each within the limit, each with a `key`, a title, an intent, its
+  context, its approach, testable acceptance criteria and what is out of scope (see the
+  `apm-decompose` skill and the `apm-node-format` skill's Body). Carry over what the task said and
+  what you learned from the code: each part's description is the whole brief for its builder.
+  Together they must do exactly what the task asked, no more. Use `depends_on_keys` between them and `depends_on_ids` for existing
   nodes. `missing` is empty.
 - **unclear**: the task is too vague to estimate. List in `missing` each thing it would have to
   say, as a short sentence a person could answer (for example "Which command gets the flag?").

@@ -22,7 +22,9 @@ export function ProposalReview({
   onReject: () => Promise<void>;
   onClose: () => void;
 }) {
-  const [drafts, setDrafts] = useState<Draft[]>(() => proposal.data.children.map((c) => ({ ...c, keep: true })));
+  const [drafts, setDrafts] = useState<Draft[]>(() =>
+    proposal.data.children.map((c) => ({ context: "", approach: "", out_of_scope: [], ...c, keep: true })),
+  );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const review = proposal.review;
@@ -50,6 +52,7 @@ export function ProposalReview({
         kept.map(({ keep: _, ...child }) => ({
           ...child,
           acceptance: child.acceptance.map((a) => a.trim()).filter(Boolean),
+          out_of_scope: (child.out_of_scope ?? []).map((o) => o.trim()).filter(Boolean),
           depends_on_keys: child.depends_on_keys.filter((k) => keptKeys.has(k)),
         })),
       ),
@@ -137,11 +140,27 @@ export function ProposalReview({
                   <textarea rows={2} value={draft.intent} onChange={(e) => update(draft.key, { intent: e.target.value })} />
                 </label>
                 <label className="field">
+                  <span>Context: what a builder needs to know first</span>
+                  <textarea rows={3} value={draft.context ?? ""} onChange={(e) => update(draft.key, { context: e.target.value })} />
+                </label>
+                <label className="field">
+                  <span>Approach: how to build it</span>
+                  <textarea rows={4} value={draft.approach ?? ""} onChange={(e) => update(draft.key, { approach: e.target.value })} />
+                </label>
+                <label className="field">
                   <span>Acceptance criteria (one per line)</span>
                   <textarea
                     rows={Math.max(2, draft.acceptance.length)}
                     value={draft.acceptance.join("\n")}
                     onChange={(e) => update(draft.key, { acceptance: e.target.value.split("\n") })}
+                  />
+                </label>
+                <label className="field">
+                  <span>Out of scope (one per line)</span>
+                  <textarea
+                    rows={Math.max(1, draft.out_of_scope?.length ?? 0)}
+                    value={(draft.out_of_scope ?? []).join("\n")}
+                    onChange={(e) => update(draft.key, { out_of_scope: e.target.value.split("\n") })}
                   />
                 </label>
                 {(draft.depends_on_keys.length > 0 || draft.depends_on_ids.length > 0) && (

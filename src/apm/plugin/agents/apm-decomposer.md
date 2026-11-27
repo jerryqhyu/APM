@@ -30,8 +30,23 @@ Return the breakdown in the required JSON shape:
 
 - `rationale`: two or three sentences on why you sliced it this way.
 - `children`: each with a short unique `key`, a `title`, a `kind` (`work` or `decision`), an
-  `intent`, `acceptance` criteria that can be checked, `depends_on_keys` (other children, by key)
-  and `depends_on_ids` (existing nodes, by handle).
+  `intent`, its `context`, its `approach`, `acceptance` criteria that can be checked,
+  `out_of_scope`, `depends_on_keys` (other children, by key) and `depends_on_ids` (existing
+  nodes, by handle).
+
+Each child's description is the whole brief for whoever builds it, usually an agent that has not
+seen this conversation or the code you read. Give it what you found:
+
+- `context`: the code it builds on, with file paths and the names of the functions or types
+  involved, decisions already made (and by whom, if the person said), and what the children
+  after it need from it.
+- `approach`: how to build it, step by step: which files to add or change and what goes in each,
+  the data flow, the edge cases, and which tests to add or update.
+- `out_of_scope`: what a builder might be tempted to do here that belongs to another child (name
+  it) or to nobody.
+
+A few sentences each is usually right. A builder should not need to rediscover what you already
+know.
 - `warnings`: assumptions you made, near-duplicates you found, risks, anything you could not
   place. An empty list if there are none.
 

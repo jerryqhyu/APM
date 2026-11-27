@@ -48,6 +48,33 @@ PROPOSAL: dict[str, Any] = {
 }
 
 
+def test_a_child_carries_its_whole_brief_into_its_body(project: Project) -> None:
+    (parent,) = create_nodes(project, [NewNode(title="Cost view")]).created
+    child = {
+        **PROPOSAL["children"][0],
+        "context": "Runs store `cost_usd` in `store.py`.",
+        "approach": "Add `node_costs` in `costs.py`.",
+        "out_of_scope": ["The UI"],
+    }
+    data = {**PROPOSAL, "children": [child]}
+    (created,) = accept_decomposition(project, parent, parse_decomposition(data)).created
+    assert read_body(project.apm_dir, created) == (
+        "## Intent\n\nRead graph.ndjson.\n\n"
+        "## Context\n\nRuns store `cost_usd` in `store.py`.\n\n"
+        "## Approach\n\nAdd `node_costs` in `costs.py`.\n\n"
+        "## Acceptance criteria\n\n- [ ] rejects bad lines\n- [ ] reports line numbers\n\n"
+        "## Out of scope\n\n- The UI\n\n"
+        "## Notes\n"
+    )
+
+
+def test_the_schema_asks_for_the_whole_brief() -> None:
+    child = DECOMPOSITION_SCHEMA["properties"]["children"]["items"]
+    for field in ("intent", "context", "approach", "acceptance", "out_of_scope"):
+        assert field in child["required"]
+        assert field in child["properties"]
+
+
 def test_accepting_creates_the_children_in_one_commit(project: Project) -> None:
     parent, other = create_nodes(
         project, [NewNode(title="File I/O"), NewNode(title="Other")]

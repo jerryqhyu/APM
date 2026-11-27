@@ -10,6 +10,7 @@ import {
   Handle,
   MarkerType,
   type Node,
+  type NodeHandle,
   type NodeProps,
   Position,
   ReactFlow,
@@ -26,6 +27,20 @@ import { cx, stateOf } from "./util";
 
 const CARD = { width: 240, height: 100 };
 const CHIP = { width: 176, height: 30 };
+
+/** Where a node's edges attach: the middle of its left side (in) and of its right side (out).
+ * Given with every node, so React Flow draws edges without measuring the cards first. It drops
+ * what it measured whenever it is handed new node objects (a selection, a refresh, stepping back
+ * out of a feature), and until it measured again it drew no edges at all.
+ */
+function sides({ width, height }: { width: number; height: number }, into = true, out = true): NodeHandle[] {
+  const middle = height / 2 - 0.5;
+  return [
+    ...(into ? [{ type: "target" as const, position: Position.Left, x: 0, y: middle, width: 1, height: 1 }] : []),
+    ...(out ? [{ type: "source" as const, position: Position.Right, x: width - 1, y: middle, width: 1, height: 1 }] : []),
+  ];
+}
+const CARD_SIDES = sides(CARD);
 
 type PlanData = { node: NodeView; selected: boolean; running: boolean; proposed: boolean; entangled: boolean };
 type GhostData = { child: ProposedChild };
@@ -270,19 +285,20 @@ function CanvasInner({
         proposed: proposedOn.has(node.id),
         entangled: entangled.has(node.id),
       };
-      out.push({ id: node.id, type: "plan", position, data, ...CARD, draggable: false });
+      out.push({ id: node.id, type: "plan", position, data, ...CARD, handles: CARD_SIDES, draggable: false });
     }
     for (const [id, port] of ports) {
       const position = place(id);
       if (position) {
-        out.push({ id, type: "port", position, data: { port }, ...CHIP, draggable: false, connectable: false });
+        const handles = sides(CHIP, port.direction === "in", port.direction === "out");
+        out.push({ id, type: "port", position, data: { port }, ...CHIP, handles, draggable: false, connectable: false });
       }
     }
     for (const child of proposal?.data.children ?? []) {
       const id = `ghost:${child.key}`;
       const position = place(id);
       if (position) {
-        out.push({ id, type: "ghost", position, data: { child }, ...CARD, draggable: false, connectable: false });
+        out.push({ id, type: "ghost", position, data: { child }, ...CARD, handles: CARD_SIDES, draggable: false, connectable: false });
       }
     }
     return out;

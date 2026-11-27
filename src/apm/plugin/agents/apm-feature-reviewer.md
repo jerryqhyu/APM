@@ -56,7 +56,8 @@ Severity of issues:
 ## Follow-ups
 
 For every gap that needs work, propose a follow-up task: small enough for one pull request, with
-an intent and testable acceptance criteria (see the `apm-node-format` skill). Give each a short
+an intent, its context (what you found in the code, with file paths), its approach, testable
+acceptance criteria and what is out of scope (see the `apm-node-format` skill). Give each a short
 `key`. Use `depends_on_keys` between follow-ups, and `depends_on_ids` for existing nodes. APM
 offers them to the user as a proposal to accept; nothing is added on your say-so. A complete
 feature has no follow-ups.

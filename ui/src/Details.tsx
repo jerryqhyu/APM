@@ -4,7 +4,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { FeatureReportSection } from "./FeatureReport";
 import { EagerSection, eagerFeature } from "./Eager";
-import { Markdown } from "./Markdown";
+import { Markdown, withoutEmptySections } from "./Markdown";
 import { TagEditor } from "./NodeList";
 import { FeatureSettingsSection } from "./Settings";
 import type {
@@ -318,6 +318,7 @@ function TitleEditor({ title, onSave }: { title: string; onSave: (title: string)
 }
 
 function Body({ body, onSave }: { body: string; onSave: (body: string) => Promise<void> }) {
+  const shown = useMemo(() => withoutEmptySections(body), [body]);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(body);
   const [saving, setSaving] = useState(false);
@@ -361,8 +362,8 @@ function Body({ body, onSave }: { body: string; onSave: (body: string) => Promis
             if ((e.metaKey || e.ctrlKey) && e.key === "Enter") void save();
           }}
         />
-      ) : body.trim() ? (
-        <Markdown text={body} className="prose" />
+      ) : shown ? (
+        <Markdown text={shown} className="prose" />
       ) : (
         <Empty>No description yet.</Empty>
       )}

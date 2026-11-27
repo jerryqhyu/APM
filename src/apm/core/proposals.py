@@ -33,7 +33,12 @@ class ProposedChild(_Model):
     title: NonEmpty
     kind: Kind = Kind.WORK
     intent: str = ""
+    context: str = ""
+    """What the builder needs to know first: what exists that it builds on, and decisions made."""
+    approach: str = ""
+    """How to build it: where in the code, what changes, the edge cases and the tests."""
     acceptance: list[str] = Field(default_factory=list)
+    out_of_scope: list[str] = Field(default_factory=list)
     depends_on_keys: list[str] = Field(default_factory=list)
     """Other children of this proposal."""
     depends_on_ids: list[str] = Field(default_factory=list)
@@ -79,7 +84,10 @@ DECOMPOSITION_SCHEMA: dict[str, Any] = {
                     "title",
                     "kind",
                     "intent",
+                    "context",
+                    "approach",
                     "acceptance",
+                    "out_of_scope",
                     "depends_on_keys",
                     "depends_on_ids",
                 ],
@@ -88,10 +96,31 @@ DECOMPOSITION_SCHEMA: dict[str, Any] = {
                     "title": {"type": "string"},
                     "kind": {"type": "string", "enum": ["work", "decision"]},
                     "intent": {"type": "string", "description": "Why it exists; the outcome."},
+                    "context": {
+                        "type": "string",
+                        "description": (
+                            "Markdown. What someone building it must know first: the code that"
+                            " exists today and that it builds on (with file paths), decisions"
+                            " already made, and what later work needs from it."
+                        ),
+                    },
+                    "approach": {
+                        "type": "string",
+                        "description": (
+                            "Markdown. How to build it, concretely: the files, modules and"
+                            " functions to add or change, the data flow, edge cases, and the"
+                            " tests that check it."
+                        ),
+                    },
                     "acceptance": {
                         "type": "array",
                         "items": {"type": "string"},
                         "description": "Testable criteria.",
+                    },
+                    "out_of_scope": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "What this does not do, and where that belongs instead.",
                     },
                     "depends_on_keys": {
                         "type": "array",
@@ -200,7 +229,13 @@ def _new_node(graph: Graph, child: ProposedChild) -> NewNode:
         key=child.key,
         depends_on=deps,
         depends_on_keys=child.depends_on_keys,
-        body=render_body(intent=child.intent, acceptance=child.acceptance),
+        body=render_body(
+            intent=child.intent,
+            context=child.context,
+            approach=child.approach,
+            acceptance=child.acceptance,
+            out_of_scope=child.out_of_scope,
+        ),
     )
 
 

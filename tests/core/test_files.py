@@ -94,6 +94,25 @@ def test_renders_the_empty_template() -> None:
     assert render_body() == "## Intent\n\n## Acceptance criteria\n\n## Notes\n"
 
 
+def test_context_approach_and_out_of_scope_appear_only_when_given() -> None:
+    body = render_body(
+        intent="Track cost.",
+        context="Runs store `cost_usd`.",
+        approach="1. Sum it.\n2. Freeze it.",
+        acceptance=["Sums every run", " "],
+        out_of_scope=["The UI: see *Costs panel*", ""],
+    )
+    assert body == (
+        "## Intent\n\nTrack cost.\n\n"
+        "## Context\n\nRuns store `cost_usd`.\n\n"
+        "## Approach\n\n1. Sum it.\n2. Freeze it.\n\n"
+        "## Acceptance criteria\n\n- [ ] Sums every run\n\n"
+        "## Out of scope\n\n- The UI: see *Costs panel*\n\n"
+        "## Notes\n"
+    )
+    assert "## Context" not in render_body(intent="x", context="  ")
+
+
 def test_fills_intent_acceptance_criteria_and_notes() -> None:
     body = render_body(
         intent="  Show agent output live.\n",

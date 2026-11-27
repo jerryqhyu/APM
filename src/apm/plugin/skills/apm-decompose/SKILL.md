@@ -56,6 +56,17 @@ feature branch against the parent's description. So:
 - **Intent:** one or two sentences. Why it exists and what is true when it is done.
 - **Acceptance:** 2 to 5 statements that can be checked. "Rejects a line with an unknown key and
   reports its line number", not "Handles errors well".
+- **Context:** what a builder must know before starting: the code it builds on, with file paths
+  and the names of the functions or types involved, decisions already made, and what the children
+  after it need from it.
+- **Approach:** how to build it: the files to add or change and what goes in each, the data flow,
+  the edge cases, and the tests to add or update.
+- **Out of scope:** what a builder might be tempted to do here that belongs elsewhere; name the
+  sibling it belongs to.
+
+The description is the whole brief: the builder is usually an agent that starts cold, with the
+node, the features around it and the code. Give it what you learned while decomposing, so it does
+not have to rediscover it.
 
 ## Say what you are unsure about
 
