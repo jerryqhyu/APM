@@ -92,7 +92,14 @@ class NewNodeInput(BaseModel):
     )
     kind: Kind = Kind.WORK
     intent: str = Field("", description="Why this exists and what outcome it's for.")
+    context: str = Field(
+        "", description="What a builder must know first: code it builds on, decisions made."
+    )
+    approach: str = Field(
+        "", description="How to build it: files and functions to change, edge cases, tests."
+    )
     acceptance: list[str] = Field(default_factory=list, description="Testable criteria.")
+    out_of_scope: list[str] = Field(default_factory=list, description="What this does not do.")
     depends_on: list[str] = Field(default_factory=list, description="Handles of existing nodes.")
     tags: list[str] = Field(default_factory=list, description="Labels, e.g. backlog or area/ui.")
     key: str | None = Field(None, description="Temporary name other new nodes can depend on.")
@@ -210,7 +217,13 @@ def build_server(project: Project | None = None, env: Mapping[str, str] | None =
                 key=n.key,
                 depends_on_keys=n.depends_on_keys,
                 parent_key=n.parent_key,
-                body=render_body(intent=n.intent, acceptance=n.acceptance),
+                body=render_body(
+                    intent=n.intent,
+                    context=n.context,
+                    approach=n.approach,
+                    acceptance=n.acceptance,
+                    out_of_scope=n.out_of_scope,
+                ),
                 tags=n.tags,
             )
             for n in nodes

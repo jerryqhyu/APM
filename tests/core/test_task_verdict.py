@@ -13,7 +13,10 @@ def child(key: str) -> dict[str, Any]:
         "title": f"Part {key}",
         "kind": "work",
         "intent": "",
+        "context": "",
+        "approach": "",
         "acceptance": ["works"],
+        "out_of_scope": [],
         "depends_on_keys": [],
         "depends_on_ids": [],
     }

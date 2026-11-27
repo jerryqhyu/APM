@@ -38,12 +38,31 @@ An outline line reads:
 
 Why this exists, and what outcome it's for.
 
+## Context
+
+What someone building it must know first: the code that exists today and that it builds on (with
+file paths), decisions already made, and what later work needs from it.
+
+## Approach
+
+How to build it, concretely: the files, modules and functions to add or change, the data flow,
+the edge cases, and the tests that check it.
+
 ## Acceptance criteria
 
 - [ ] A testable statement.
 
+## Out of scope
+
+- What this does not do, and where that belongs instead.
+
 ## Notes
 ```
+
+A body is the whole brief for whoever builds the node, often an agent starting cold: it reads the
+body, the bodies of the features around it and what it depends on, and the code. Write it so that
+is enough. Context, Approach and Out of scope may be left out of a node that is not yet broken
+down, but every task that is about to be built needs them.
 
 ## Rules
 

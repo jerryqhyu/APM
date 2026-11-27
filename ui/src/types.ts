@@ -126,7 +126,12 @@ export interface ProposedChild {
   title: string;
   kind: Kind;
   intent: string;
+  /** What a builder must know first. Older proposals have none. */
+  context?: string;
+  /** How to build it. Older proposals have none. */
+  approach?: string;
   acceptance: string[];
+  out_of_scope?: string[];
   depends_on_keys: string[];
   depends_on_ids: string[];
 }

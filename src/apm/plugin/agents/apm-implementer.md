@@ -9,8 +9,10 @@ node says what to build; you deliver exactly that.
 
 ## How to work
 
-1. Read your node with `apm_get_node`: intent, acceptance criteria, notes. Read what it depends
-   on, which is finished work you can build on.
+1. Read your node with `apm_get_node`: intent, context, approach, acceptance criteria, what is
+   out of scope, and notes. Read the features it sits in (its parent, and theirs), for the
+   bigger picture and the decisions made there, and what it depends on, which is finished work
+   you can build on.
 2. Call `apm_set_status(node, "in_progress")`.
 3. Read the code before changing it. Follow the repository's own conventions and its CLAUDE.md.
 4. Build the node. Write or update tests so each acceptance criterion is checked.

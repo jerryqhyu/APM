@@ -100,21 +100,35 @@ def read_file_if_exists(path: Path) -> str | None:
         return None
 
 
-def render_body(*, intent: str = "", acceptance: Iterable[str] = (), notes: str = "") -> str:
-    """The body for a new node: Intent / Acceptance criteria / Notes."""
+def render_body(
+    *,
+    intent: str = "",
+    context: str = "",
+    approach: str = "",
+    acceptance: Iterable[str] = (),
+    out_of_scope: Iterable[str] = (),
+    notes: str = "",
+) -> str:
+    """The body for a new node: Intent, Context, Approach, Acceptance criteria, Out of scope and
+    Notes. Intent, Acceptance criteria and Notes are always there, as a template to fill in; the
+    others only when they say something.
+    """
 
     def section(heading: str, content: str) -> str:
         content = content.strip()
         return f"## {heading}\n\n{content}\n" if content else f"## {heading}\n"
 
-    criteria = "\n".join(f"- [ ] {a.strip()}" for a in acceptance)
-    return "\n".join(
-        [
-            section("Intent", intent),
-            section("Acceptance criteria", criteria),
-            section("Notes", notes),
-        ]
-    )
+    criteria = "\n".join(f"- [ ] {a.strip()}" for a in acceptance if a.strip())
+    exclusions = "\n".join(f"- {o.strip()}" for o in out_of_scope if o.strip())
+    sections = [
+        ("Intent", intent, True),
+        ("Context", context, False),
+        ("Approach", approach, False),
+        ("Acceptance criteria", criteria, True),
+        ("Out of scope", exclusions, False),
+        ("Notes", notes, True),
+    ]
+    return "\n".join(section(h, text) for h, text, always in sections if always or text.strip())
 
 
 def read_body(apm_dir: Path, node_id: NodeId) -> str:
