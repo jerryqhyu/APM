@@ -203,7 +203,7 @@ def test_a_run_waiting_already_is_not_queued_twice(project: Project) -> None:
 async def test_runs_asked_for_by_hand_are_not_automatic_ones(
     project: Project, fake_claude: FakeClaude
 ) -> None:
-    (task,) = create_nodes(project, [NewNode(title="Parse")]).created
+    task = add(project, "Parse", add(project, "Search"))
     harness = Harness(project)
     automation = AutoQueue(harness.runner, debounce_s=0)
     automation.scan()

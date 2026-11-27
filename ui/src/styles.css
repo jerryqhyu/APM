@@ -1417,6 +1417,14 @@ main {
   background: var(--bg-subtle);
 }
 
+.composer .turn-note {
+  justify-content: space-between;
+}
+
+.composer .turn-note .link {
+  flex: none;
+}
+
 .composer textarea {
   resize: none;
   background: var(--bg);

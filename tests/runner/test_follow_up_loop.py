@@ -122,7 +122,8 @@ def test_only_a_passing_follow_up_is_queued_for_the_implementer(
 ) -> None:
     harness = Harness(project)
     other, fix = passing_follow_up(project, harness)
-    (unreviewed,) = create_nodes(project, [NewNode(title="Later")]).created
+    parent = load_graph(project)[fix].parent
+    (unreviewed,) = create_nodes(project, [NewNode(title="Later", parent=parent)]).created
     harness.store.add_follow_ups([unreviewed], "proposal")
     started = recording(harness, monkeypatch)
     queue = AutoQueue(harness.runner, debounce_s=0)
@@ -140,7 +141,8 @@ def test_implement_follow_ups_off_stops_only_the_implementer(
     configure(project, "automation:\n  implement_follow_ups: false\n")
     harness = Harness(project)
     _, fix = passing_follow_up(project, harness)
-    (fresh,) = create_nodes(project, [NewNode(title="Fresh")]).created
+    parent = load_graph(project)[fix].parent
+    (fresh,) = create_nodes(project, [NewNode(title="Fresh", parent=parent)]).created
     started = recording(harness, monkeypatch)
     queue = AutoQueue(harness.runner, debounce_s=0)
     queue.scan()

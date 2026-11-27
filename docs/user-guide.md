@@ -127,7 +127,7 @@ What Claude can do in a conversation:
 
 Every change it makes is recorded in the plan's history with its name on it, so you can see what happened and undo it.
 
-**It goes turn by turn.** Claude replies, you reply, in the same conversation. Past conversations sit in the row of tabs above; **+ New** starts a fresh one.
+**It goes turn by turn.** Claude replies, you reply, in the same conversation. Past conversations sit in the row of tabs above; **+ New** starts a fresh one. The row also holds the runs on the node, such as Decompose, Implement and its reviews, each in its own tab. Selecting a node shows your latest chat about it, or a new one, never a run that APM started on its own. In an agent's conversation, the line above the message box says which agent your reply goes to: a reply there continues its work (a task review, for example, runs again with your message). To talk about the node instead, press **+ New**.
 
 **When Claude asks you something**, a card appears in the conversation with the question and its options. Pick one, or type your own answer, and press **Answer**.
 
@@ -215,6 +215,8 @@ APM checks this before a task is built. A **task review** (the `apm-task-reviewe
 - **Error**: the review failed or was cut off (for example, `apm serve` was stopped). The task is unlocked and shows the error. APM tries once more for the same content, then waits until you edit the task or start a review yourself.
 
 **When it runs.** While `apm serve` is up, a review is queued whenever a task is created or its title, kind or description changes, from anywhere: the UI, the terminal, MCP or an agent. A burst of edits becomes one review, of the final content. Changing only the status or recording a delivery doesn't count. When `apm serve` starts, it reviews every To do task that has no review for its current content. To start one yourself, press **Review task** on the task, or run `apm run task-reviewer <handle>`. To review every To do task of a feature, press **Review all tasks** on it (see [A whole feature at once](#a-whole-feature-at-once)).
+
+**A feature that isn't broken down yet is not a task.** A top-level node with nothing inside it (**Not broken down** in the List view) is never reviewed on its own, so you can write and discuss it in its conversation as long as you like. Its next step is usually **Decompose**. To build it as one task instead, press **Review task**: Implement waits for that review to pass, as for any task.
 
 **Changing the limit** doesn't undo the reviews that passed: they were for the old limit. Press **Review all tasks** on a feature, or run `apm review-tasks <feature>`, to check its tasks against the new one.
 

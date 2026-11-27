@@ -39,19 +39,33 @@ def test_only_todo_tasks_without_a_review_are_due(tmp_path: Path) -> None:
     assert due_task_reviews(graph, store, body) == []
 
 
+def in_feature(task: Node) -> Graph:
+    return Graph([node(A), task])
+
+
+def test_a_feature_not_broken_down_yet_is_not_reviewed_on_its_own(tmp_path: Path) -> None:
+    store = Store(tmp_path)
+    graph = Graph([node(A), node(B, parent=A), node(C)])  # C: a backlog feature, nothing inside
+    assert due_task_reviews(graph, store, body) == [B]
+    assert "not broken down" in (implement_blocker(graph, store, config(), C, body) or "")
+    review(store, graph[C], "pass")  # a review started by hand opens the gate as for a task
+    assert implement_blocker(graph, store, config(), C, body) is None
+    assert implement_blocker(graph, store, config(), C, lambda _: "edited") is not None
+
+
 def test_one_error_is_retried_once_per_content(tmp_path: Path) -> None:
-    task = node(B)
+    task = node(B, parent=A)
     store = Store(tmp_path)
     review(store, task, "error")
-    assert due_task_reviews(Graph([task]), store, body) == [B]
+    assert due_task_reviews(in_feature(task), store, body) == [B]
     review(store, task, "error")
-    assert due_task_reviews(Graph([task]), store, body) == []
+    assert due_task_reviews(in_feature(task), store, body) == []
     edited = replace(task, title="edited")
-    assert due_task_reviews(Graph([edited]), store, body) == [B]
+    assert due_task_reviews(in_feature(edited), store, body) == [B]
 
 
 def test_content_changes_make_a_task_due_status_and_delivery_do_not(tmp_path: Path) -> None:
-    task = node(B)
+    task = node(B, parent=A)
     store = Store(tmp_path)
     review(store, replace(task, status=Status.IN_PROGRESS), "pass")  # back to To do since
     unchanged = [
@@ -60,10 +74,10 @@ def test_content_changes_make_a_task_due_status_and_delivery_do_not(tmp_path: Pa
         replace(task, delivery=Delivery(repo="r", commits=("abc",), pr="https://pr")),
     ]
     for same in unchanged:
-        assert due_task_reviews(Graph([same]), store, body) == []
+        assert due_task_reviews(in_feature(same), store, body) == []
     for changed in [replace(task, title="new title"), replace(task, kind=Kind.DECISION)]:
-        assert due_task_reviews(Graph([changed]), store, body) == [B]
-    assert due_task_reviews(Graph([task]), store, lambda _: "new description") == [B]
+        assert due_task_reviews(in_feature(changed), store, body) == [B]
+    assert due_task_reviews(in_feature(task), store, lambda _: "new description") == [B]
 
 
 def config(task_review: bool = True) -> ApmConfig:

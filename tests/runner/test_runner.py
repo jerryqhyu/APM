@@ -479,7 +479,8 @@ async def test_runs_are_refused_when_they_cannot_start(harness: Harness, project
 async def test_implement_needs_a_passing_review_of_the_current_content(
     harness: Harness, project: Project, node: str
 ) -> None:
-    with pytest.raises(RunRefused, match="has not been reviewed"):
+    # `node` is top level: a feature not broken down yet, until a review passes it as one task.
+    with pytest.raises(RunRefused, match="not broken down yet"):
         harness.runner.start("apm-implementer", node)
     for verdict in ("too_big", "unclear", "error"):
         harness.review(node, verdict)
