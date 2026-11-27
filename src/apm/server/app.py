@@ -71,6 +71,7 @@ class CreateNode(BaseModel):
     kind: Kind = Kind.WORK
     depends_on: list[str] = Field(default_factory=list)
     intent: str = ""
+    tags: list[str] = Field(default_factory=list)
 
 
 class PatchNode(BaseModel):
@@ -78,6 +79,8 @@ class PatchNode(BaseModel):
     kind: Kind | None = None
     status: Status | None = None
     body: str | None = None
+    tags: list[str] | None = None
+    """The node's tags from now on: the ones left out are removed."""
     note: str = ""
 
 
@@ -372,20 +375,25 @@ def create_app(
             kind=body.kind,
             depends_on=[graph.resolve(d) for d in body.depends_on],
             body=render_body(intent=body.intent),
+            tags=body.tags,
         )
         result = ops.create_nodes(project, [new])
         return node_detail(result.graph, result.created[0])
 
     @app.patch("/api/nodes/{node}")
     def patch_node(node: str, body: PatchNode) -> dict[str, Any]:
-        """Each kind of change is its own commit: fields, status, body."""
-        _, node_id = locate(node)
+        """Each kind of change is its own commit: fields, status, body, tags."""
+        graph, node_id = locate(node)
         if body.title is not None or body.kind is not None:
             ops.update_node(project, node_id, title=body.title, kind=body.kind)
         if body.status is not None:
             ops.set_status(project, node_id, body.status, note=body.note)
         if body.body is not None:
             ops.edit_body(project, node_id, body.body)
+        if body.tags is not None:
+            wanted = ops.clean_tags(body.tags)
+            gone = [t for t in graph[node_id].tags if t not in wanted]
+            ops.set_tags(project, node_id, add=wanted, remove=gone)
         return node_detail(load_graph(project), node_id)
 
     @app.post("/api/nodes/{node}/move")

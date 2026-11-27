@@ -61,6 +61,8 @@ def node_line(graph: Graph, node_id: NodeId) -> str:
         line += " · stacked on " + stacked_label(graph, node_id)
     if state.dropped_deps:
         line += " ⚠ depends on dropped " + ", ".join(names[d] for d in state.dropped_deps)
+    if node.tags:
+        line += " " + " ".join(f"#{tag}" for tag in node.tags)
     return line
 
 
@@ -91,6 +93,8 @@ def node_text(project: Project, graph: Graph, node_id: NodeId) -> str:
     """One node in full: its line, id, links, delivery and body."""
     node = graph[node_id]
     lines = [node_line(graph, node_id), f"id: {node_id}"]
+    if node.tags:
+        lines.append("tags: " + ", ".join(node.tags))
     for label, ids in (
         ("parent", [node.parent] if node.parent else []),
         ("child", graph.children(node_id)),
@@ -120,6 +124,7 @@ def node_view(graph: Graph, node_id: NodeId) -> dict[str, Any]:
         "title": node.title,
         "kind": str(node.kind),
         "status": str(node.status),
+        "tags": list(node.tags),
         "blocked": state.blocked,
         "ready": state.ready,
         "waiting_on": list(state.waiting_on),
@@ -208,20 +213,27 @@ class SearchHit:
 
 
 def search(project: Project, graph: Graph, query: str) -> list[SearchHit]:
-    """Nodes whose title or body contains every word of `query`, ignoring case. Title matches
-    come first, then newest first. It reads the files directly: a plan is small enough that an
-    index would only be something else to keep in sync.
+    """Nodes whose title, tags or body contain every word of `query`, ignoring case. A word
+    written `tag:ui` or `#ui` must be one of the node's tags. Title and tag matches come first,
+    then newest first. It reads the files directly: a plan is small enough that an index would
+    only be something else to keep in sync.
     """
-    terms = query.lower().split()
-    if not terms:
+    words = query.lower().split()
+    tags = {w.removeprefix("tag:").removeprefix("#") for w in words if w.startswith(("tag:", "#"))}
+    terms = [w for w in words if not w.startswith(("tag:", "#"))]
+    tags.discard("")
+    if not terms and not tags:
         return []
     in_title: list[SearchHit] = []
     in_body: list[SearchHit] = []
     for node_id in sorted(graph.nodes, reverse=True):
-        title = graph[node_id].title
-        body = read_body(project.apm_dir, node_id)
-        haystack = f"{title}\n{body}".lower()
-        if not all(term in haystack for term in terms):
+        node = graph[node_id]
+        if not tags <= set(node.tags):
+            continue
+        title = node.title
+        heading = f"{title}\n{' '.join(node.tags)}".lower()
+        body = read_body(project.apm_dir, node_id) if terms else ""
+        if not all(term in heading or term in body.lower() for term in terms):
             continue
         snippet = next(
             (
@@ -232,7 +244,7 @@ def search(project: Project, graph: Graph, query: str) -> list[SearchHit]:
             "",
         )
         hit = SearchHit(node_id, title, snippet[:200])
-        (in_title if all(term in title.lower() for term in terms) else in_body).append(hit)
+        (in_title if all(term in heading for term in terms) else in_body).append(hit)
     return in_title + in_body
 
 

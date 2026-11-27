@@ -72,6 +72,18 @@ def _check_url(value: str) -> str:
     return value
 
 
+TAG_RE = re.compile(r"[a-z0-9][a-z0-9._/-]{0,39}")
+"""A tag: lowercase letters, digits and `. _ / -`, starting with a letter or digit, 1-40 long."""
+
+
+def _check_tag(value: str) -> str:
+    if TAG_RE.fullmatch(value) is None:
+        raise ValueError(
+            "must be 1-40 lowercase letters, digits or . _ / -, starting with a letter or digit"
+        )
+    return value
+
+
 Id = Annotated[str, AfterValidator(_check_id)]
 NonEmpty = Annotated[str, Field(min_length=1)]
 
@@ -103,6 +115,7 @@ class NodeLine(_Line):
     title: Annotated[str, AfterValidator(_check_title)]
     kind: Kind | None = None
     status: Status | None = None
+    tags: list[Annotated[str, AfterValidator(_check_tag)]] | None = None
     depends_on: list[Id] | None = None
     delivery: DeliveryLine | None = None
     external: ExternalLine | None = None
@@ -126,6 +139,7 @@ class NodeLine(_Line):
             kind=self.kind or Kind.WORK,
             status=self.status or Status.TODO,
             depends_on=canonical_ids(self.depends_on or ()),
+            tags=tuple(sorted(set(self.tags or ()))),
             delivery=delivery,
             external=external,
             variant_of=self.variant_of,
@@ -180,6 +194,8 @@ def serialize_node(node: Node) -> str:
     out["title"] = node.title
     out["kind"] = node.kind
     out["status"] = node.status
+    if node.tags:
+        out["tags"] = sorted(set(node.tags))
     if deps := canonical_ids(node.depends_on):
         out["depends_on"] = deps
     if (d := node.delivery) is not None:

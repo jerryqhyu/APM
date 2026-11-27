@@ -59,6 +59,8 @@ class Node:
     status: Status = Status.TODO
     depends_on: tuple[NodeId, ...] = ()
     """Sorted and de-duplicated."""
+    tags: tuple[str, ...] = ()
+    """Labels for finding and grouping nodes (see `apm.core.ndjson.TAG_RE`): sorted, unique."""
     delivery: Delivery | None = None
     external: External | None = None
     variant_of: NodeId | None = None

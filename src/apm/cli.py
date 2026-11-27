@@ -474,6 +474,9 @@ def node_add(
     kind: Annotated[Kind, typer.Option(help="work or decision.")] = Kind.WORK,
     dep: Annotated[list[str] | None, typer.Option("--dep", help="A node this depends on.")] = None,
     intent: Annotated[str, typer.Option(help="Why it exists: goes in the body.")] = "",
+    tag: Annotated[
+        list[str] | None, typer.Option("--tag", "-t", help="A tag (repeatable).")
+    ] = None,
 ) -> None:
     """Add a node."""
     project, graph = plan()
@@ -483,6 +486,7 @@ def node_add(
         kind=kind,
         depends_on=[graph.resolve(d) for d in dep or []],
         body=render_body(intent=intent),
+        tags=tag or [],
     )
     result = ops.create_nodes(project, [new])
     typer.echo(f"{result.graph.handles[result.created[0]]} {title}")
@@ -492,16 +496,43 @@ def node_add(
 def node_ls(
     root_: Annotated[str | None, typer.Option("--root", help="Only under this node.")] = None,
     depth: Annotated[int | None, typer.Option(help="How many levels to show.")] = None,
+    tag: Annotated[
+        list[str] | None, typer.Option("--tag", "-t", help="Only nodes with this tag (repeatable).")
+    ] = None,
     as_json: Json = False,
 ) -> None:
-    """Show the plan as an outline."""
+    """Show the plan as an outline, or, with --tag, the nodes that have every tag given."""
     _, graph = plan()
     scope = graph.resolve(root_) if root_ else None
+    inside = None if scope is None else set(graph.descendants(scope))
+    if tag:
+        wanted = set(ops.clean_tags(tag))
+        views = [n for n in all_nodes_view(graph) if wanted <= set(n["tags"])]
+        views = [n for n in views if inside is None or n["id"] in inside]
+        if as_json:
+            print_json(views)
+        for view in [] if as_json else views:
+            typer.echo(node_line(graph, view["id"]))
+        if not views and not as_json:
+            typer.echo("no nodes with " + ", ".join(f"#{t}" for t in sorted(wanted)))
+        return
     if as_json:
-        inside = None if scope is None else set(graph.descendants(scope))
         print_json([n for n in all_nodes_view(graph) if inside is None or n["id"] in inside])
         return
     typer.echo(outline(graph, scope, depth) or '(no nodes yet: apm node add "...")')
+
+
+@cli(node_app, "tag")
+def node_tag(
+    handle: str,
+    tags: Annotated[list[str], typer.Argument(help="Tags to add, e.g. backlog area/ui.")],
+    remove: Annotated[bool, typer.Option("--remove", "-r", help="Remove them instead.")] = False,
+) -> None:
+    """Add tags to a node, or remove them."""
+    project, _, node_id = locate(handle)
+    added, removed = ([], tags) if remove else (tags, [])
+    result = ops.set_tags(project, node_id, add=added, remove=removed)
+    report(result, " ".join(f"#{t}" for t in result.graph[node_id].tags) or "no tags")
 
 
 @cli(node_app, "show")

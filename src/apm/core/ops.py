@@ -11,7 +11,7 @@ from apm.core.files import render_body
 from apm.core.ids import handle, new_id
 from apm.core.model import Delivery, Kind, Node, NodeId, Status
 from apm.core.mutate import Draft, Mutation, OpError, mutate
-from apm.core.ndjson import canonical_ids
+from apm.core.ndjson import TAG_RE, canonical_ids
 from apm.core.project import Project
 from apm.core.review_lock import refuse_under_review
 
@@ -34,6 +34,7 @@ class NewNode:
     """The parent, when it is another node in the same batch: by its `key`. Overrides `parent`."""
     body: str | None = None
     """The whole body text. Default: the empty Intent / Acceptance criteria / Notes template."""
+    tags: Sequence[str] = ()
 
 
 def create_nodes(
@@ -98,6 +99,7 @@ def _create(draft: Draft, nodes: Sequence[NewNode]) -> list[NodeId]:
                 parent=by_key[new.parent_key] if new.parent_key is not None else new.parent,
                 kind=new.kind,
                 depends_on=canonical_ids(deps),
+                tags=clean_tags(new.tags),
             )
         )
         draft.set_body(node_id, render_body() if new.body is None else new.body)
@@ -132,6 +134,31 @@ def update_node(
         return f"{handle(node_id)}: {', '.join(changed)}"
 
     return mutate(project, "update", apply, actor=actor, run=run)
+
+
+def set_tags(
+    project: Project,
+    node_id: NodeId,
+    *,
+    add: Iterable[str] = (),
+    remove: Iterable[str] = (),
+    actor: str = "user",
+    run: str | None = None,
+) -> Mutation:
+    """Adds and removes tags, in one commit. Tags are labels, not content: a node under review
+    can still be tagged, and its task review isn't redone.
+    """
+    added, removed = clean_tags(add), clean_tags(remove)
+
+    def apply(draft: Draft) -> str:
+        node = draft[node_id]
+        tags = clean_tags(t for t in (*node.tags, *added) if t not in removed)
+        draft.put(replace(node, tags=tags))
+        change = [*(f"+{t}" for t in added if t not in node.tags)]
+        change += [f"-{t}" for t in removed if t in node.tags]
+        return f"{handle(node_id)}: {' '.join(change) or 'no change'}"
+
+    return mutate(project, "tags", apply, actor=actor, run=run)
 
 
 def edit_body(
@@ -302,6 +329,7 @@ def merge_nodes(
                 title=clean_title(title) if title is not None else keep.title,
                 parent=parent,
                 depends_on=canonical_ids(deps),
+                tags=clean_tags(t for n in (keep, *merged) for t in n.tags),
                 delivery=deliveries[0] if deliveries else None,
             )
         )
@@ -411,6 +439,24 @@ def clean_title(title: str) -> str:
     if "\n" in cleaned or "\r" in cleaned:
         raise OpError("a title must be a single line")
     return cleaned
+
+
+def clean_tag(tag: str) -> str:
+    """A tag as stored: trimmed, lowercase, spaces as dashes, no leading `#`. Raises `OpError` for
+    one that is still invalid.
+    """
+    cleaned = "-".join(tag.strip().removeprefix("#").lower().split())
+    if TAG_RE.fullmatch(cleaned) is None:
+        raise OpError(
+            f'tag "{tag}": use 1-40 lowercase letters, digits or . _ / -, starting with a letter'
+            " or digit"
+        )
+    return cleaned
+
+
+def clean_tags(tags: Iterable[str]) -> tuple[str, ...]:
+    """Cleaned, sorted and de-duplicated."""
+    return tuple(sorted({clean_tag(t) for t in tags}))
 
 
 def _count(n: int, one: str, many: str) -> str:

@@ -39,6 +39,7 @@ WRITE_MCP = (
     "apm_attach_delivery",
     "apm_delete_node",
     "apm_merge_nodes",
+    "apm_tag_node",
 )
 READ_TOOLS = ("Read", "Grep", "Glob")
 GIT_READ_TOOLS = ("Bash(git log *)", "Bash(git diff *)", "Bash(git show *)", "Bash(git grep *)")

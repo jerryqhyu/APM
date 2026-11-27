@@ -24,6 +24,7 @@ WRITE_TOOLS = {
     "apm_attach_delivery",
     "apm_delete_node",
     "apm_merge_nodes",
+    "apm_tag_node",
 }
 
 
@@ -215,6 +216,7 @@ def test_read_scope_refuses_every_write(plan: tuple[Project, str, str, str]) -> 
         "apm_attach_delivery": {"node": first, "branch": "x"},
         "apm_delete_node": {"node": second},
         "apm_merge_nodes": {"target": first, "others": [second]},
+        "apm_tag_node": {"node": first, "add": ["x"]},
     }
     assert calls.keys() == WRITE_TOOLS
     for tool, arguments in calls.items():
@@ -310,3 +312,14 @@ def test_a_task_under_review_is_refused(plan: tuple[Project, str, str, str]) -> 
     session = Session(project)
     assert f"{first} is under review" in session.refused("apm_update_node", node=first, title="X")
     session.call("apm_set_status", node=first, status="in_progress")
+
+
+def test_tags_through_mcp(plan: tuple[Project, str, str, str]) -> None:
+    project, _, first, _ = plan
+    session = Session(project)
+    assert session.call("apm_tag_node", node=first, add=["Backlog", "ui"]) == "tags: #backlog #ui"
+    assert session.call("apm_tag_node", node=first, remove=["ui"]) == "tags: #backlog"
+    assert "nothing to change" in session.call("apm_tag_node", node=first, add=["backlog"])
+    assert "First" in session.call("apm_search", query="tag:backlog")
+    session.call("apm_create_nodes", nodes=[{"title": "Later", "tags": ["backlog"]}])
+    assert "Later" in session.call("apm_search", query="#backlog later")
