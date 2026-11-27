@@ -1,24 +1,24 @@
-/* GitHub / VS Code style: system font, neutral greys, one blue accent, 6px corners, hairline
+/* System font, neutral greys (dark mode runs from dark grey to black), one blue accent, hairline
    borders. Light and dark share every rule below; only the tokens change. */
 
 :root {
   color-scheme: light dark;
-  --bg: light-dark(#ffffff, #0d1117);
-  --bg-subtle: light-dark(#f6f8fa, #151b23);
-  --bg-muted: light-dark(#eff2f5, #212830);
-  --bg-inset: light-dark(#f6f8fa, #010409);
-  --canvas: light-dark(#f6f8fa, #0d1117);
+  --bg: light-dark(#ffffff, #171717);
+  --bg-subtle: light-dark(#f6f8fa, #1e1e1e);
+  --bg-muted: light-dark(#eff2f5, #2a2a2a);
+  --bg-inset: light-dark(#f6f8fa, #0a0a0a);
+  --canvas: light-dark(#f6f8fa, #111111);
   /* Around the panels: the window itself. */
-  --chrome: light-dark(#e4e7eb, #010409);
+  --chrome: light-dark(#e4e7eb, #000000);
   --panel-radius: 12px;
-  --border: light-dark(#d0d7de, #3d444d);
-  --border-muted: light-dark(#e3e7eb, #2a313a);
-  --fg: light-dark(#1f2328, #e6edf3);
-  --fg-muted: light-dark(#59636e, #9198a1);
-  --fg-subtle: light-dark(#818b98, #6e7681);
+  --border: light-dark(#d0d7de, #363636);
+  --border-muted: light-dark(#e3e7eb, #272727);
+  --fg: light-dark(#1f2328, #ececec);
+  --fg-muted: light-dark(#59636e, #a3a3a3);
+  --fg-subtle: light-dark(#818b98, #737373);
   --accent: light-dark(#0969da, #4493f8);
   --accent-emphasis: light-dark(#0969da, #1f6feb);
-  --accent-subtle: light-dark(#ddf4ff, #121d2f);
+  --accent-subtle: light-dark(#ddf4ff, #172338);
   --accent-fg-on: #ffffff;
   --good: light-dark(#1a7f37, #3fb950);
   --good-subtle: light-dark(#dafbe1, #12261e);
@@ -27,10 +27,10 @@
   --bad: light-dark(#d1242f, #f85149);
   --bad-subtle: light-dark(#ffebe9, #25171c);
   --info: light-dark(#0969da, #4493f8);
-  --info-subtle: light-dark(#ddf4ff, #121d2f);
+  --info-subtle: light-dark(#ddf4ff, #172338);
   --done: light-dark(#8250df, #ab7df8);
   --done-subtle: light-dark(#fbefff, #1e1630);
-  --neutral: light-dark(#818b98, #6e7681);
+  --neutral: light-dark(#818b98, #737373);
   --shadow-sm: 0 1px 0 rgb(31 35 40 / 4%);
   --shadow: 0 1px 3px rgb(31 35 40 / 12%), 0 8px 24px rgb(66 74 83 / 12%);
   --radius: 6px;
@@ -50,13 +50,13 @@
 :root[data-theme="dark"] {
   color-scheme: dark;
   --shadow-sm: 0 0 transparent;
-  --shadow: 0 0 0 1px #3d444d, 0 16px 32px rgb(1 4 9 / 85%);
+  --shadow: 0 0 0 1px #363636, 0 16px 32px rgb(0 0 0 / 85%);
 }
 
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     --shadow-sm: 0 0 transparent;
-    --shadow: 0 0 0 1px #3d444d, 0 16px 32px rgb(1 4 9 / 85%);
+    --shadow: 0 0 0 1px #363636, 0 16px 32px rgb(0 0 0 / 85%);
   }
 }
 
@@ -1865,7 +1865,7 @@ main {
   align-items: flex-start;
   justify-content: center;
   padding: 10vh 16px 16px;
-  background: rgb(1 4 9 / 50%);
+  background: rgb(0 0 0 / 50%);
 }
 
 .modal {
