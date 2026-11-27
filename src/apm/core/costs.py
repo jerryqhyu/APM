@@ -12,8 +12,10 @@ from pathlib import Path
 
 from apm.core.errors import ApmError
 from apm.core.files import read_file_if_exists, write_file_atomic
+from apm.core.graph import Graph
 from apm.core.lock import acquire_write_lock
 from apm.core.model import NodeId
+from apm.core.store import NodeCost, Store
 
 COSTS_FILE = "costs.ndjson"
 
@@ -54,6 +56,21 @@ def freeze_cost(apm_dir: Path, record: CostRecord) -> None:
             raise CostFrozenError(f"the cost of {record.node_id} is already frozen")
         costs[record.node_id] = record
         write_file_atomic(costs_path(apm_dir), "".join(_line(costs[n]) for n in sorted(costs)))
+
+
+def live_cost(
+    graph: Graph, store: Store, frozen: Mapping[NodeId, CostRecord], node_id: NodeId
+) -> NodeCost:
+    """What `node_id` has cost, by agent: its frozen figure if it has one, else its own runs
+    plus each child's cost, worked out the same way. Each node counts once, through its parent.
+    """
+    if (record := frozen.get(node_id)) is not None:
+        return NodeCost(total=record.total, by_agent=dict(record.by_agent))
+    by_agent = dict(store.node_cost(node_id).by_agent)
+    for child in graph.children(node_id):
+        for agent, cost in live_cost(graph, store, frozen, child).by_agent.items():
+            by_agent[agent] = by_agent.get(agent, 0.0) + cost
+    return NodeCost(total=sum(by_agent.values()), by_agent=dict(sorted(by_agent.items())))
 
 
 def _line(r: CostRecord) -> str:
