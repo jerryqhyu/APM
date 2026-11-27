@@ -1,10 +1,14 @@
 """Which tasks need a task review.
 
-A task is a leaf that is not a review step. While it is To do, every version of its content
-(title, kind and body, see `content_fingerprint`) gets one review. A review that errored is
-retried automatically once for the same content; after a second error the task waits for an
-edit or a review started by hand. `due_task_reviews` is the one place that decides this, for
-every entry point that starts reviews on its own.
+A task is a leaf inside a feature that is not a review step. While it is To do, every version of
+its content (title, kind and body, see `content_fingerprint`) gets one review. A review that
+errored is retried automatically once for the same content; after a second error the task waits
+for an edit or a review started by hand. `due_task_reviews` is the one place that decides this,
+for every entry point that starts reviews on its own.
+
+A top-level node with nothing inside it is a feature waiting for its breakdown, not a task
+(`awaits_breakdown`). It is never reviewed on its own, so you can draft and discuss it freely;
+Implement on it still waits for a review you start by hand.
 """
 
 from collections.abc import Callable
@@ -26,6 +30,13 @@ def needs_review(store: Store, node_id: NodeId, fingerprint: str) -> bool:
     return store.count_errors(node_id, fingerprint) < MAX_ERRORS
 
 
+def awaits_breakdown(graph: Graph, node_id: NodeId) -> bool:
+    """A top-level node with nothing inside it: a feature not broken down yet, as the List view
+    shows it, rather than a task.
+    """
+    return graph[node_id].parent is None and graph.is_leaf(node_id)
+
+
 def due_task_reviews(graph: Graph, store: Store, body: Callable[[NodeId], str]) -> list[NodeId]:
     """The To do tasks whose current content has no review yet, in id order.
 
@@ -35,6 +46,7 @@ def due_task_reviews(graph: Graph, store: Store, body: Callable[[NodeId], str]) 
         node_id
         for node_id in sorted(graph.nodes)
         if graph.is_leaf(node_id)
+        and not awaits_breakdown(graph, node_id)
         and graph[node_id].status == Status.TODO
         and not graph.is_review(node_id)
         and needs_review(store, node_id, content_fingerprint(graph[node_id], body(node_id)))
@@ -52,6 +64,11 @@ def implement_blocker(
     if graph[node_id].status != Status.TODO:
         return None
     latest = store.latest_task_review(node_id)
+    if latest is None and awaits_breakdown(graph, node_id):
+        return (
+            "this feature is not broken down yet: Decompose it, "
+            "or run Review task to build it as one task"
+        )
     if latest is None or latest.fingerprint != content_fingerprint(graph[node_id], body(node_id)):
         return "this task's current content has not been reviewed: run Review task first"
     if latest.verdict != "pass":

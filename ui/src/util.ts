@@ -37,6 +37,7 @@ export const AGENT_LABEL: Record<string, string> = {
   "apm-decomposer": "Decompose",
   "apm-critic": "Review",
   "apm-implementer": "Implement",
+  "apm-task-reviewer": "Review task",
   "apm-feature-reviewer": "Review feature",
   "apm-feature-reporter": "Write report",
   "apm-eager-builder": "Eager build",

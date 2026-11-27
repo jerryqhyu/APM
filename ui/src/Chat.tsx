@@ -10,6 +10,8 @@ import type { AgentRequest, Mode, Question, Run, RunEvent } from "./types";
 import { Spinner } from "./ui";
 import { AGENT_LABEL, type Thread, cx, errorText, money, threadsOf, timeAgo, typedText } from "./util";
 
+const ASSISTANT = "apm-assistant";
+
 interface Block {
   type: string;
   text?: string;
@@ -307,7 +309,7 @@ function Said({ who, agent, text }: { who: string; agent: string | null; text: s
     <div className="you-said">
       <div className="byline">
         {who}
-        {agent && agent !== "apm-assistant" && <span className="agent-tag">{AGENT_LABEL[agent] ?? agent}</span>}
+        {agent && agent !== ASSISTANT && <span className="agent-tag">{AGENT_LABEL[agent] ?? agent}</span>}
       </div>
       <div className="you-text">{long && !open ? `${text.slice(0, 260).trimEnd()}…` : text}</div>
       {long && (
@@ -388,8 +390,12 @@ export function Chat({
 
   const threads = useMemo(() => threadsOf(runs), [runs]);
   const focused = focus ? threads.find((t) => t.runs.some((r) => r.id === focus)) : undefined;
+  // Unless you pick one, you see the run you just started from a button, else your latest chat. Never
+  // a run APM started on its own: your next message would go to that agent.
   const thread: Thread | null =
-    picked === "new" ? null : (threads.find((t) => t.id === picked) ?? focused ?? threads[0] ?? null);
+    picked === "new"
+      ? null
+      : (threads.find((t) => t.id === picked) ?? focused ?? threads.find((t) => t.agent === ASSISTANT) ?? null);
   const running = thread?.runs.find((r) => r.status === "running") ?? null;
   // A follow-up goes to the last turn you could talk to: not the automatic reviewer.
   const last = thread ? [...thread.runs].reverse().find((r) => r.agent !== "apm-critic") : undefined;
@@ -404,6 +410,7 @@ export function Chat({
     if (thread) toEnd();
   }, [thread?.id, thread?.runs.length, running?.id, thread, toEnd]);
   const waiting = running !== null && requestsWaiting.has(running.id);
+  const agentLabel = last ? (AGENT_LABEL[last.agent] ?? last.agent) : "";
 
   const send = async () => {
     const text = message.trim();
@@ -414,13 +421,12 @@ export function Chat({
         ? await api<Run>(`/api/runs/${last.id}/continue`, { method: "POST", body: { message: text, mode } })
         : await api<Run>("/api/runs", {
             method: "POST",
-            body: { agent: "apm-assistant", node_id: context.nodeId, message: text, mode },
+            body: { agent: ASSISTANT, node_id: context.nodeId, message: text, mode },
           });
       setMessage("");
-      setPicked(null);
       await load();
-      // A new conversation becomes the one in view.
-      if (!last) setPicked(run.id);
+      // The conversation you wrote in stays in view: the one you replied in, or the new one.
+      setPicked(thread?.id ?? run.id);
       onChanged();
     } catch (err) {
       onError(errorText(err));
@@ -492,6 +498,14 @@ export function Chat({
       </div>
 
       <div className="composer">
+        {last && last.agent !== ASSISTANT && !running && (
+          <div className="turn-note">
+            <span>Your reply continues this {agentLabel} run.</span>
+            <button className="link" onClick={() => setPicked("new")}>
+              Talk about the {context.nodeId ? "node" : "plan"} instead
+            </button>
+          </div>
+        )}
         <textarea
           rows={2}
           value={message}
@@ -501,7 +515,9 @@ export function Chat({
               : running
                 ? "Claude is working. You can stop it, or wait for its reply."
               : last
-                ? "Reply…"
+                ? last.agent === ASSISTANT
+                  ? "Reply…"
+                  : `Reply to ${agentLabel}…`
                 : context.nodeId
                   ? "Ask or tell Claude something about this node…"
                   : "Ask or tell Claude something about the plan…"

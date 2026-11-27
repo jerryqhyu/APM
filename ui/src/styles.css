@@ -438,10 +438,11 @@ textarea {
 .app {
   display: grid;
   height: 100%;
-  grid-template: "top top top" 48px "outline main side" minmax(0, 1fr) / 240px minmax(
+  /* The conversation takes the right third, top to bottom; the top bar covers the plan only. */
+  grid-template: "top top side" 48px "outline main side" minmax(0, 1fr) / 240px minmax(
       0,
       1fr
-    ) minmax(400px, 32vw);
+    ) minmax(400px, 33.4vw);
 }
 
 /* --- top bar --- */
@@ -1008,7 +1009,7 @@ main {
   font-weight: 600;
 }
 
-/* --- right column: action toolbar, then Chat and Details tabs --- */
+/* --- right column, full height: the Chat and Details tabs, with Actions in a drop-down --- */
 
 .side {
   grid-area: side;
@@ -1020,11 +1021,44 @@ main {
   border-left: 1px solid var(--border);
 }
 
-.actions {
+.side-head {
   flex: none;
-  padding: 10px 14px;
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+  height: 48px;
+  padding-right: 12px;
   background: var(--bg-subtle);
   border-bottom: 1px solid var(--border);
+}
+
+.side-head .tabs {
+  flex: 1;
+  min-width: 0;
+  border-bottom: none;
+}
+
+.side-head .tab {
+  padding-top: 10px;
+}
+
+.actions-menu {
+  flex: none;
+  align-self: center;
+}
+
+.actions-menu .menu-button.on {
+  background: var(--bg-muted);
+}
+
+.actions-pop {
+  width: min(480px, calc(100vw - 32px));
+  max-height: calc(100vh - 72px);
+  padding: 0;
+}
+
+.actions {
+  padding: 12px 14px;
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -1415,6 +1449,14 @@ main {
   flex-direction: column;
   gap: 8px;
   background: var(--bg-subtle);
+}
+
+.composer .turn-note {
+  justify-content: space-between;
+}
+
+.composer .turn-note .link {
+  flex: none;
 }
 
 .composer textarea {

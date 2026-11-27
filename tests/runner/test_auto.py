@@ -24,7 +24,20 @@ class Clock:
 
 
 def tasks(project: Project, *titles: str) -> tuple[NodeId, ...]:
-    return create_nodes(project, [NewNode(title=t) for t in titles]).created
+    """To do tasks inside a new feature. A top-level node with nothing inside is a feature not
+    broken down yet, which is never reviewed on its own.
+    """
+    (feature,) = create_nodes(project, [NewNode(title="Feature")]).created
+    return create_nodes(project, [NewNode(title=t, parent=feature) for t in titles]).created
+
+
+def test_a_feature_not_broken_down_yet_is_not_queued(project: Project) -> None:
+    (backlog,) = create_nodes(project, [NewNode(title="Cost view")]).created
+    (task,) = tasks(project, "Parse")
+    queue = AutoQueue(Harness(project).runner)
+    queue.scan()
+    assert set(queue.queued) == {(TASK_REVIEWER, task)}
+    assert (TASK_REVIEWER, backlog) not in queue.queued
 
 
 async def test_drive_queues_every_due_task_at_startup(

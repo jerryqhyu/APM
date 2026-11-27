@@ -38,7 +38,7 @@ apm serve
 `apm serve` opens the web UI. Only your machine can reach it, and only through the address it prints (it ends in a secret token; bookmark it).
 
 - **Talk to Claude** in the conversation on the right. Ask where things stand, plan a feature together, or have it reshape the plan: add, edit, link, move, merge and delete nodes. It goes turn by turn, and when Claude has a question or needs permission for something, a card appears for you to answer.
-- **Change the graph yourself** with the actions panel: every operation is a button, for one node, several, or the whole plan.
+- **Change the graph yourself** with the Actions menu: every operation is a button, for one node, several, or the whole plan.
 - **Decompose** a node to get a reviewed proposal you can edit before anything is written.
 - **Implement** a ready node: Claude builds it in its own git worktree, opens a pull request if `gh` is set up, and records the delivery on the node. On a feature, **Review all tasks** and **Implement all** work on every task inside it at once.
 - **Feature reports**: once a feature's review passes, Claude writes a report of it for people who weren't there (what it is and why, the decisions you made and your reasons, how it was built) from the record APM keeps, and it lands with the feature as `docs/features/….md`, linked from its pull request. **Write report** does it by hand.
