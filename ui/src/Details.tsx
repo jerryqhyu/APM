@@ -5,6 +5,7 @@ import { useEffect, useMemo, useState } from "react";
 import { FeatureReportSection } from "./FeatureReport";
 import { EagerSection, eagerFeature } from "./Eager";
 import { Markdown } from "./Markdown";
+import { TagEditor } from "./NodeList";
 import { FeatureSettingsSection } from "./Settings";
 import type {
   FeatureSettings,
@@ -22,7 +23,7 @@ import { Empty, StatePill } from "./ui";
 import { STATUS_LABEL, cx, stackedName, stateOf, timeAgo } from "./util";
 
 export interface DetailActions {
-  patch: (change: { title?: string; kind?: Kind; status?: Status; body?: string }) => Promise<void>;
+  patch: (change: { title?: string; kind?: Kind; status?: Status; body?: string; tags?: string[] }) => Promise<void>;
   link: (dependsOn: string) => Promise<void>;
   unlink: (dependsOn: string) => Promise<void>;
   goTo: (id: string) => void;
@@ -72,6 +73,7 @@ export function NodeDetails({ detail, nodes, actions }: { detail: NodeDetail; no
         )}
         {detail.under_review && <span className="badge warn">Under review</span>}
       </div>
+      <TagEditor key={`tags-${detail.id}`} tags={detail.tags} onSave={(tags) => actions.patch({ tags })} />
       {review && !["none", "running"].includes(review.state) && (
         <div className={cx("callout", review.state !== "pass" && "warn")}>
           <strong>{REVIEW_LABEL[review.state]}</strong> {review.error ?? review.summary}

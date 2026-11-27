@@ -20,6 +20,7 @@ import "@xyflow/react/dist/style.css";
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { type Box, type Link, type Positions, layout } from "./layout";
 import type { Level, LevelPort, NodeView, Proposal, ProposedChild } from "./types";
+import { NodeList } from "./NodeList";
 import { Spinner, StatePill } from "./ui";
 import { cx, stateOf } from "./util";
 
@@ -137,7 +138,12 @@ export interface CanvasProps {
   onAdd: () => void;
   onDecompose: () => void;
   onReview: (proposal: Proposal) => void;
+  /** Graph or list: the same level either way. */
+  view: View;
+  onView: (view: View) => void;
 }
+
+export type View = "graph" | "list";
 
 export function Canvas(props: CanvasProps) {
   return (
@@ -159,6 +165,8 @@ function CanvasInner({
   onAdd,
   onDecompose,
   onReview,
+  view,
+  onView,
 }: CanvasProps) {
   const flow = useReactFlow();
   const rootId = level.root?.id ?? null;
@@ -331,6 +339,13 @@ function CanvasInner({
           ))}
         </nav>
         <span className="spacer" />
+        <div className="segmented" role="group" aria-label="Show as">
+          {(["graph", "list"] as const).map((v) => (
+            <button key={v} className={cx(view === v && "on")} aria-pressed={view === v} onClick={() => onView(v)}>
+              {v === "graph" ? "Graph" : "List"}
+            </button>
+          ))}
+        </div>
         <button className="primary" onClick={onAdd}>
           + Add {level.root ? "child" : "node"}
         </button>
@@ -364,7 +379,16 @@ function CanvasInner({
           </span>
         </div>
       )}
-      {level.nodes.length === 0 && !proposal ? (
+      {view === "list" ? (
+        <NodeList
+          nodes={level.nodes}
+          top={!level.root}
+          selected={selected}
+          running={running}
+          onSelect={(id, additive) => onSelect(id, additive)}
+          onOpen={onOpen}
+        />
+      ) : level.nodes.length === 0 && !proposal ? (
         <div className="canvas-empty">
           <h2>{level.root ? "Nothing inside this node yet" : "Your plan is empty"}</h2>
           <p>

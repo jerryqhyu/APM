@@ -106,6 +106,10 @@ On the far right you can switch between a **Light**, **Dark** or **Auto** theme.
 - A dashed stub labelled *from* or *to* is a dependency on a node outside this level. Click it to go there.
 - Dashed cards are a **proposal** from Claude, not yet part of the plan.
 
+**List** (middle, next to **Graph** at the top right). The same level as a table: at the top, your features, inside a feature, its tasks. Each row shows the state, how far it is (or **Not broken down** for a feature with nothing inside it yet: your backlog) and its tags. Type in the search box to filter by title, handle or tag (`#backlog` or `tag:backlog` keeps only nodes with that tag), click a tag to filter by it, and at the top level tick **Not broken down** to see only the features still waiting for a breakdown. Click a row to select it; double-click to go inside. APM remembers which of the two you last used.
+
+**Tags.** Labels on a node, such as `backlog`, `area/ui` or `q3`: lowercase letters, digits and `. _ / -`. Add and remove them under the title in **Details** (type and press Enter). Tags are labels, not content: changing them doesn't redo a task's review, and a node under review can still be tagged. Merging nodes keeps every tag.
+
 **Right panel.** An **Actions** bar on top, with buttons for everything you can do to what is selected. Below it, two tabs:
 
 - **Chat**: your conversation with Claude, about the selected node or, with nothing selected, the whole plan. The tab shows which.
@@ -400,7 +404,11 @@ apm node merge 1c0b9a44 7d2e0f11 --title "Both"   # merge into the first
 apm node rm 1c0b9a44 -r                      # delete, with what is inside
 apm link-dep 1c0b9a44 7d2e0f11               # the first needs the second
 apm ready                                    # what can be started now
-apm search "csv"                             # search titles and descriptions
+apm node add "Search" --tag backlog         # add a node with a tag
+apm node tag 1c0b9a44 backlog area/ui        # tag a node (-r removes the tags instead)
+apm node ls --tag backlog                    # the nodes with every tag given
+apm search "csv"                             # search titles, tags and descriptions
+apm search "tag:backlog import"              # only nodes tagged backlog
 apm check                                    # look for problems
 apm export plan.apm.zip                      # the whole project as one file
 apm import plan.apm.zip                      # restore it into a folder with no plan

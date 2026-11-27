@@ -122,7 +122,7 @@ One node per line, sorted by `id`. Keys are always written in the same order; nu
 {"id":"0192f3a1-7c4e-7b91-a2d5-3f8e1c0b9a44","parent":"0192f2c8-1a0d-7e33-8c41-5b2a9d0e7f10","title":"Stream agent output to the UI","kind":"work","status":"in_progress","depends_on":["0192e9d0-…"],"delivery":{"repo":"app","branch":"apm/1c0b9a44-stream-output","commits":["a1b2c3d"],"pr":"https://github.com/jerry/app/pull/12"}}
 ```
 
-Fields: `id, parent, title, kind, status, depends_on, delivery, external, variant_of`.
+Fields: `id, parent, title, kind, status, tags, depends_on, delivery, external, variant_of`.
 
 - No `created`: UUIDv7 already contains the creation timestamp.
 - No `updated`: git history has it.
@@ -130,11 +130,12 @@ Fields: `id, parent, title, kind, status, depends_on, delivery, external, varian
 - `external` is reserved for issue sync: `{ provider, id, synced_at, synced_hash }`.
 - `variant_of` is reserved for competing breakdowns (v2).
 - `delivery.pr` is the pull request URL.
+- `tags` are labels for finding and grouping nodes (`backlog`, `area/ui`): 1-40 lowercase letters, digits or `. _ / -`, starting with a letter or digit. Search matches them, and `tag:x` or `#x` filters by one. They aren't part of a task's content: changing them never redoes its task review.
 
 Format rules (the serializer's output is byte-stable, so the same graph always produces the same file):
 
 - Key order is the field order above; nested objects follow the same rules.
-- `kind` and `status` are always written. `depends_on` is sorted and de-duplicated.
+- `kind` and `status` are always written. `tags` and `depends_on` are sorted and de-duplicated, and left out when empty.
 - Hand-written lines may be in any order, use `null` for absent fields, start with a byte-order mark, and leave out `kind`/`status` (defaults: `work`/`todo`). The next write puts them in canonical form.
 - Unknown keys are errors, so a typo can't be silently dropped. IDs must be lowercase UUIDv7s; titles must be one non-blank line.
 - The writer checks every node against the same rules as the reader and refuses to write one it couldn't read back, so a bad value can never make the file unloadable.
@@ -443,6 +444,7 @@ Calls core directly (no HTTP), so it works even when the server isn't running. E
 | `apm_attach_delivery(node, branch?, commits?, pr?)` | Leaves only |
 | `apm_delete_node(node, recursive?)` | |
 | `apm_merge_nodes(target, others[], title?)` | |
+| `apm_tag_node(node, add[], remove[])` | Tags are labels; a node under review can still be tagged |
 
 **Finding the project:** use `APM_PROJECT` if it's set; otherwise walk up from cwd looking for `.apm-link`. (Implementer worktrees don't contain `.apm/`, so spawned runs always set `APM_PROJECT`.)
 
@@ -731,10 +733,11 @@ The conversation is the main interface; the graph is what it is about. The [user
   - **Node card:** state (including computed ready/blocked), handle, title, a child-progress bar, and markers for a running agent and a waiting proposal.
   - **Edges:** lifted edges show a count badge. Edges that leave the level show as dashed stubs naming the outside node. Entangled nodes are outlined under a banner.
   - **Proposals** show as dashed ghost nodes and edges on the level they would land in.
+  - **List** (a Graph / List switch, remembered in the browser): the same level as a table of state, progress and tags. At the top level those are the features, and one with no children is marked *Not broken down*: the backlog. Search filters by title, handle and tags (`#tag`, `tag:tag`); tag chips with counts filter by tag.
 - **Right panel**, always there: an action bar on top, then two tabs, Chat and Details:
   - **Actions:** every operation as a button, for what is selected. One node: status, open, add child, add sibling, rename, switch kind, move, link, delete, Decompose, Implement. Several nodes: status, **merge**, delete. A feature: also **Review all tasks** and **Implement all**, with what started, what waits for room and what was skipped, and **Write report** (§7.10). Nothing selected: add node, check plan, reconcile, commit hand edits, **export archive** (a download; including runs shows the secrets warning first), and **Settings…**: the `features:` defaults and the `automation:` switches, saved to `apm.yaml`.
   - **Chat:** the conversation with Claude, about the selected node or the whole plan, turn by turn. Past conversations are tabs. Every agent run appears here, so it is also where a decomposition or an implementation is followed. A question or permission prompt shows as a card with its options, or Allow and Deny (with a reason). The permission mode is picked under the message box.
-  - **Details:** title (edited in place), state, description (markdown, with an editor), for a feature its settings (each with where it comes from: the project, an enclosing feature, or set here; Inherit, or a value of its own) and its eager build (the branch, each task's part and pull request in merge order, what is stale, Redo; §7.9), its report (not written, writing, or written at a commit, with its GitHub link and the report itself; §7.10), what it waits on, depends on (add and remove), is needed by and contains, delivery, and history. With nothing selected, a summary of the plan: progress, what is in progress, what is ready, problems.
+  - **Details:** title (edited in place), state, tags (add and remove), description (markdown, with an editor), for a feature its settings (each with where it comes from: the project, an enclosing feature, or set here; Inherit, or a value of its own) and its eager build (the branch, each task's part and pull request in merge order, what is stale, Redo; §7.9), its report (not written, writing, or written at a commit, with its GitHub link and the report itself; §7.10), what it waits on, depends on (add and remove), is needed by and contains, delivery, and history. With nothing selected, a summary of the plan: progress, what is in progress, what is ready, problems.
 - **Proposal review:** the rationale, the critic's review and the agent's warnings; you can edit any child, leave children out, and accept or reject.
 - **Live:** every view refreshes when the plan changes, whoever changed it.
 - **Look:** GitHub / VS Code. System font, neutral greys, one blue accent, 6px corners, hairline borders; colour only for state. Light, dark, or following the system.
@@ -747,8 +750,9 @@ The conversation is the main interface; the graph is what it is about. The [user
 ```
 apm init [--name]                create .apm/, .apm-link, gitignore entries, first commit
 apm serve [--port] [--no-open]   the web UI on this machine only; prints a tokenized URL
-apm node add <title> [-p h] [--kind decision] [--dep h] [--intent "..."]
-apm node ls [--root h] [--depth n]     outline view
+apm node add <title> [-p h] [--kind decision] [--dep h] [--intent "..."] [--tag t]
+apm node ls [--root h] [--depth n] [--tag t]   outline view; with --tag, the nodes with every tag
+apm node tag <h> <tag>... [-r]          add tags (or remove them)
 apm node show <h> · set <h> [--title] [--kind] · status <h> <s> [--note]
 apm node mv <h> <parent|--top> · merge <target> <others...> [--title] · rm <h> [-r] · edit <h>
 apm link-dep <from> <to> · apm unlink-dep <from> <to>

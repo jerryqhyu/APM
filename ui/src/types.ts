@@ -25,6 +25,8 @@ export interface NodeView {
   title: string;
   kind: Kind;
   status: Status;
+  /** Labels, sorted: lowercase letters, digits and `. _ / -`. */
+  tags: string[];
   blocked: boolean;
   ready: boolean;
   waiting_on: string[];

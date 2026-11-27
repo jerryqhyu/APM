@@ -2039,3 +2039,134 @@ p.report-state {
   color: var(--warn);
   font-size: 12px;
 }
+
+/* --- tags and the list view --- */
+
+.tags,
+.list-tags,
+.tag-editor {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+
+.tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 0 7px;
+  border: 1px solid var(--border-muted);
+  border-radius: 999px;
+  background: var(--bg-subtle);
+  color: var(--fg-muted);
+  font-size: 12px;
+  line-height: 20px;
+  white-space: nowrap;
+}
+
+button.tag:hover:not(:disabled) {
+  border-color: var(--border);
+  color: var(--fg);
+}
+
+.tag.on {
+  border-color: var(--accent);
+  background: var(--accent-subtle);
+  color: var(--accent);
+}
+
+.tag .count {
+  color: var(--fg-subtle);
+}
+
+.tag button.icon {
+  padding: 0 0 0 2px;
+  line-height: 1;
+}
+
+.tag-editor {
+  margin: 4px 0 12px;
+}
+
+.tag-editor input {
+  flex: 1 1 120px;
+  min-width: 120px;
+  border-color: transparent;
+  background: transparent;
+  font-size: 12px;
+}
+
+.tag-editor input:focus {
+  border-color: var(--border);
+  background: var(--bg);
+}
+
+.node-list {
+  flex: 1;
+  overflow: auto;
+  /* Below the canvas bar, which floats over the top of the pane. */
+  padding: 58px 16px 24px;
+}
+
+.node-list td:nth-child(2),
+.node-list td:nth-child(3) {
+  white-space: nowrap;
+}
+
+.list-tools {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.list-tools input[type="search"] {
+  flex: 1;
+  max-width: 420px;
+}
+
+.list-tags {
+  margin-bottom: 10px;
+}
+
+.node-list table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.node-list th {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+  color: var(--fg-muted);
+  font-size: 12px;
+  font-weight: 600;
+  text-align: left;
+}
+
+.node-list td {
+  padding: 7px 8px;
+  border-bottom: 1px solid var(--border-muted);
+  vertical-align: middle;
+}
+
+.node-list tbody tr {
+  cursor: pointer;
+}
+
+.node-list tbody tr:hover {
+  background: var(--bg-subtle);
+}
+
+.node-list tbody tr.selected {
+  background: var(--accent-subtle);
+}
+
+.list-title {
+  font-weight: 600;
+}
+
+.list-empty {
+  padding: 24px 8px;
+}
