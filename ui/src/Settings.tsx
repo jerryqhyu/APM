@@ -46,7 +46,18 @@ const SETTING: Record<SettingName, { label: string; hint: string }> = {
     label: "Report detail",
     hint: "How much the feature report says. Brief: about a page. Standard: each decision with its reasons, how it fits together, each task. Detailed: also file by file, the review findings and a timeline.",
   },
+  budget_usd: {
+    label: "Feature budget",
+    hint: "Dollars a feature may cost. Automation pauses for a feature once its cost reaches it. Empty: no budget.",
+  },
 };
+
+/** A budget typed in: empty is no budget (null), anything but a positive number is an error. */
+function parseBudget(text: string): { value: number | null; error: string | null } {
+  const value = Number(text.trim());
+  if (!text.trim()) return { value: null, error: null };
+  return Number.isFinite(value) && value > 0 ? { value, error: null } : { value: null, error: "A positive number of dollars, or empty for none." };
+}
 
 const AUTOMATION: { key: keyof Automation; label: string }[] = [
   { key: "task_review", label: "Review a task when it is created or changed" },
@@ -83,6 +94,7 @@ export function SettingsDialog({
   const [features, setFeatures] = useState<FeatureSettings | null>(null);
   const [automation, setAutomation] = useState<Automation | null>(null);
   const [limit, setLimit] = useState("");
+  const [budget, setBudget] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -93,13 +105,15 @@ export function SettingsDialog({
         setFeatures(settings.features);
         setAutomation(settings.automation);
         setLimit(String(settings.features.task_max_lines));
+        setBudget(settings.features.budget_usd?.toString() ?? "");
       })
       .catch((err: unknown) => setError(errorText(err)));
   }, []);
 
   const lines = Number(limit);
   const limitError = !Number.isInteger(lines) || lines < MIN_TASK_LINES ? `A whole number, ${MIN_TASK_LINES} or more.` : null;
-  const featureChange = saved && features ? changed(saved.features, { ...features, task_max_lines: lines }) : {};
+  const dollars = parseBudget(budget);
+  const featureChange = saved && features ? changed(saved.features, { ...features, task_max_lines: lines, budget_usd: dollars.value }) : {};
   const automationChange = saved && automation ? changed(saved.automation, automation) : {};
   const dirty = Object.keys(featureChange).length + Object.keys(automationChange).length > 0;
 
@@ -127,7 +141,7 @@ export function SettingsDialog({
         <>
           {error && <span className="form-error">{error}</span>}
           <button onClick={onClose}>Cancel</button>
-          <button className="primary" disabled={busy || !dirty || !!limitError} onClick={() => void save()}>
+          <button className="primary" disabled={busy || !dirty || !!limitError || !!dollars.error} onClick={() => void save()}>
             Save
           </button>
         </>
@@ -166,6 +180,12 @@ export function SettingsDialog({
                   onChange={(e) => setLimit(e.target.value)}
                 />
                 real lines of code
+              </span>
+            </Setting>
+            <Setting name="budget_usd" error={dollars.error}>
+              <span className="row">
+                $
+                <input className="number" type="number" min={0} step="any" value={budget} placeholder="None" aria-label="Feature budget" onChange={(e) => setBudget(e.target.value)} />
               </span>
             </Setting>
             <Setting name="report" hint={false}>
@@ -301,6 +321,7 @@ function DetailPicker({
 function show(name: SettingName, value: FeatureSettings[SettingName]): string {
   if (typeof value === "boolean") return value ? "on" : "off";
   if (name === "task_max_lines") return `${value} lines`;
+  if (name === "budget_usd") return value === null ? "none" : `$${value}`;
   return DETAIL_LABEL[value as ReportDetail].toLowerCase();
 }
 
@@ -332,10 +353,12 @@ export function FeatureSettingsSection({
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [limit, setLimit] = useState(own.task_max_lines?.toString() ?? "");
+  const [budget, setBudget] = useState(own.budget_usd?.toString() ?? "");
   useEffect(() => {
     setLimit(own.task_max_lines?.toString() ?? "");
+    setBudget(own.budget_usd?.toString() ?? "");
     setError(null);
-  }, [detail.id, own.task_max_lines]);
+  }, [detail.id, own.task_max_lines, own.budget_usd]);
 
   const run = async (change: () => Promise<void>) => {
     setBusy(true);
@@ -361,6 +384,12 @@ export function FeatureSettingsSection({
     const lines = Number(text);
     if (text && (!Number.isInteger(lines) || lines < MIN_TASK_LINES)) return setError(`The limit is a whole number, ${MIN_TASK_LINES} or more.`);
     save({ task_max_lines: text ? lines : null });
+  };
+  const saveBudget = () => {
+    if (budget.trim() === (own.budget_usd?.toString() ?? "")) return;
+    const { value, error } = parseBudget(budget);
+    if (error) return setError(`The budget is ${error.charAt(0).toLowerCase()}${error.slice(1)}`);
+    save({ budget_usd: value });
   };
 
   return (
@@ -397,6 +426,30 @@ export function FeatureSettingsSection({
             lines
             {own.task_max_lines !== undefined && (
               <button className="link" disabled={busy} onClick={() => save({ task_max_lines: null })}>
+                Inherit
+              </button>
+            )}
+          </span>
+        </FeatureSetting>
+        <FeatureSetting name="budget_usd" from={from("budget_usd")}>
+          <span className="row">
+            $
+            <input
+              className="number"
+              type="number"
+              min={0}
+              step="any"
+              value={budget}
+              placeholder={inherited.values.budget_usd?.toString() ?? "None"}
+              aria-label="Feature budget"
+              title="Leave empty to inherit"
+              disabled={busy}
+              onChange={(e) => setBudget(e.target.value)}
+              onBlur={saveBudget}
+              onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
+            />
+            {own.budget_usd !== undefined && (
+              <button className="link" disabled={busy} onClick={() => save({ budget_usd: null })}>
                 Inherit
               </button>
             )}
