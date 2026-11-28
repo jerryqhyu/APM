@@ -238,6 +238,8 @@ export interface FeatureSettings {
   task_max_lines: number;
   report: boolean;
   report_detail: ReportDetail;
+  /** Dollars: automation pauses for a feature once its cost reaches it. Null: no budget. */
+  budget_usd: number | null;
 }
 
 export type SettingName = keyof FeatureSettings;
