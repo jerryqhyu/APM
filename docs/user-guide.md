@@ -438,6 +438,7 @@ apm run task-reviewer 7d2e0f11                             # check a task is sma
 apm review-tasks 3f9e2a10                                  # review every To do task of a feature
 apm implement 3f9e2a10                                     # build every ready, reviewed task of it
 apm report 3f9e2a10 -m "Say more about the format."        # write the feature's report (--show prints it)
+apm costs                                                  # what agents cost: total, per feature, agent and day (--json)
 apm eager show 3f9e2a10                                    # an eager feature's build and PR chain
 apm eager redo 3f9e2a10                                    # rebuild after a task PR changed
 apm proposal accept <id>                                    # or: apm proposal reject <id>
