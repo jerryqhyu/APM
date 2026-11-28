@@ -14,6 +14,7 @@ from functools import partial
 from typing import Any
 
 from apm.core.config import read_config
+from apm.core.costs import over_budget, read_costs
 from apm.core.eager import RedoPlan, detect_redos
 from apm.core.errors import ApmError
 from apm.core.files import read_body
@@ -53,6 +54,8 @@ class AutoQueue:
     """Runs asked for by hand (Review all tasks, Implement all) waiting for room. They go first."""
     redos: dict[NodeId, RedoPlan] = field(default_factory=dict)
     """Eager features whose task PRs changed, as the last reconcile found them."""
+    paused: dict[NodeId, float] = field(default_factory=dict)
+    """Features over their budget (feature → budget), whose automatic runs `scan` holds back."""
 
     def __post_init__(self) -> None:
         self.manual = RunQueue(self.runner)
@@ -85,7 +88,8 @@ class AutoQueue:
         """
         project = self.runner.project
         due: dict[tuple[str, NodeId], str] = {}
-        automation = read_config(project.apm_dir).automation
+        config = read_config(project.apm_dir)
+        automation = config.automation
         graph, body = load_graph(project), partial(read_body, project.apm_dir)
         if automation.task_review:
             self.forget_errored_task_reviews()
@@ -100,6 +104,13 @@ class AutoQueue:
         if automation.eager_redo:
             for feature, plan in self.redos.items():
                 due[EAGER_REDO, feature] = plan.signature  # one automatic redo per change
+        frozen, self.paused = read_costs(project.apm_dir), {}
+        for agent, node_id in list(due):
+            if node_id in graph.nodes and (
+                over := over_budget(config, graph, self.runner.store, frozen, node_id)
+            ):
+                self.paused[over[0]] = over[1]
+                del due[agent, node_id]
         for key in [k for k in self.queued if k not in due]:
             del self.queued[key]
         for (agent, node_id), version in due.items():

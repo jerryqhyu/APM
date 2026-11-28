@@ -7,8 +7,10 @@ import pytest
 from apm.core.model import NodeId, Status
 from apm.core.ops import NewNode, create_nodes, set_status, update_node
 from apm.core.project import Project, load_graph
+from apm.core.settings import set_defaults, set_override
 from apm.runner import auto
-from apm.runner.auto import TASK_REVIEWER, AutoQueue
+from apm.runner.auto import IMPLEMENTER, TASK_REVIEWER, AutoQueue
+from apm.runner.queue import Queued
 from apm.runner.runner import FEATURE_REVIEWER, RunnerBusy
 from tests.conftest import configure
 from tests.runner.fake import FakeClaude
@@ -295,3 +297,66 @@ async def test_drive_rescans_when_a_run_finishes(
     driver.cancel()
     await harness.settle()
     assert len(harness.store.list_runs()) == 2
+
+
+# --- feature budgets ---
+
+
+def spend(harness: Harness, node_id: NodeId, cost: float) -> None:
+    run = harness.store.create_run(node_id=node_id, agent="apm-implementer")
+    harness.store.finish_run(run.id, "succeeded", cost_usd=cost)
+
+
+def test_a_feature_over_its_budget_queues_no_automatic_run(project: Project) -> None:
+    (task,) = tasks(project, "Parse")
+    top = load_graph(project)[task].parent
+    assert top is not None
+    (fix,) = create_nodes(project, [NewNode(title="Fix", parent=top)]).created
+    (sibling,) = tasks(project, "Other")
+    harness = Harness(project)
+    harness.store.add_follow_ups([fix], "proposal")
+    harness.review(fix)
+    spend(harness, task, 1.5)
+    set_override(project, top, {"budget_usd": 1})
+    queue = AutoQueue(harness.runner)
+    queue.scan()
+    assert set(queue.queued) == {(TASK_REVIEWER, sibling)}  # the sibling has no budget
+    assert queue.paused == {top: 1}
+    set_override(project, top, {"budget_usd": 2})  # raised above what it cost: runs again
+    queue.scan()
+    assert {(TASK_REVIEWER, task), (IMPLEMENTER, fix)} <= set(queue.queued)
+    assert queue.paused == {}
+
+
+def test_the_default_budget_drops_a_queued_feature_review(project: Project) -> None:
+    configure(project, "automation:\n  task_review: false\n")
+    _, step, (kid,) = feature(project, "Parse")
+    outer = load_graph(project).ancestors(step)[-1]
+    harness = Harness(project)
+    queue = AutoQueue(harness.runner)
+    set_defaults(project, features={"budget_usd": 1})
+    queue.scan()
+    assert (FEATURE_REVIEWER, step) in queue.queued  # under budget: as before
+    spend(harness, kid, 1)  # reaches it
+    queue.scan()
+    assert queue.queued == {}
+    assert queue.paused == {outer: 1}
+    set_defaults(project, features={"budget_usd": None})
+    queue.scan()
+    assert (FEATURE_REVIEWER, step) in queue.queued
+    assert queue.paused == {}
+
+
+def test_a_manual_run_starts_over_budget(project: Project, monkeypatch: pytest.MonkeyPatch) -> None:
+    (task,) = tasks(project, "Parse")
+    harness = Harness(project)
+    spend(harness, task, 5)
+    set_defaults(project, features={"budget_usd": 1})
+    started: list[tuple[str, NodeId]] = []
+    monkeypatch.setattr(harness.runner, "start", lambda a, n, *_, **__: started.append((a, n)))
+    queue = AutoQueue(harness.runner)
+    queue.scan()
+    queue.manual.add([Queued(TASK_REVIEWER, task)])
+    queue.manual.pump()
+    assert queue.queued == {}
+    assert started == [(TASK_REVIEWER, task)]
