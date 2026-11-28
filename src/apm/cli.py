@@ -2,6 +2,7 @@
 
 import asyncio
 import contextlib
+import dataclasses
 import functools
 import json
 import os
@@ -24,6 +25,7 @@ import yaml
 from apm import __version__
 from apm.core import ops
 from apm.core.config import read_config
+from apm.core.costs import plan_costs, read_costs
 from apm.core.errors import ApmError
 from apm.core.files import CONFIG_FILE, read_body, render_body
 from apm.core.git import git, log
@@ -190,6 +192,31 @@ def commit() -> None:
     """Validate and commit edits you made by hand in .apm/."""
     result = commit_hand_edits(find_project())
     report(result, f"committed {len(result.nodes)} node(s)")
+
+
+@cli(app)
+def costs(as_json: Json = False) -> None:
+    """What agents have cost: the total, per feature, per agent and per day."""
+    project, graph = plan()
+    summary = plan_costs(graph, Store(project.apm_dir), read_costs(project.apm_dir))
+    if as_json:
+        print_json(dataclasses.asdict(summary))
+        return
+    typer.echo(f"Total  ${summary.total:.2f}")
+    sections = {
+        "By feature": {
+            f"{graph.handles[f]} {graph[f].title}": c for f, c in summary.by_feature.items()
+        },
+        "By agent": summary.by_agent,
+        "By day": summary.by_day,
+    }
+    for title, figures in sections.items():
+        typer.echo(f"\n{title}:")
+        width = max((len(name) for name in figures), default=0)
+        for name, cost in figures.items():
+            typer.echo(f"  {name:<{width}}  ${cost:>8.2f}")
+        if not figures:
+            typer.echo("  nothing yet")
 
 
 # --- settings (apm.yaml) ------------------------------------------------------------------------
