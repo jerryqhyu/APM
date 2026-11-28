@@ -490,6 +490,20 @@ class Store:
         by_agent: dict[str, float] = dict(rows)
         return NodeCost(total=sum(by_agent.values()), by_agent=by_agent)
 
+    def cost_breakdown(self) -> tuple[dict[str, float], dict[str, float]]:
+        """Every run's cost, by agent and by local day (YYYY-MM-DD, ascending). A run with no
+        cost yet counts as 0.
+        """
+        with self._db() as db:
+            by_agent = db.execute(
+                "SELECT agent, SUM(COALESCE(cost_usd, 0)) FROM runs GROUP BY agent ORDER BY agent"
+            ).fetchall()
+            by_day = db.execute(
+                "SELECT date(started, 'unixepoch', 'localtime') AS day,"
+                " SUM(COALESCE(cost_usd, 0)) FROM runs GROUP BY day ORDER BY day"
+            ).fetchall()
+        return dict(by_agent), dict(by_day)
+
     def add_event(self, run_id: str, data: dict[str, Any]) -> RunEvent:
         with self._db() as db:
             seq = db.execute(
