@@ -2,101 +2,108 @@
 
 ## What it is and why it exists
 
-This feature gives every task and feature in an APM plan a running cost: a total in USD, split by agent type (implementer, reviewer, critic and so on). When the work merges, that cost is frozen. The feature description states the goal: "Every task and feature has a running cost (total and by agent) that is frozen when its work merges. All agents that work on a node count toward it."
+APM runs several kinds of Claude agents on each node of a plan: the task reviewer, the implementer, the critic, PR reviewers, fixes and retries. Before this feature, each run had a `cost_usd`, but nothing added those costs up by task or feature, and nothing kept a fixed figure once the work was done.
 
-It came out of a conversation on the parent feature, "Cost view and feature budgets" (28c771ed). There the user asked for "each task to come with a singular session that tracks the session cost. When the PR is merged we should crystalize the cost", and the same for features when the feature branch merges. The parent feature's views (`apm costs`, totals per agent and per day) and its budget cap are meant to read from the numbers this feature produces. Those are not part of this branch.
+This feature gives every task and feature a running cost, as a total and split by agent, and freezes that cost when the work merges. The request came from the user while planning the parent feature, "Cost view and feature budgets" (28c771ed):
 
-The feature has two acceptance criteria:
+> "I want each task to come with a singular session that tracks the session cost. When the PR is merged we should crystalize the cost. We should also be tracking ongoing cost of a feature, and when the feature is merged we should crystalize the cost on the feature level."
 
-- A task's cost covers every run on it (reviewer, implementer, critic, PR review, fixes, retries), split by agent.
-- A merged task's or feature's cost no longer changes when later runs happen.
+The feature's two acceptance criteria:
 
-The feature review (turn 1, at `8e31f6c`) found both criteria met on the main path. It also listed four minor gaps, which are described under "Left for later".
+- A task's cost covers every run on it, split by agent.
+- A merged task's or merged feature's cost no longer changes when later runs happen.
+
+This feature only builds the ledger. The views, `apm costs` and the budget cap belong to the parent feature (28c771ed) and will read these numbers. Nothing outside `reconcile.py` calls the new code yet.
 
 ## Decisions
 
-**Every agent's cost counts toward a node, split by agent type.** Claude asked whether a task's "singular session" meant only the implementer's cost, or every agent that works on the task. The user answered: "All cost involved, and if we can breakdown by agent type that would be even better." That answer is why `Store.node_cost` groups by `agent`, and why `live_cost` keeps the per-agent breakdown.
+**Every agent's runs count toward a node's cost, split by agent.** Claude asked whether only the implementer's session should count or every agent's. The user answered: "All cost involved, and if we can breakdown by agent type that would be even better." This is why `Store.node_cost` groups by agent and leaves no run kind out.
 
-**A cost record per task instead of one Claude conversation per task.** The user had asked for "a singular session" per task. Claude's plan replaced that with a cost record per task. Its reason: "Making every agent continue a single conversation would be a much bigger change, and you asked for all costs anyway." The user then asked Claude to start the cost tasks, so this reading went ahead. The user did not otherwise comment on it.
+**Frozen costs live in the `.apm` folder, next to the plan.** Claude offered two places: the plan files, versioned in git, or the local store next to `runs`. The user chose the first: "The cost live in the apm database similar to where we store features and tasks (the .apm folder)." Claude then put frozen costs in `.apm/costs.ndjson`, beside `graph.ndjson`. Live costs are still worked out from the local `apm.db`, which isn't committed. Claude told the user this and offered to keep frozen costs in `apm.db` instead. The user didn't take up that offer.
 
-**Frozen costs live in `.apm`, next to the plan.** Claude asked whether frozen costs should be versioned with the plan files or kept in the local store. The user said: "The cost live in the apm database similar to where we store features and tasks (the .apm folder)." Claude read this as a file next to `.apm/graph.ndjson`, which became `.apm/costs.ndjson`. Live costs are still worked out from the local `apm.db`, which is not committed. Claude said so: "Tell me if you wanted frozen costs in `apm.db` instead." No reply to that is recorded. One gap: neither `costs.py` nor the two freezing tasks commit `costs.ndjson` to the plan repo. The `ddfbfb9b` notes left that choice to the freezing tasks, and they did not make it either (see "Left for later").
+**"One session per task" became one cost record per task, not one shared Claude conversation.** This was Claude's reading, given to the user during planning: making every agent continue one conversation "would be a much bigger change, and you asked for all costs anyway." The user went ahead with the breakdown without objecting.
 
-**Eager builds count toward the feature only.** Claude noted that eager builds run on the feature, not on its tasks, "so their cost counts toward the feature only". It offered to have the split step divide that cost among the tasks, but did not plan it. No response from the user is recorded.
+**Eager builds count toward the feature only.** Claude also pointed this out during planning: eager builds run on the feature node, so their cost isn't divided among the tasks. It offered to have the split step divide it but didn't plan that. The user didn't ask for it.
 
-**Keep tasks small.** The user asked Claude to "be mindful of my task size when you split." The work was split into six tasks. Each task review estimated 10 to 45 real lines against the 50-line limit.
+**Small tasks.** The user asked Claude to "be mindful of my task size when you split." Each of the six tasks came out at about 15–20 lines of source code, against a 50-line limit.
 
-**Merging instead of rebasing for the `7037cbd2` conflict.** The user asked Claude to "rebase fix and push". Claude merged the feature branch into the task branch instead (commit `a6e83f8`), because a rebase would need a force-push, which it is not allowed to do. Claude kept both sides of the conflict.
+**The breakdown itself.** Claude split the work into six tasks during the 2026-11-27 03:30 planning chat, and the user accepted that breakdown. Later the user told Claude to "Build the cost tasks." The record gives no other reasons for how the tasks were sliced.
 
-The design choices inside each task (for example, not freezing tasks that merged without a PR, and not freezing nested features on their own) were made by the agents that built them. They are recorded in the task notes, not decided by the user. They are described below as the agents' choices.
+**Choices made inside tasks.** Implementers and task reviewers made these choices. The user didn't decide them, but they shape the feature:
+
+- **Cumulative cost.** Claude's `total_cost_usd` turned out to be cumulative across a resumed session, so each run keeps only what it added (#61).
+- **Frozen task records name the PR URL; frozen feature records name the branch** (#66, #69).
+- **No PR, no task freeze.** A task found done without a merged PR (a squash found by patch id, or a direct push) is not frozen (#66).
+- **Only top-level features freeze.** Task 7037cbd2 was scoped as "when its branch merges into main". So a nested feature that merges into its parent feature's branch is not frozen on its own; its cost is counted inside its parent's record (#69).
 
 ## How it is put together
 
-There are three layers:
+There are three layers: per-run costs in the local database, live sums over the plan, and frozen records next to the plan.
 
-1. **Per-run cost, in `src/apm/core/store.py`.** `Store.finish_run` receives the `total_cost_usd` that Claude reports. For a resumed session, that figure is the running total of the whole session. So `finish_run` subtracts the costs already stored for earlier runs on the same session (runs with the same `session_id` that started no later than this one). If the reported figure is lower than that sum, it assumes Claude restarted its count and keeps the figure whole.
-2. **Live cost.**
-   - `Store.node_cost(node_id)` returns a `NodeCost(total, by_agent)` for one node's own runs. It is a single `GROUP BY agent` query, and a run with no cost yet counts as 0.
-   - `live_cost(graph, store, frozen, node_id)` in `src/apm/core/costs.py` works out a whole subtree. If the node has a frozen record, it returns that record and stops. Otherwise it adds the node's own runs to the `live_cost` of each direct child. Because the walk only goes through direct children, each node is counted once. A frozen sub-feature counts by its frozen figure.
-3. **Frozen cost, in `src/apm/core/costs.py`.**
-   - Each node's frozen cost is a `CostRecord(node_id, total, by_agent, frozen_at, merged)`. `merged` holds the PR URL or the branch whose merge froze it.
-   - `read_costs` returns every record, or none if the file is missing.
-   - `freeze_cost` takes the `.apm` write lock, refuses a second record for the same node (`CostFrozenError`), and rewrites the file atomically. The file is sorted by node id with keys in a fixed order, like `graph.ndjson`.
+1. **Per-run cost** (`src/apm/core/store.py`, `Store.finish_run`). The runner passes Claude's reported `total_cost_usd` when a run finishes. `finish_run` subtracts the costs already stored for earlier runs of the same session (same `session_id`, started no later than this run). If the reported figure is lower than that sum, it assumes Claude restarted its count and keeps the figure whole.
+2. **A node's own cost** (`Store.node_cost`). One SQL query, `GROUP BY agent` over `runs.node_id`. It returns `NodeCost(total, by_agent)`. Runs with no cost yet count as 0.
+3. **A subtree's cost** (`live_cost` in `src/apm/core/costs.py`). If the node has a frozen record, it returns that record and stops there. Otherwise it adds the node's own runs to the `live_cost` of each direct child. Walking only direct children means every node counts exactly once. A frozen sub-feature counts by its frozen figure, which already includes its subtree. The caller reads the frozen records once and passes them in.
+4. **Frozen records** (`costs.py`: `CostRecord`, `read_costs`, `freeze_cost`). `.apm/costs.ndjson` holds one JSON line per node, sorted by node id, with fields `node_id`, `total`, `by_agent`, `frozen_at` and `merged`. `freeze_cost` takes the `.apm` write lock, refuses a second record for the same node with `CostFrozenError`, and writes the file atomically, as `graph.ndjson` is written. A missing file reads as no records.
+5. **The trigger** (`src/apm/core/reconcile.py`). Reconcile decides which nodes have landed:
+   - **Tasks.** When it marks a task done because its PR merged, `_Judge` sets `merged_pr`. `_freeze_task_cost` then writes the task's `node_cost`, with `merged` set to the PR URL. This covers a PR merged into the home branch, and a PR merged into a stack branch that has since landed there.
+   - **Features.** When it marks a top-level feature's review step done (`graph.feature_of(node_id) is None`), `freeze_feature_cost` writes the feature's `live_cost`, with `merged` set to the feature branch.
+   - **Repeats.** Both helpers return early if a record already exists, so reconciling again never raises an error or rewrites a record.
 
-Freezing is triggered from `reconcile()` in `src/apm/core/reconcile.py`:
-
-- **Tasks.** `_Judge` now remembers `merged_pr` when a merged pull request is the reason a node is done. That covers a PR merged into the home branch, and a PR merged into a stack branch that has since landed there. After `set_status(DONE)`, `_freeze_task_cost` writes the task's `Store.node_cost` with the PR URL. It skips the write if the task already has a record.
-- **Features.** When a feature's review step is marked done and the feature has no enclosing feature (`graph.feature_of(...) is None`), `freeze_feature_cost` writes the feature's `live_cost`, with the feature branch's name in `merged`. It also does nothing if the feature is already frozen.
-
-To sum up the flow: runs write their own cost to `apm.db`; `node_cost` and `live_cost` read it; reconcile turns live figures into frozen records in `.apm/costs.ndjson`; and `live_cost` prefers those frozen records from then on.
+`costs.ndjson` is written but not committed to the plan repo by this code. Task ddfbfb9b left that decision to the freezing tasks, and neither freezing task commits it.
 
 ## The work
 
-**Make each run's cost its own, not the session's (8cf5074e, #61).** This task first found out whether Claude's `total_cost_usd` is cumulative on a resumed session. It is. A resumed run that failed after 384 ms, with no turns, reported $0.4907, the previous run's exact total. `finish_run` now stores only what each run added. The notes call this a heuristic: "a fresh restart that happens to land above the earlier sum would be undercounted." The task also flagged a bug outside its scope: in the runner, a run that succeeds without a structured answer calls `_finish` a second time without `cost_usd`, which sets the stored cost to NULL. That bug is still present (see "Left for later").
+**Store frozen costs in .apm (ddfbfb9b, #60).** Added `src/apm/core/costs.py` with `CostRecord`, `read_costs` and `freeze_cost`, reusing the atomic-write helpers in `core/files.py`. Because `freeze_cost` takes the write lock itself, it must not be called while that lock is already held (for example inside `mutate`). The implementer also created the two feature branches, at main's tip, so this PR had a branch to target.
 
-**Live cost of a task, by agent (480bfe29, #64).** This task added the `NodeCost` dataclass and `Store.node_cost`. A node with no runs gives `total=0, by_agent={}`. An agent whose runs have no cost yet shows as 0.0.
+**Make each run's cost its own, not the session's (8cf5074e, #61).** This task first had to find out whether Claude's `total_cost_usd` is cumulative on a resumed session. It is: a resumed run that failed after 384 ms with 0 turns and 0 tokens reported $0.4907, the previous run's exact total. `Store.finish_run` now stores the reported total minus the earlier runs' stored costs. The implementer called the restart detection a heuristic: "a fresh restart that happens to land above the earlier sum would be undercounted."
 
-**Store frozen costs in .apm (ddfbfb9b, #60).** This task added `src/apm/core/costs.py` with `CostRecord`, `read_costs`, `freeze_cost` and `CostFrozenError`. It reuses `write_file_atomic` and `read_file_if_exists` from `core/files.py`. `freeze_cost` takes the write lock itself, so callers must not already hold it (for example, inside `mutate`). The implementer also created both feature branches from main's tip, so this PR could target this feature's branch.
+**Live cost of a task, by agent (480bfe29, #64).** Added the `NodeCost` dataclass and `Store.node_cost` in `store.py`. Only the node's own runs count. Rolling costs up through the plan is left to the next task.
 
-**Live cost of a feature, by agent (0f5be613, #65).** This task added `live_cost` to `costs.py`. The caller passes in the frozen records, so the file is read once. Review-step children, such as the feature review, count like any other child. The first CI run failed in an unrelated, flaky test (`tests/mcp/test_server.py::test_check_also_checks_apm_yaml`). That test writes a random node handle into `apm.yaml` without quotes, and YAML reads an all-digit handle as a number. Claude reran the job, and it passed. The flaky test itself was not fixed.
+**Live cost of a feature, by agent (0f5be613, #65).** Added `live_cost` to `costs.py`, the recursive walk described above. Feature-review children are counted like any other child. CI failed once on an unrelated flaky test (`tests/mcp/test_server.py::test_check_also_checks_apm_yaml`): a random all-digit node handle is read by YAML as a number. The failed job was rerun and passed.
 
-**Freeze a task's cost when its PR merges (e118395d, #66).** This task added `merged_pr` to `_Judge` and `_freeze_task_cost` to `reconcile.py`. Nothing is frozen for nodes found done through their commits or patch ids (no PR), or for review steps. When the user reported a failing test on this PR, Claude fixed a race in `tests/runner/test_auto_entry_points.py`. The server fixture now waits for the task's review to be saved before the server starts. Otherwise the server's startup scan could see the task as unreviewed and start a review of its own. The race only showed on the slower macOS runner.
+**Freeze a task's cost when its PR merges (e118395d, #66).** Added `merged_pr` to `_Judge` and `_freeze_task_cost` to `reconcile.py`. On request from the user ("a test failed can you fix and push to the pr"), this PR also fixed a race in `tests/runner/test_auto_entry_points.py`, which failed only on macOS. The server fixture now depends on `reviewed`, so the task's review is saved before the server's startup scan can begin a review of its own.
 
-**Freeze a feature's cost when its branch merges into main (7037cbd2, #69).** This task added `freeze_feature_cost`. A nested feature that merges into its outer feature's branch is not frozen on its own, but its cost is included when the outer feature freezes. This PR conflicted with #66 in `reconcile.py` and its tests. Claude resolved it with a merge that keeps both freezes.
+**Freeze a feature's cost when its branch merges into main (7037cbd2, #69).** Added `freeze_feature_cost` and its call in `reconcile`. It conflicted with #66 in the same lines of `reconcile.py` and its tests. The user asked for a rebase. Claude merged the feature branch in instead (commit `a6e83f8`), because a rebase would have needed a force-push, which it isn't allowed to do. Both behaviours and both tests were kept.
 
 ## How it was tested
 
-Each task added tests for its acceptance criteria:
+New tests, all deterministic and offline:
 
-- **`tests/core/test_store.py`**
-  - `test_a_resumed_run_keeps_only_the_cost_it_added`: a fake two-run session reporting $1 and then a cumulative $3 stores $1 and $2.
-  - `test_fresh_runs_keep_the_cost_they_report`
-  - `test_a_node_costs_the_sum_of_its_runs_by_agent`
-  - `test_runs_without_a_cost_yet_count_as_nothing`
-- **`tests/core/test_costs.py`**
-  - The record round-trips all its fields.
-  - A second freeze of the same node is refused.
-  - A missing file reads as no records.
-  - A feature totals its own runs plus a frozen task and a live task.
-  - A sub-feature counts once in its parent.
-- **`tests/core/test_reconcile.py`**
-  - `test_a_merged_pr_freezes_the_tasks_cost_once`: reconciling twice and adding a run after the merge both leave the record unchanged.
-  - `test_a_node_done_without_a_merged_pr_freezes_nothing`
-  - `test_a_feature_whose_branch_merged_into_main_has_its_cost_frozen`
+- **Per-run cost** (`tests/core/test_store.py`):
+  - `test_a_resumed_run_keeps_only_the_cost_it_added`: a $1 run, then a cumulative $3, are stored as $1 and $2.
+  - `test_fresh_runs_keep_the_cost_they_report`.
+- **A node's cost** (`tests/core/test_store.py`):
+  - `test_a_node_costs_the_sum_of_its_runs_by_agent`.
+  - `test_runs_without_a_cost_yet_count_as_nothing`.
+- **Frozen records** (`tests/core/test_costs.py`):
+  - `test_a_frozen_cost_round_trips_every_field`.
+  - `test_freezing_a_node_twice_is_refused`.
+  - `test_a_missing_file_reads_as_no_records`.
+- **Feature roll-up** (`tests/core/test_costs.py`):
+  - `test_a_feature_totals_its_runs_and_its_frozen_and_live_tasks`.
+  - `test_a_sub_feature_counts_once_in_its_parent`.
+- **Freezing in reconcile** (`tests/core/test_reconcile.py`):
+  - `test_a_merged_pr_freezes_the_tasks_cost_once`: covers reconciling twice and a run after the merge.
+  - `test_a_node_done_without_a_merged_pr_freezes_nothing`.
+  - `test_a_feature_whose_branch_merged_into_main_has_its_cost_frozen`.
 
-The task notes report that the full suite (716 to 720 tests), ruff and ty passed. The exception was `test_serve_prints_a_url_that_works`, which fails on the developer's Mac because macOS hid the venv's `apm.pth` file ("No module named apm"). The notes treat that as a local setup problem. The feature review ran the 42 tests in the touched files, and they passed.
+Each PR ran ruff and the full pytest suite (716–720 tests), and the later ones also ran ty. All passed except one test, `test_serve_prints_a_url_that_works`, which fails locally because macOS hid the virtual environment's `apm.pth` file ("No module named apm"). That is a local setup problem, not a code problem. The feature reviewer ran the 42 tests covering these changes, and all passed.
+
+The feature review ran three times, all on commit `8e31f6c`, and found both acceptance criteria met each time. The third run couldn't use git, because the review worktree's `.git` pointed to a path on another machine. It confirmed the code unchanged by reading it.
 
 ## Left for later
 
-- **The cost-wiping bug is still there.** `src/apm/runner/runner.py` line 932 calls `_finish` a second time, without `cost_usd`, when a run succeeds without a structured answer. #61 flagged this and suggested fixing it in 480bfe29 or as a follow-up. That did not happen. The new `finish_run` still writes `cost_usd = NULL` when no cost is passed, so such a run's cost is lost.
-- **A feature done without going through reconcile is not frozen.** When a feature review passes on a branch that is already the feature's home, `src/apm/core/feature_review.py` (around lines 505–521) marks the feature done directly. `freeze_feature_cost` is never called on that path. (Feature review, minor.)
-- **Tasks merged without a PR are not frozen.** A task found done through its commits or patch ids keeps a live cost for good. This was intended in e118395d. (Feature review, minor.)
-- **Nested features are not frozen on their own.** A nested feature that merges into its parent's branch has no record of its own until the outer feature freezes. Tasks, by contrast, freeze when they merge into a feature branch. 7037cbd2 chose this on purpose. (Feature review, minor.)
-- **`costs.ndjson` is neither committed nor git-ignored.** It is written into `.apm`, but it is not added to `.apm/.gitignore`, so it sits as an untracked file in the plan repo. That contradicts the stated intent of keeping frozen costs next to the versioned plan. (Feature review, minor.)
-- **The restart heuristic can undercount.** If Claude restarts its count within a session and the new figure lands above the earlier runs' sum, `finish_run` undercounts that run (noted in #61).
-- **Eager-build cost is not shared out.** It is not divided among a feature's tasks. Claude offered this, but it was not planned.
-- **Two unrelated test fixes are still open.** Quoting the handle in the flaky `tests/mcp/test_server.py::test_check_also_checks_apm_yaml` was suggested as a separate small task. The macOS `apm.pth` problem is a local environment issue.
-- **The views and budget cap come later.** `apm costs`, the per-day totals and the budget cap belong to the parent feature (28c771ed) and will build on this ledger.
+The feature review raised these as minor issues. None of them was fixed, and no follow-up tasks were proposed.
+
+- **Tasks that land without a merged PR are never frozen.** This covers a squash found by patch id and a direct push. Their cost keeps changing if more runs happen. This was deliberate in #66, and a test checks it.
+- **Nested features are never frozen on their own.** A feature whose branch merges into its parent feature's branch stays live until the outer feature freezes. This follows task 7037cbd2's "into main" wording, but the feature's own intent says a cost freezes "when its work merges". The record and the code differ here.
+- **Features finished in `feature_review.conclude`'s `landed` path aren't frozen.** When a feature review passes on a branch that is already the feature's destination, `src/apm/core/feature_review.py` (about lines 505–521) marks the feature done without calling `freeze_feature_cost`. The reviewer called this the easiest gap to close.
+- **Eager-build and splitter runs are counted on the feature, not its tasks.** The feature's total is right, but the tasks' own costs leave the build out. This was flagged during planning and left as is.
+- **A run's cost can still be wiped.** #61 noted that in `Runner._execute`, a run that succeeds without a structured answer calls `_finish` a second time without `cost_usd`, and this sets the run's stored cost to NULL. The note suggested fixing it in 480bfe29 or as a follow-up. In the code on this branch it is still not fixed: `src/apm/runner/runner.py` line 932 makes that second call, and `finish_run` writes `cost_usd = NULL` when no cost is passed.
+- **`costs.ndjson` is not committed to the plan repo.** It is written next to `graph.ndjson`, but nothing here commits it. ddfbfb9b left that to the freezing tasks, and neither did it.
+- **The restart heuristic can undercount.** In `finish_run`, a Claude restart whose new count happens to exceed the earlier runs' sum would be undercounted (#61).
+- **A flaky test remains outside this feature.** `tests/mcp/test_server.py::test_check_also_checks_apm_yaml` fails on all-digit handles. The suggested fix is to quote the handle in that test, as a separate small task.
 
 ---
 
-_Written by APM's feature reporter from the plan's record of feature `7f58de16`, at standard detail, on 2026-11-27._
+_Written by APM's feature reporter from the plan's record of feature `7f58de16`, at standard detail, on 2026-11-28._
