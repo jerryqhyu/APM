@@ -511,6 +511,7 @@ features:                    # how features are built and reported (see below)
 | `task_max_lines` | `50` | The task size limit, in real lines of code (see [Task review](#task-review-keeping-tasks-small)). At least 5. |
 | `report` | `true` | Write a feature report once a feature's review passes: what it is, the decisions made and why, and how it was built (see [Feature reports](#feature-reports)). Off, you can still write one with **Write report**. |
 | `report_detail` | `standard` | How much that report says: `brief`, `standard` or `detailed`. |
+| `budget_usd` | `null` | The most a feature may spend, in US dollars, before automation stops starting runs for it. Unset, nothing is capped. Not the per-run cap, `runner.default_budget_usd`. |
 
 **A feature's own settings.** Under `overrides:`, by the feature's id, a feature can set any of these for itself and everything inside it. A feature inside it can override them again: the innermost one wins. In the UI, select a feature and open **Details**: its **Settings** show what applies, where each value comes from (the project, an enclosing feature, or set here), and let you pick a value of its own or **Inherit**. **Inherit all** removes its own settings.
 

@@ -182,6 +182,7 @@ features:                    # how features are built and reported (§7.8)
   task_max_lines: 50         # the task size limit a task review applies, in real lines
   report: true               # write a feature report when its feature review passes
   report_detail: standard    # brief | standard | detailed
+  budget_usd: null           # a feature's spend cap in USD before automation stops; null = none
   overrides:                 # per feature, by node id (a handle typed by hand works too)
     0192f0c1-8a2b-7c3d-9e4f-1c0b9a44d2e7: { eager: true, report_detail: detailed }
 ```

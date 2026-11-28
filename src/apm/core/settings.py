@@ -29,8 +29,14 @@ from apm.core.model import NodeId
 from apm.core.mutate import OpError, write_and_commit
 from apm.core.project import Project, load_graph
 
-type SettingName = Literal["eager", "task_max_lines", "report", "report_detail"]
-SETTINGS: tuple[SettingName, ...] = ("eager", "task_max_lines", "report", "report_detail")
+type SettingName = Literal["eager", "task_max_lines", "report", "report_detail", "budget_usd"]
+SETTINGS: tuple[SettingName, ...] = (
+    "eager",
+    "task_max_lines",
+    "report",
+    "report_detail",
+    "budget_usd",
+)
 """What `features:` sets, project-wide or per feature."""
 AUTOMATION: tuple[str, ...] = tuple(AutomationConfig.model_fields)
 
@@ -47,6 +53,8 @@ class FeatureSettings:
     """Write a feature report once its feature review passes."""
     report_detail: ReportDetail
     """How much that report says: brief, standard or detailed."""
+    budget_usd: float | None = None
+    """The most the feature may spend before automation stops starting runs for it; None: no cap."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -261,6 +269,7 @@ _SAID: dict[str, str] = {
     "task_max_lines": "task size limit",
     "report": "feature report",
     "report_detail": "report detail",
+    "budget_usd": "budget",
 }
 
 
@@ -274,6 +283,8 @@ def _describe(values: Mapping[str, Scalar | None], *, unset: str) -> list[str]:
             out.append(f"{_SAID[name]} {'on' if value else 'off'}")
         elif name == "task_max_lines":
             out.append(f"{_SAID[name]} {value} lines")
+        elif name == "budget_usd" and isinstance(value, int | float):
+            out.append(f"{_SAID[name]} ${value:g}")
         else:
             out.append(f"{_SAID[name]} {value}")
     return out

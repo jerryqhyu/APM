@@ -28,6 +28,7 @@ DEFAULT_FEATURES = {
     "task_max_lines": 50,
     "report": True,
     "report_detail": "standard",
+    "budget_usd": None,
     "overrides": {},
 }
 
@@ -96,6 +97,7 @@ def test_reads_feature_defaults_and_overrides() -> None:
         "task_max_lines": 80,
         "report": True,
         "report_detail": "brief",
+        "budget_usd": None,
     }
     overrides = {k: v.model_dump(exclude_none=True) for k, v in config.features.overrides.items()}
     # An override with nothing in it is no override, like any other empty key.
