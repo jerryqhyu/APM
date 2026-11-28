@@ -156,7 +156,7 @@ def build_server(project: Project | None = None, env: Mapping[str, str] | None =
             str | None, Field(description="Handle or id. Omit for the node you were started on.")
         ] = None,
     ) -> str:
-        """One node in full: state, parent, children, dependencies, delivery and body."""
+        """One node in full: state, parent, children, dependencies, delivery, cost and body."""
         found, graph = plan()
         node = node or focus
         if not node:

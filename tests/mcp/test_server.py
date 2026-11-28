@@ -96,6 +96,7 @@ def test_read_tools(plan: tuple[Project, str, str, str]) -> None:
     assert shown.splitlines()[0] == f"{second} [work/todo·blocked] Second → {first}"
     assert f"parent: {parent} [work/todo·ready] Parent (0/3)" in shown
     assert f"waiting on: {first} [work/todo·ready] First" in shown
+    assert "cost: $0.00 live" in shown
     assert "## Intent" in shown
     assert session.call("apm_ready") == f"{first} [work/todo·ready] First"
     assert session.call("apm_ready", root=second) == "(nothing is ready)"

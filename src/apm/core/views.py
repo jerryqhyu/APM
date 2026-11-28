@@ -6,6 +6,7 @@ import re
 from dataclasses import asdict, dataclass
 from typing import Any
 
+from apm.core.costs import cost_line, node_cost_view
 from apm.core.files import read_body
 from apm.core.git import log
 from apm.core.graph import Graph
@@ -90,7 +91,7 @@ def outline(graph: Graph, root: NodeId | None = None, depth: int | None = None) 
 
 
 def node_text(project: Project, graph: Graph, node_id: NodeId) -> str:
-    """One node in full: its line, id, links, delivery and body."""
+    """One node in full: its line, id, links, delivery, cost and body."""
     node = graph[node_id]
     lines = [node_line(graph, node_id), f"id: {node_id}"]
     if node.tags:
@@ -107,6 +108,7 @@ def node_text(project: Project, graph: Graph, node_id: NodeId) -> str:
     if (d := node.delivery) is not None:
         parts = [d.repo, d.branch or "", d.pr or "", f"{len(d.commits)} commit(s)"]
         lines.append("delivery: " + " · ".join(p for p in parts if p))
+    lines.append(cost_line(node_cost_view(project.apm_dir, graph, node_id)))
     body = read_body(project.apm_dir, node_id).strip()
     return "\n".join(lines) + ("\n\n" + body if body else "\n\n(no body)")
 

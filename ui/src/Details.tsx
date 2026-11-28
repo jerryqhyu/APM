@@ -1,7 +1,7 @@
 // The details page: everything about the node you picked, or a summary of the plan when you
 // haven't picked one.
 
-import { useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import { FeatureReportSection } from "./FeatureReport";
 import { EagerSection, eagerFeature } from "./Eager";
 import { Markdown, withoutEmptySections } from "./Markdown";
@@ -20,7 +20,7 @@ import type {
   Status,
 } from "./types";
 import { Empty, StatePill } from "./ui";
-import { STATUS_LABEL, cx, proposalSummary, stackedName, stateOf, timeAgo } from "./util";
+import { AGENT_LABEL, STATUS_LABEL, cx, money, proposalSummary, stackedName, stateOf, timeAgo } from "./util";
 
 export interface DetailActions {
   patch: (change: { title?: string; kind?: Kind; status?: Status; body?: string; tags?: string[] }) => Promise<void>;
@@ -187,6 +187,22 @@ export function NodeDetails({ detail, nodes, actions }: { detail: NodeDetail; no
           </dl>
         </section>
       )}
+      <section>
+        <h3>Cost</h3>
+        <dl className="delivery">
+          <dt>{detail.cost.frozen ? "Frozen" : "Running"}</dt>
+          <dd>
+            {money(detail.cost.total)}
+            {detail.cost.merged && <> at the merge of <code>{detail.cost.merged}</code></>}
+          </dd>
+          {Object.entries(detail.cost.by_agent).map(([agent, usd]) => (
+            <Fragment key={agent}>
+              <dt>{AGENT_LABEL[agent] ?? agent}</dt>
+              <dd>{money(usd)}</dd>
+            </Fragment>
+          ))}
+        </dl>
+      </section>
       <section>
         <h3>History</h3>
         <ul className="history">
