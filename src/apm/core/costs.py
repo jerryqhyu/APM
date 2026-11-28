@@ -10,11 +10,13 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
+from apm.core.config import ApmConfig
 from apm.core.errors import ApmError
 from apm.core.files import read_file_if_exists, write_file_atomic
 from apm.core.graph import Graph
 from apm.core.lock import acquire_write_lock
 from apm.core.model import NodeId
+from apm.core.settings import resolve_settings
 from apm.core.store import NodeCost, Store
 
 COSTS_FILE = "costs.ndjson"
@@ -71,6 +73,23 @@ def live_cost(
         for agent, cost in live_cost(graph, store, frozen, child).by_agent.items():
             by_agent[agent] = by_agent.get(agent, 0.0) + cost
     return NodeCost(total=sum(by_agent.values()), by_agent=dict(sorted(by_agent.items())))
+
+
+def over_budget(
+    config: ApmConfig,
+    graph: Graph,
+    store: Store,
+    frozen: Mapping[NodeId, CostRecord],
+    node_id: NodeId,
+) -> tuple[NodeId, float] | None:
+    """The feature whose budget `node_id` falls under, and that budget, if its live cost has
+    reached it. The project's default budget applies to the node's top-level feature.
+    """
+    resolved = resolve_settings(config, graph, node_id)
+    if (budget := resolved.settings.budget_usd) is None:
+        return None
+    owner = resolved.sources["budget_usd"] or [node_id, *graph.ancestors(node_id)][-1]
+    return (owner, budget) if live_cost(graph, store, frozen, owner).total >= budget else None
 
 
 @dataclass(frozen=True, slots=True)
