@@ -22,6 +22,7 @@ from apm.core import ops
 from apm.core.archive import SUFFIX, export_archive
 from apm.core.config import ApmConfig, read_config
 from apm.core.config_edit import Scalar
+from apm.core.costs import plan_costs, read_costs
 from apm.core.eager import eager_view
 from apm.core.errors import ApmError
 from apm.core.files import read_body, render_body
@@ -518,6 +519,21 @@ def create_app(
         return asdict(await runner.eager.redo(node_id, body.message, mode=body.mode))
 
     # --- runs: one turn of an agent ---
+
+    @app.get("/api/costs")
+    def get_costs() -> dict[str, Any]:
+        """The whole plan's cost: the total, per feature (most costly first), per agent, per day."""
+        graph = load_graph(project)
+        costs = plan_costs(graph, store, read_costs(project.apm_dir))
+        return {
+            "total": costs.total,
+            "by_feature": [
+                {"id": f, "handle": graph.handles[f], "title": graph[f].title, "total": total}
+                for f, total in costs.by_feature.items()
+            ],
+            "by_agent": costs.by_agent,
+            "by_day": [{"day": day, "total": total} for day, total in costs.by_day.items()],
+        }
 
     @app.get("/api/runs")
     def list_runs(
