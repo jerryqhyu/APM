@@ -363,7 +363,7 @@ export function App() {
   if (fatal === "token") {
     return (
       <div className="splash">
-        <Logo height={64} />
+        <Logo height={46} />
         <h1>This page needs its access link</h1>
         <p>
           Open the full address that <code>apm serve</code> printed in your terminal. It ends in <code>?token=…</code>,
@@ -375,7 +375,7 @@ export function App() {
   if (!project || !tree || !level) {
     return (
       <div className="splash">
-        <Logo height={64} />
+        <Logo height={46} />
         <span>
           <Spinner /> Loading the plan…
         </span>
@@ -409,7 +409,7 @@ export function App() {
           <SidebarIcon open={outline === "shown"} />
         </button>
         <div className="brand" title={project.code_dir}>
-          <Logo height={30} />
+          <Logo height={22} />
           {/* The project's own name, unless it is APM itself. */}
           {project.name.trim().toLowerCase() !== "apm" && <span className="project-name">{project.name}</span>}
         </div>

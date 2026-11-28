@@ -142,15 +142,12 @@ def logo(word: str, white: str = WHITE) -> str:
     return f'{bars}<path fill="{word}" fill-rule="evenodd" d="{WORD_D}"/>'
 
 
-def badge(*, light: bool = False) -> str:
-    """The logo on a plate: navy with white letters, or (`light`) white with black letters, where
-    the white stripe is the plate itself showing between red and blue.
-    """
+def badge() -> str:
+    """The logo on a navy plate: for where it has to stand out."""
     pad = 26
     w, h = LOGO_W + 2 * pad, H + 2 * pad
-    fill, body = (PAPER, logo(BLACK, PAPER)) if light else (NAVY, logo(WHITE))
-    plate = f'<rect width="{w:.2f}" height="{h}" rx="{pad * 0.9:.1f}" fill="{fill}"/>'
-    return svg(w, h, f'{plate}<g transform="translate({pad},{pad})">{body}</g>')
+    plate = f'<rect width="{w:.2f}" height="{h}" rx="{pad * 0.9:.1f}" fill="{NAVY}"/>'
+    return svg(w, h, f'{plate}<g transform="translate({pad},{pad})">{logo(WHITE)}</g>')
 
 
 ICON_LENGTH = 70
@@ -231,7 +228,6 @@ def write() -> list[Path]:
         HERE / "apm-logo-on-dark.svg": svg(LOGO_W, H, logo(WHITE)),
         HERE / "apm-logo-on-light.svg": svg(LOGO_W, H, logo(BLACK, PAPER)),
         HERE / "apm-logo-badge-navy.svg": badge(),
-        HERE / "apm-logo-badge-white.svg": badge(light=True),
         HERE / "apm-wordmark-white.svg": svg(
             WORD_ONLY_W, H, f'<path fill="{WHITE}" fill-rule="evenodd" d="{WORD_ONLY_D}"/>'
         ),

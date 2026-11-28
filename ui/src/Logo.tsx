@@ -1,24 +1,18 @@
 // APM's logo, drawn inline from the shapes docs/brand/build.py writes into brand.ts, so it follows
-// the theme: white letters in the dark; in the light, black letters on a white plate, where the
-// white stripe is the plate itself showing between red and blue.
+// the theme: on no background, with white letters in the dark and black letters in the light.
 
 import { LOGO } from "./brand";
 
-const PAD = 22;
-
-export function Logo({ height = 28 }: { height?: number }) {
-  const width = LOGO.width + 2 * PAD;
-  const tall = LOGO.height + 2 * PAD;
+export function Logo({ height = 22 }: { height?: number }) {
   return (
     <svg
       className="apm-logo"
-      viewBox={`${-PAD} ${-PAD} ${width} ${tall}`}
+      viewBox={`0 0 ${LOGO.width} ${LOGO.height}`}
       height={height}
-      width={(height * width) / tall}
+      width={(height * LOGO.width) / LOGO.height}
       role="img"
       aria-label="APM"
     >
-      <rect className="apm-logo-plate" x={-PAD} y={-PAD} width={width} height={tall} rx={PAD * 0.9} />
       {LOGO.stripes.map((stripe) => (
         <path
           key={stripe.fill}

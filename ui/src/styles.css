@@ -10,8 +10,7 @@
   --canvas: light-dark(#f6f8fa, #111111);
   /* Around the panels: the window itself. */
   --chrome: light-dark(#e4e7eb, #000000);
-  /* The logo: white letters in the dark; black on a white plate in the light (src/Logo.tsx). */
-  --logo-plate: light-dark(#ffffff, transparent);
+  /* The logo, on no background: white letters in the dark, black in the light (src/Logo.tsx). */
   --logo-word: light-dark(#111318, #f5f1e8);
   --logo-white: light-dark(#ffffff, #f5f1e8);
   --panel-radius: 12px;
@@ -587,14 +586,10 @@ body.resizing {
   font-size: 15px;
 }
 
-/* The logo: on a white plate where the page is light, so its white stripe reads as the white between red and blue. */
+/* The logo has no background: only its letters change colour with the theme. */
 .apm-logo {
   display: block;
   flex: none;
-}
-
-.apm-logo-plate {
-  fill: var(--logo-plate);
 }
 
 .apm-logo-word {
