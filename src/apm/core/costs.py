@@ -73,6 +73,30 @@ def live_cost(
     return NodeCost(total=sum(by_agent.values()), by_agent=dict(sorted(by_agent.items())))
 
 
+@dataclass(frozen=True, slots=True)
+class PlanCosts:
+    total: float
+    """USD: every run's cost, live."""
+    by_feature: dict[NodeId, float]
+    """Each feature's `live_cost` total, most costly first."""
+    by_agent: dict[str, float]
+    by_day: dict[str, float]
+    """By local day (YYYY-MM-DD), ascending."""
+
+
+def plan_costs(graph: Graph, store: Store, frozen: Mapping[NodeId, CostRecord]) -> PlanCosts:
+    """The whole plan's cost: the total, per feature, per agent and per day."""
+    by_agent, by_day = store.cost_breakdown()
+    features = {f for n in graph.nodes if (f := graph.feature_of(n)) is not None}
+    by_feature = {f: live_cost(graph, store, frozen, f).total for f in sorted(features)}
+    return PlanCosts(
+        total=sum(by_agent.values()),
+        by_feature=dict(sorted(by_feature.items(), key=lambda kv: -kv[1])),
+        by_agent=by_agent,
+        by_day=by_day,
+    )
+
+
 def _line(r: CostRecord) -> str:
     fields = {
         "node_id": r.node_id,

@@ -8,15 +8,17 @@ from apm.core.costs import (
     costs_path,
     freeze_cost,
     live_cost,
+    plan_costs,
     read_costs,
 )
 from apm.core.graph import Graph
+from apm.core.model import Kind
 from apm.core.store import NodeCost, Store
 from tests.core.build import make_id, node
 
 A = "0192f3a1-7c4e-7b91-a2d5-3f8e1c0b9a44"
 B = "0192f3a1-7c4e-7b91-a2d5-3f8e1c0b9a45"
-F, T1, T2, S, T3 = (make_id(n) for n in range(1, 6))
+F, T1, T2, S, T3, R, G, U = (make_id(n) for n in range(1, 9))
 
 
 def record(node_id: str = A, total: float = 1.25) -> CostRecord:
@@ -94,3 +96,42 @@ def test_a_sub_feature_counts_once_in_its_parent(tmp_path: Path) -> None:
     assert whole == 1.0 + 2.0 + 100.0 + 0.75 + sub.total
     frozen_sub = CostRecord(S, 7.0, {"apm-implementer": 7.0}, "2026-11-27T12:00:00+00:00", "b")
     assert live_cost(graph, store, {S: frozen_sub}, F).total == whole - sub.total + 7.0
+
+
+def test_the_plan_cost_totals_every_run_and_splits_by_feature_agent_and_day(
+    tmp_path: Path,
+) -> None:
+    # Two features: F (review step R) > T1, T2; G (review step U) > T3. Plus a run with no cost.
+    graph = Graph(
+        [node(F), node(T1, F), node(T2, F), node(R, F, kind=Kind.REVIEW),
+         node(G), node(T3, G), node(U, G, kind=Kind.REVIEW)]
+    )  # fmt: skip
+    store = Store(tmp_path)
+    day1, day2 = 1_790_000_000.0, 1_790_000_000.0 + 86_400
+    runs = [
+        (F, "apm-feature-reviewer", 1.0, day1),
+        (T1, "apm-implementer", 2.5, day1),
+        (T2, "apm-implementer", 0.5, day2),
+        (T3, "apm-critic", 4.0, day2),
+        (T3, "apm-critic", None, day2),
+    ]
+    for node_id, agent, cost, started in runs:
+        run = store.create_run(node_id=node_id, agent=agent)
+        store.finish_run(run.id, "succeeded", cost_usd=cost)
+        with store._db() as db:
+            db.execute("UPDATE runs SET started = ? WHERE id = ?", (started, run.id))
+    frozen = {T1: record(T1)}  # 1.25 instead of T1's live 2.5
+    costs = plan_costs(graph, store, frozen)
+    assert costs.total == 8.0
+    assert costs.by_agent == {
+        "apm-critic": 4.0,
+        "apm-feature-reviewer": 1.0,
+        "apm-implementer": 3.0,
+    }
+    assert list(costs.by_day.values()) == [3.5, 4.5]
+    assert list(costs.by_day) == sorted(costs.by_day)
+    assert sum(costs.by_day.values()) == sum(costs.by_agent.values()) == costs.total
+    assert costs.by_feature == {G: 4.0, F: 2.75}
+    assert list(costs.by_feature) == [G, F]
+    for feature in (F, G):
+        assert costs.by_feature[feature] == live_cost(graph, store, frozen, feature).total
