@@ -82,3 +82,29 @@ def _line(r: CostRecord) -> str:
         "merged": r.merged,
     }
     return json.dumps(fields, ensure_ascii=False) + "\n"
+
+
+@dataclass(frozen=True, slots=True)
+class CostView:
+    """What a node has cost, for its details: frozen with the merge that froze it, or live."""
+
+    total: float
+    by_agent: dict[str, float]
+    frozen: bool
+    merged: str | None
+    """The pull request URL or branch whose merge froze it; None while live."""
+
+
+def node_cost_view(apm_dir: Path, graph: Graph, node_id: NodeId) -> CostView:
+    frozen = read_costs(apm_dir)
+    if (record := frozen.get(node_id)) is not None:
+        return CostView(record.total, dict(record.by_agent), True, record.merged)
+    cost = live_cost(graph, Store(apm_dir), frozen, node_id)
+    return CostView(cost.total, cost.by_agent, False, None)
+
+
+def cost_line(cost: CostView) -> str:
+    """`cost: $1.20 frozen (merged <pr>) · implementer $1.00, reviewer $0.20`."""
+    state = f"frozen (merged {cost.merged})" if cost.frozen else "live"
+    agents = ", ".join(f"{agent} ${usd:.2f}" for agent, usd in cost.by_agent.items())
+    return f"cost: ${cost.total:.2f} {state}" + (f" · {agents}" if agents else "")

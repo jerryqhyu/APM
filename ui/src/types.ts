@@ -168,6 +168,8 @@ export interface NodeDetail extends NodeView {
   settings: NodeSettings;
   /** A feature's eager build, or a task's place in one; null when eager mode doesn't apply. */
   eager: EagerFeature | EagerTaskInfo | null;
+  /** What its runs have cost, its children's included; frozen once its work merged. */
+  cost: { total: number; by_agent: Record<string, number>; frozen: boolean; merged: string | null };
 }
 
 // --- eager mode (src/apm/core/eager.py) ---

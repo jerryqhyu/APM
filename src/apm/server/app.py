@@ -22,6 +22,7 @@ from apm.core import ops
 from apm.core.archive import SUFFIX, export_archive
 from apm.core.config import ApmConfig, read_config
 from apm.core.config_edit import Scalar
+from apm.core.costs import node_cost_view
 from apm.core.eager import eager_view
 from apm.core.errors import ApmError
 from apm.core.files import read_body, render_body
@@ -263,6 +264,7 @@ def create_app(
             ],
             "settings": node_settings(config, graph, node_id),
             "eager": eager_view(store, config, graph, node_id),
+            "cost": asdict(node_cost_view(project.apm_dir, graph, node_id)),
         }
 
     def batch_view(graph: Graph, batch: Batch) -> dict[str, Any]:

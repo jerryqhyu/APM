@@ -5,9 +5,12 @@ import pytest
 from apm.core.costs import (
     CostFrozenError,
     CostRecord,
+    CostView,
+    cost_line,
     costs_path,
     freeze_cost,
     live_cost,
+    node_cost_view,
     read_costs,
 )
 from apm.core.graph import Graph
@@ -94,3 +97,29 @@ def test_a_sub_feature_counts_once_in_its_parent(tmp_path: Path) -> None:
     assert whole == 1.0 + 2.0 + 100.0 + 0.75 + sub.total
     frozen_sub = CostRecord(S, 7.0, {"apm-implementer": 7.0}, "2026-11-27T12:00:00+00:00", "b")
     assert live_cost(graph, store, {S: frozen_sub}, F).total == whole - sub.total + 7.0
+
+
+def test_a_frozen_task_shows_its_frozen_total_and_the_merge_it_came_from(tmp_path: Path) -> None:
+    graph, _ = _graph_and_store(tmp_path)
+    freeze_cost(tmp_path, record(T1))
+    view = node_cost_view(tmp_path, graph, T1)
+    assert view == CostView(
+        1.25,
+        {"apm-implementer": 1.0, "apm-task-reviewer": 0.25},
+        frozen=True,
+        merged="https://github.com/o/r/pull/7",
+    )
+    assert cost_line(view) == (
+        "cost: $1.25 frozen (merged https://github.com/o/r/pull/7)"
+        " · apm-implementer $1.00, apm-task-reviewer $0.25"
+    )
+
+
+def test_a_live_feature_shows_its_running_total_by_agent(tmp_path: Path) -> None:
+    graph, _ = _graph_and_store(tmp_path)
+    view = node_cost_view(tmp_path, graph, S)
+    assert view == CostView(
+        4.125, {"apm-feature-reporter": 0.125, "apm-implementer": 4.0}, frozen=False, merged=None
+    )
+    assert cost_line(view) == "cost: $4.12 live · apm-feature-reporter $0.12, apm-implementer $4.00"
+    assert cost_line(node_cost_view(tmp_path, Graph([node(A)]), A)) == "cost: $0.00 live"

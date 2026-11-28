@@ -600,6 +600,20 @@ def test_a_task_under_review_is_refused_with_409(client: TestClient, project: Pr
     assert client.patch(f"/api/nodes/{node}", json={"status": "in_progress"}).status_code == 200
 
 
+def test_node_detail_reports_the_cost(client: TestClient, project: Project) -> None:
+    node = client.post("/api/nodes", json={"title": "Task"}).json()["id"]
+    store = Store(project.apm_dir)
+    run = store.create_run(node_id=node, agent="apm-implementer")
+    store.finish_run(run.id, "succeeded", cost_usd=0.5)
+    cost = client.get(f"/api/nodes/{node}").json()["cost"]
+    assert cost == {
+        "total": 0.5,
+        "by_agent": {"apm-implementer": 0.5},
+        "frozen": False,
+        "merged": None,
+    }
+
+
 def test_node_detail_reports_the_task_review(client: TestClient, project: Project) -> None:
     node = client.post("/api/nodes", json={"title": "Task"}).json()["id"]
     detail = client.get(f"/api/nodes/{node}").json()
