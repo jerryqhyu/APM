@@ -146,6 +146,16 @@ class Run:
 
 
 @dataclass(frozen=True, slots=True)
+class NodeCost:
+    """What the runs on one node have cost so far."""
+
+    total: float
+    """USD."""
+    by_agent: dict[str, float]
+    """USD per agent type; they add up to `total`."""
+
+
+@dataclass(frozen=True, slots=True)
 class RunEvent:
     seq: int
     ts: float
@@ -427,11 +437,26 @@ class Store:
         error: str | None = None,
         session_id: str | None = None,
     ) -> Run:
-        self._update(
-            "UPDATE runs SET status = ?, ended = ?, cost_usd = ?, error = ?,"
-            " session_id = COALESCE(?, session_id) WHERE id = ?",
-            (status, time.time(), cost_usd, error, session_id, run_id),
-        )
+        """`cost_usd` is the `total_cost_usd` claude reported. On a resumed session that is the
+        whole session's total so far (a resumed run that failed at once reports the last run's
+        total unchanged), so the run keeps only what it added to the earlier runs' costs.
+        """
+        with self._db() as db:
+            db.execute(
+                "UPDATE runs SET status = ?, ended = ?, error = ?,"
+                " session_id = COALESCE(?, session_id) WHERE id = ?",
+                (status, time.time(), error, session_id, run_id),
+            )
+            if cost_usd is not None:
+                earlier = db.execute(
+                    "SELECT COALESCE(SUM(r.cost_usd), 0) FROM runs r JOIN runs me ON me.id = ?"
+                    " WHERE r.session_id = me.session_id AND r.id != me.id"
+                    " AND r.started <= me.started",
+                    (run_id,),
+                ).fetchone()[0]
+                # Less than before: claude started the count afresh, so it is all this run's.
+                cost_usd = cost_usd - earlier if cost_usd >= earlier else cost_usd
+            db.execute("UPDATE runs SET cost_usd = ? WHERE id = ?", (cost_usd, run_id))
         return self.get_run(run_id)
 
     def set_prompt(self, run_id: str, prompt: str) -> Run:
@@ -453,6 +478,17 @@ class Store:
         """Newest first."""
         where, params = _where(node_id=node_id, status=status)
         return self._select(Run, f"{where} ORDER BY started DESC LIMIT ?", (*params, limit))
+
+    def node_cost(self, node_id: NodeId) -> NodeCost:
+        """The node's own runs' costs, by agent. A run with no cost yet counts as 0."""
+        with self._db() as db:
+            rows = db.execute(
+                "SELECT agent, COALESCE(SUM(cost_usd), 0) FROM runs WHERE node_id = ?"
+                " GROUP BY agent ORDER BY agent",
+                (node_id,),
+            ).fetchall()
+        by_agent: dict[str, float] = dict(rows)
+        return NodeCost(total=sum(by_agent.values()), by_agent=by_agent)
 
     def add_event(self, run_id: str, data: dict[str, Any]) -> RunEvent:
         with self._db() as db:
