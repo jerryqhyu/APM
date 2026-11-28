@@ -5,6 +5,7 @@ import type {
   Batch,
   FeatureSettings,
   NodeSettings,
+  PlanCosts,
   ProjectSettings,
   ReportStatus,
   Run,
@@ -115,6 +116,11 @@ export function query(params: Record<string, string | boolean | null | undefined
 
 export function getSettings(): Promise<ProjectSettings> {
   return api<ProjectSettings>("/api/settings");
+}
+
+/** The whole plan's cost: the total, per feature, per agent and per day. */
+export function getCosts(): Promise<PlanCosts> {
+  return api<PlanCosts>("/api/costs");
 }
 
 /** Changes the project's settings in apm.yaml, keeping its comments. A bad value is refused. */

@@ -279,6 +279,15 @@ export interface ProjectSettings {
   problems: string[];
 }
 
+/** The whole plan's cost in USD, from GET /api/costs. Features come most costly first. */
+export interface PlanCosts {
+  total: number;
+  by_feature: { id: string; handle: string; title: string; total: number }[];
+  by_agent: Record<string, number>;
+  /** By local day (YYYY-MM-DD), ascending. */
+  by_day: { day: string; total: number }[];
+}
+
 /** A change to settings: null puts one back to its default, or (for a feature) inherits it again. */
 export type SettingsChange<T> = { [K in keyof T]?: T[K] | null };
 
