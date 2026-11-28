@@ -57,6 +57,7 @@ def test_project_settings_are_read_and_changed(client: TestClient, project: Proj
         "task_max_lines": 50,
         "report": True,
         "report_detail": "standard",
+        "budget_usd": None,
     }
     assert settings["automation"]["eager_redo"] is True
     assert settings["defaults"]["features"]["task_max_lines"] == 50
@@ -100,8 +101,11 @@ def test_a_features_own_settings_are_shown_set_and_cleared(
             "task_max_lines": 50,
             "report": True,
             "report_detail": "standard",
+            "budget_usd": None,
         },
-        "sources": dict.fromkeys(("eager", "task_max_lines", "report", "report_detail")),
+        "sources": dict.fromkeys(
+            ("eager", "task_max_lines", "report", "report_detail", "budget_usd")
+        ),
     }
     assert detail["settings"] == {**defaults, "own": {}, "inherited": defaults}
 
