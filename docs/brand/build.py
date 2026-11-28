@@ -22,6 +22,8 @@ PUBLIC = ROOT / "ui" / "public"
 
 NAVY = "#13203d"
 WHITE = "#f5f1e8"
+BLACK = "#111318"
+PAPER = "#ffffff"
 RED = "#e23b2e"
 BLUE = "#2763d1"
 STRIPES = (RED, WHITE, BLUE)
@@ -132,17 +134,23 @@ def _stripes_svg(x0: float = 0, length: float = STRIPE_LENGTH) -> str:
     return "".join(f'<path d="{d}" fill="{c}"/>' for d, c in stripes(x0, length))
 
 
-def logo(word: str) -> str:
-    """Stripes and wordmark, `LOGO_W` wide and `H` tall, on nothing."""
-    return f'{_stripes_svg()}<path fill="{word}" fill-rule="evenodd" d="{WORD_D}"/>'
+def logo(word: str, white: str = WHITE) -> str:
+    """Stripes and wordmark, `LOGO_W` wide and `H` tall, on nothing. `white` paints the middle
+    stripe: on a white page it is the page itself, the white between red and blue.
+    """
+    bars = "".join(f'<path d="{d}" fill="{white if c == WHITE else c}"/>' for d, c in stripes())
+    return f'{bars}<path fill="{word}" fill-rule="evenodd" d="{WORD_D}"/>'
 
 
-def badge() -> str:
-    """The logo on a navy plate: for light backgrounds, where the white stripe would vanish."""
+def badge(*, light: bool = False) -> str:
+    """The logo on a plate: navy with white letters, or (`light`) white with black letters, where
+    the white stripe is the plate itself showing between red and blue.
+    """
     pad = 26
     w, h = LOGO_W + 2 * pad, H + 2 * pad
-    plate = f'<rect width="{w:.2f}" height="{h}" rx="{pad * 0.9:.1f}" fill="{NAVY}"/>'
-    return svg(w, h, f'{plate}<g transform="translate({pad},{pad})">{logo(WHITE)}</g>')
+    fill, body = (PAPER, logo(BLACK, PAPER)) if light else (NAVY, logo(WHITE))
+    plate = f'<rect width="{w:.2f}" height="{h}" rx="{pad * 0.9:.1f}" fill="{fill}"/>'
+    return svg(w, h, f'{plate}<g transform="translate({pad},{pad})">{body}</g>')
 
 
 ICON_LENGTH = 70
@@ -206,6 +214,8 @@ def ui_shapes() -> str:
         "word": WORD_D,
         "white": WHITE,
         "navy": NAVY,
+        "black": BLACK,
+        "paper": PAPER,
     }
     return (
         "// Written by docs/brand/build.py: change the logo there, not here.\n\n"
@@ -219,7 +229,9 @@ def write() -> list[Path]:
         HERE / "apm-mark-square.svg": svg(512, 512, mark(512, square=True)),
         HERE / "apm-favicon.svg": svg(32, 32, favicon()),
         HERE / "apm-logo-on-dark.svg": svg(LOGO_W, H, logo(WHITE)),
-        HERE / "apm-logo-on-light.svg": badge(),
+        HERE / "apm-logo-on-light.svg": svg(LOGO_W, H, logo(BLACK, PAPER)),
+        HERE / "apm-logo-badge-navy.svg": badge(),
+        HERE / "apm-logo-badge-white.svg": badge(light=True),
         HERE / "apm-wordmark-white.svg": svg(
             WORD_ONLY_W, H, f'<path fill="{WHITE}" fill-rule="evenodd" d="{WORD_ONLY_D}"/>'
         ),
