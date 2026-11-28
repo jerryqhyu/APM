@@ -32,31 +32,94 @@ const DETAIL_LABEL: Record<ReportDetail, string> = { brief: "Brief", standard: "
 const SETTING: Record<SettingName, { label: string; hint: string }> = {
   eager: {
     label: "Eager mode",
-    hint: "Build a feature in one run on one branch, then split it into one pull request per task.",
+    hint: "Claude builds the whole feature in one run, on one branch, then APM splits that work into one pull request per task, in order. Quicker when the tasks touch the same code; you still review every task's pull request.",
   },
   task_max_lines: {
     label: "Task size limit",
-    hint: "Real lines of code a task may need. The task review holds every task to it; the decomposer and the implementer are told it too.",
+    hint: "How much real code one task may need: tests, comments and blank lines don't count. Every task review holds a task to it, and Claude sizes tasks to it when it breaks a feature down.",
   },
   report: {
     label: "Feature report",
-    hint: "Write a report once a feature’s review passes: what it is, the decisions made and why, and how it was built.",
+    hint: "Once a feature's review passes, Claude writes a report into its branch, so it lands with the feature: what it is, the decisions you made and why, and how it was built.",
   },
   report_detail: {
     label: "Report detail",
-    hint: "How much the feature report says. Brief: about a page. Standard: each decision with its reasons, how it fits together, each task. Detailed: also file by file, the review findings and a timeline.",
+    hint: "Brief is about a page. Standard adds each decision's reasons, how the parts fit together and a paragraph per task. Detailed adds notes file by file, what the review found, and a timeline.",
   },
 };
 
-const AUTOMATION: { key: keyof Automation; label: string }[] = [
-  { key: "task_review", label: "Review a task when it is created or changed" },
-  { key: "reconcile", label: "Reconcile, and retarget stacked pull requests, every" },
-  { key: "feature_review", label: "Review a feature once its tasks are done" },
-  { key: "accept_follow_ups", label: "Accept the follow-up tasks a feature review proposes" },
-  { key: "implement_follow_ups", label: "Build those follow-ups once their task review passes" },
-  { key: "feature_pr", label: "Open the feature’s pull request once its review passes" },
-  { key: "eager_redo", label: "Eager mode: rebuild and re-split later tasks when a task’s pull request changes" },
+const AUTOMATION: { key: keyof Automation; label: string; hint: string }[] = [
+  {
+    key: "task_review",
+    label: "Review tasks as they change",
+    hint: "Whenever a task inside a feature is created, or its title, kind or description changes, Claude checks that it is small and clear enough to build. A task can't be built until a review of what it says now passes.",
+  },
+  {
+    key: "reconcile",
+    label: "Reconcile",
+    hint: "Marks work done once its pull request has merged, and points a stacked pull request at its new base once the one under it merges. It also runs at once when APM sees a pull request merge.",
+  },
+  {
+    key: "feature_review",
+    label: "Review finished features",
+    hint: "Once every task of a feature has merged into its feature branch, Claude checks that branch against the feature's description and acceptance criteria.",
+  },
+  {
+    key: "accept_follow_ups",
+    label: "Accept follow-ups",
+    hint: "When a feature review finds gaps, it proposes follow-up tasks. On, they join the plan at once; off, they wait under Proposals for you.",
+  },
+  {
+    key: "implement_follow_ups",
+    label: "Build follow-ups",
+    hint: "Once an accepted follow-up passes its task review, Claude builds it and opens its pull request into the feature branch. Only follow-ups: never other tasks.",
+  },
+  {
+    key: "feature_pr",
+    label: "Open the feature's pull request",
+    hint: "When a feature's review passes, APM opens the pull request from its feature branch into where it belongs: the default branch, or the feature around it.",
+  },
+  {
+    key: "eager_redo",
+    label: "Redo eager builds",
+    hint: "For an eager feature: when a task's pull request changes after the split (you pushed a fix, say), Claude rebuilds the tasks after it on top of the change and splits them again. Off, they are marked stale and Redo does it by hand.",
+  },
 ];
+
+const AGENTS_HINT =
+  "The most Claude runs working at the same time, of every kind: chats, task reviews, builds. Past it, Review all tasks, Implement all and automation wait their turn, and a run you start by hand is refused until one finishes.";
+
+/** An on/off switch. */
+export function Switch({ on, onChange, label, disabled }: { on: boolean; onChange: (on: boolean) => void; label: string; disabled?: boolean }) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={on}
+      aria-label={label}
+      className={cx("toggle", on && "on")}
+      disabled={disabled}
+      onClick={() => onChange(!on)}
+    >
+      <span className="toggle-knob" />
+    </button>
+  );
+}
+
+/** One option: its name and what it does on the left, its control on the right. */
+function Option({ label, hint, children, error, name }: { label: string; hint: string; children: ReactNode; error?: string | null; name?: string }) {
+  return (
+    <div className="option">
+      <div className="option-text">
+        <span className="option-label">{label}</span>
+        <p className="option-hint">{hint}</p>
+        {name && <NotBuilt name={name} />}
+        {error && <span className="form-error">{error}</span>}
+      </div>
+      <div className="option-control">{children}</div>
+    </div>
+  );
+}
 
 /** The fields of `after` that differ from `before`. */
 function changed<T extends object>(before: T, after: T): Partial<T> {
@@ -83,6 +146,7 @@ export function SettingsDialog({
   const [features, setFeatures] = useState<FeatureSettings | null>(null);
   const [automation, setAutomation] = useState<Automation | null>(null);
   const [limit, setLimit] = useState("");
+  const [agents, setAgents] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -93,21 +157,25 @@ export function SettingsDialog({
         setFeatures(settings.features);
         setAutomation(settings.automation);
         setLimit(String(settings.features.task_max_lines));
+        setAgents(String(settings.runner.max_concurrent));
       })
       .catch((err: unknown) => setError(errorText(err)));
   }, []);
 
   const lines = Number(limit);
   const limitError = !Number.isInteger(lines) || lines < MIN_TASK_LINES ? `A whole number, ${MIN_TASK_LINES} or more.` : null;
+  const most = Number(agents);
+  const agentsError = !Number.isInteger(most) || most < 1 ? "A whole number, 1 or more." : null;
   const featureChange = saved && features ? changed(saved.features, { ...features, task_max_lines: lines }) : {};
   const automationChange = saved && automation ? changed(saved.automation, automation) : {};
-  const dirty = Object.keys(featureChange).length + Object.keys(automationChange).length > 0;
+  const runnerChange = saved && most !== saved.runner.max_concurrent ? { max_concurrent: most } : {};
+  const dirty = Object.keys(featureChange).length + Object.keys(automationChange).length + Object.keys(runnerChange).length > 0;
 
   const save = async () => {
     setBusy(true);
     setError(null);
     try {
-      await saveSettings({ features: featureChange, automation: automationChange });
+      await saveSettings({ features: featureChange, automation: automationChange, runner: runnerChange });
       onSaved("Settings saved to apm.yaml.");
       onClose();
     } catch (err) {
@@ -127,7 +195,7 @@ export function SettingsDialog({
         <>
           {error && <span className="form-error">{error}</span>}
           <button onClick={onClose}>Cancel</button>
-          <button className="primary" disabled={busy || !dirty || !!limitError} onClick={() => void save()}>
+          <button className="primary" disabled={busy || !dirty || !!limitError || !!agentsError} onClick={() => void save()}>
             Save
           </button>
         </>
@@ -148,13 +216,10 @@ export function SettingsDialog({
           <section>
             <h3>Every feature</h3>
             <p className="hint">The project’s defaults. A feature can set its own in its Details, for itself and what is inside it.</p>
-            <Setting name="eager" hint={false}>
-              <label className="check">
-                <input type="checkbox" checked={features.eager} onChange={(e) => setFeatures({ ...features, eager: e.target.checked })} />
-                {SETTING.eager.hint}
-              </label>
-            </Setting>
-            <Setting name="task_max_lines" error={limitError}>
+            <Option label={SETTING.eager.label} hint={SETTING.eager.hint} name="eager">
+              <Switch label={SETTING.eager.label} on={features.eager} onChange={(eager) => setFeatures({ ...features, eager })} />
+            </Option>
+            <Option label={SETTING.task_max_lines.label} hint={SETTING.task_max_lines.hint} error={limitError}>
               <span className="row">
                 <input
                   className="number"
@@ -165,55 +230,62 @@ export function SettingsDialog({
                   aria-label="Task size limit"
                   onChange={(e) => setLimit(e.target.value)}
                 />
-                real lines of code
+                lines
               </span>
-            </Setting>
-            <Setting name="report" hint={false}>
-              <label className="check">
-                <input type="checkbox" checked={features.report} onChange={(e) => setFeatures({ ...features, report: e.target.checked })} />
-                {SETTING.report.hint}
-              </label>
-            </Setting>
-            <Setting name="report_detail">
+            </Option>
+            <Option label={SETTING.report.label} hint={SETTING.report.hint} name="report">
+              <Switch label={SETTING.report.label} on={features.report} onChange={(report) => setFeatures({ ...features, report })} />
+            </Option>
+            <Option label={SETTING.report_detail.label} hint={SETTING.report_detail.hint}>
               <DetailPicker
                 value={features.report_detail}
                 disabled={!features.report}
                 onChange={(report_detail) => setFeatures({ ...features, report_detail })}
               />
-            </Setting>
+            </Option>
+          </section>
+
+          <section>
+            <h3>Agents</h3>
+            <Option label="Agents at once" hint={AGENTS_HINT} error={agentsError}>
+              <input
+                className="number"
+                type="number"
+                min={1}
+                step={1}
+                value={agents}
+                aria-label="Agents at once"
+                onChange={(e) => setAgents(e.target.value)}
+              />
+            </Option>
           </section>
 
           <section>
             <h3>Automation</h3>
             <p className="hint">
-              What <code>apm serve</code> does on its own. It never runs more than <code>runner.max_concurrent</code> agents at once.
+              What <code>apm serve</code> does on its own, within the agents at once above.
             </p>
-            {AUTOMATION.map(({ key, label }) => (
-              <div key={key} className="automation-row">
-                <label className="check">
-                  <input
-                    type="checkbox"
-                    checked={automation[key] as boolean}
-                    onChange={(e) => setAutomation({ ...automation, [key]: e.target.checked })}
-                  />
-                  {label}
-                </label>
-                {key === "reconcile" && (
-                  <span className="row">
-                    <input
-                      className="number"
-                      type="number"
-                      min={1}
-                      value={automation.reconcile_interval_s}
-                      aria-label="Seconds between reconciles"
-                      disabled={!automation.reconcile}
-                      onChange={(e) => setAutomation({ ...automation, reconcile_interval_s: Number(e.target.value) })}
-                    />
-                    seconds
-                  </span>
-                )}
-                <NotBuilt name={key} />
-              </div>
+            {AUTOMATION.map(({ key, label, hint }) => (
+              <Option key={key} label={label} hint={hint} name={key}>
+                <span className="row">
+                  {key === "reconcile" && (
+                    <>
+                      every
+                      <input
+                        className="number"
+                        type="number"
+                        min={1}
+                        value={automation.reconcile_interval_s}
+                        aria-label="Seconds between reconciles"
+                        disabled={!automation.reconcile}
+                        onChange={(e) => setAutomation({ ...automation, reconcile_interval_s: Number(e.target.value) })}
+                      />
+                      s
+                    </>
+                  )}
+                  <Switch label={label} on={automation[key] as boolean} onChange={(on) => setAutomation({ ...automation, [key]: on })} />
+                </span>
+              </Option>
             ))}
           </section>
 
@@ -250,31 +322,6 @@ export function SettingsDialog({
         </div>
       )}
     </Modal>
-  );
-}
-
-/** One setting of the dialog. A checkbox says what it does itself, so it goes without the hint. */
-function Setting({
-  name,
-  error,
-  hint = true,
-  children,
-}: {
-  name: SettingName;
-  error?: string | null;
-  hint?: boolean;
-  children: ReactNode;
-}) {
-  return (
-    <div className="setting">
-      <span className="setting-name">{SETTING[name].label}</span>
-      <div className="setting-control">
-        {children}
-        {hint && <span className="setting-hint">{SETTING[name].hint}</span>}
-        <NotBuilt name={name} />
-        {error && <span className="form-error">{error}</span>}
-      </div>
-    </div>
   );
 }
 

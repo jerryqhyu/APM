@@ -491,7 +491,7 @@ code:
   repos:
     my-app: { path: "..", default: true }
 runner:
-  max_concurrent: 2          # agents working at once
+  max_concurrent: 10         # agents working at once
   default_budget_usd: 2.00   # spending cap for one run
   permission_mode: auto      # auto, manual, acceptEdits, plan or dontAsk
   agents:
@@ -514,7 +514,7 @@ features:                    # how features are built and reported (see below)
 - `allowed_tools` are commands an agent may run without asking. Give the implementer the commands that run your tests.
 - `budget_usd` stops a run that would cost more.
 
-**Changing settings.** You can edit `apm.yaml` by hand, or press **Settings…** in the **Actions** menu with nothing selected, or use `apm settings set` (see [From the terminal](#from-the-terminal)). The panel and the command change only what you changed: your comments, your layout and every other value stay as they were. A value APM wouldn't accept, such as a task size limit of 3, is refused with the reason, and the file is left alone. Each change is one entry in the plan's history (`settings: task size limit 80 lines`); edits you had made to `apm.yaml` by hand go into that entry too, and it says so. `apm check` reports a broken `apm.yaml`.
+**Changing settings.** You can edit `apm.yaml` by hand, or open **Settings** (the gear at the top right, then **Project settings…**, or **Settings…** in the **Actions** menu with nothing selected), or use `apm settings set` (see [From the terminal](#from-the-terminal)). In the dialog each option has a switch, or a number, and a short paragraph on what it does: the defaults for every feature, **Agents at once** (`runner.max_concurrent`, 10 unless you change it), and each automation step. `apm settings set runner.max_concurrent=12` changes it from the terminal. The panel and the command change only what you changed: your comments, your layout and every other value stay as they were. A value APM wouldn't accept, such as a task size limit of 3, is refused with the reason, and the file is left alone. Each change is one entry in the plan's history (`settings: task size limit 80 lines`); edits you had made to `apm.yaml` by hand go into that entry too, and it says so. `apm check` reports a broken `apm.yaml`.
 
 ### Features
 
@@ -609,7 +609,7 @@ Imported runs are history only: you can read them, but nothing starts again. A r
 | A run fails with "couldn't start claude" | Install the Claude Code CLI and sign in. Check that `claude --version` works in your terminal. |
 | A run fails with a budget error | Raise `default_budget_usd`, or the agent's own `budget_usd`, in `.apm/apm.yaml`. |
 | "… is already running" | One conversation takes one turn at a time, and a node has one Decompose or Implement at a time. Wait, or press **Stop**. |
-| "2 runs are already active" | Raise `runner.max_concurrent`, or wait for one to finish. **Review all tasks** and **Implement all** never say this: their runs wait their turn. |
+| "10 runs are already active" | Raise **Agents at once** in Settings (`runner.max_concurrent`), or wait for one to finish. **Review all tasks** and **Implement all** never say this: their runs wait their turn. |
 | A setting is refused, e.g. `features.task_max_lines: Input should be greater than or equal to 5` | The message names the setting and what it accepts. Nothing was changed. |
 | "APM couldn't make this change without touching other settings" | Something in `apm.yaml` can't be written back exactly as it is. Make the change by hand in `.apm/apm.yaml`. |
 | Implement is greyed out | Hover over it: the node has children, is blocked, or is already done. On a task of an eager feature that was split, its work comes from the split: use **Redo** on the feature. |

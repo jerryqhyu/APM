@@ -309,7 +309,9 @@ export interface Automation {
 export interface ProjectSettings {
   features: FeatureSettings;
   automation: Automation;
-  defaults: { features: FeatureSettings; automation: Automation };
+  /** How many agents may work at once (`runner.max_concurrent`). */
+  runner: { max_concurrent: number };
+  defaults: { features: FeatureSettings; automation: Automation; runner: { max_concurrent: number } };
   /** Each feature's own settings, by its key in apm.yaml. `node` is null if the key names no node. */
   overrides: { key: string; node: string | null; values: Partial<FeatureSettings> }[];
   problems: string[];

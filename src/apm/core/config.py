@@ -75,7 +75,9 @@ class CodeConfig(_Model):
 
 
 class RunnerConfig(_Model):
-    max_concurrent: Annotated[int, Field(gt=0)] = 2
+    max_concurrent: Annotated[int, Field(gt=0)] = 10
+    """Agents working at once, every kind together. Ask for more and the rest wait their turn
+    (Review all tasks, Implement all, automation) or are refused with a reason (one by hand)."""
     default_budget_usd: Positive = 2.0
     permission_mode: Literal["auto", "manual", "acceptEdits", "plan", "dontAsk"] = "auto"
     """What agents start in unless you pick another mode for a run."""

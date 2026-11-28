@@ -14,7 +14,7 @@ from apm.core.project import Project, load_graph
 from apm.core.store import ReviewVerdict, Store, TaskReview, content_fingerprint
 from apm.runner.agents import RunRefused
 from apm.runner.runner import Runner, RunnerBusy, _failure
-from tests.conftest import CodeRepo
+from tests.conftest import CodeRepo, configure
 from tests.fake_gh import NEW_PR, FakeGh
 from tests.runner.fake import FakeClaude
 
@@ -253,6 +253,7 @@ async def test_cancel_stops_the_process(
 async def test_limits_one_at_a_time_per_node_and_max_concurrent(
     harness: Harness, project: Project, fake_claude: FakeClaude
 ) -> None:
+    configure(project, "runner:\n  max_concurrent: 2\n")
     a, b, c = create_nodes(
         project, [NewNode(title="A"), NewNode(title="B"), NewNode(title="C")]
     ).created

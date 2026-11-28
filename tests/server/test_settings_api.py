@@ -166,3 +166,18 @@ def test_implement_all_says_what_it_skipped_and_why(client: TestClient, project:
     settled_runs(client, 1)
     refused = client.post(f"/api/nodes/{top}/implement", json={"mode": "yolo"})
     assert refused.status_code == 422
+
+
+def test_agents_at_once_defaults_to_ten_and_can_be_changed(
+    client: TestClient, project: Project
+) -> None:
+    settings = client.get("/api/settings").json()
+    assert settings["runner"] == {"max_concurrent": 10}
+    assert settings["defaults"]["runner"] == {"max_concurrent": 10}
+    changed = client.patch("/api/settings", json={"runner": {"max_concurrent": 4}})
+    assert changed.status_code == 200
+    assert changed.json()["runner"] == {"max_concurrent": 4}
+    assert log(project.apm_dir)[0].subject == "settings: agents at once 4"
+    refused = client.patch("/api/settings", json={"runner": {"default_budget_usd": 9}})
+    assert refused.status_code == 422
+    assert "unknown setting runner.default_budget_usd" in refused.text
