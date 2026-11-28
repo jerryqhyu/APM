@@ -46,7 +46,12 @@ export interface NodeView {
   feature_branch: string | null;
   /** Where its pull request stands on GitHub, as last seen. Null when unknown or it has none. */
   pr: PrStatus | null;
+  /** Ready, but its review keeps it from being built: no passing review of what it says now. */
+  gate: Gate | null;
 }
+
+/** Why a ready task can't be built yet (src/apm/core/task_review.py `review_gate`). */
+export type Gate = "breakdown" | "unreviewed" | "too_big" | "unclear" | "error";
 
 /** A pull request on GitHub (src/apm/core/pr_status.py). */
 export interface PrStatus {

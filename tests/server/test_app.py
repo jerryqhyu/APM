@@ -685,3 +685,20 @@ def test_a_task_waiting_for_review_shows_its_pull_request_and_story(
     assert client.get(f"/api/nodes/{task}").json()["pr"]["checks"] == "failing"  # now known
     (view,) = [n for n in client.get("/api/tree").json()["nodes"] if n["id"] == task]
     assert view["pr"]["state"] == "open"
+
+
+def test_a_ready_task_waiting_for_its_review_says_so(project: Project, client: TestClient) -> None:
+    feature, other = create_nodes(project, [NewNode(title="Cost"), NewNode(title="Later")]).created
+    task, passed = create_nodes(
+        project, [NewNode(title="Ledger", parent=feature), NewNode(title="Done", parent=feature)]
+    ).created
+    store = Store(project.apm_dir)
+    graph = load_graph(project)
+    body = read_body(project.apm_dir, passed)
+    store.add_task_review(TaskReview(passed, content_fingerprint(graph[passed], body), "pass", {}))
+
+    tree = {n["id"]: n["gate"] for n in client.get("/api/tree").json()["nodes"]}
+    assert (tree[task], tree[passed], tree[other]) == ("unreviewed", None, "breakdown")
+    level = client.get("/api/graph", params={"root": feature}).json()
+    assert {n["id"]: n["gate"] for n in level["nodes"]}[task] == "unreviewed"
+    assert client.get(f"/api/nodes/{task}").json()["gate"] == "unreviewed"

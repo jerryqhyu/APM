@@ -93,14 +93,20 @@ def test_init_then_build_a_plan(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
         f"{test} [work/todo·blocked] Test → {build}",
         f"{review} [review/todo·blocked] Feature review → {build}, {test}",
     ]
+    # Ready, but nothing has been task-reviewed yet: each says so.
+    unreviewed = "  (not ready: not reviewed)"
     assert apm("ready").splitlines() == [
-        f"{build} [work/todo·ready] Build",
-        f"{choice} [decision/todo·ready] Pick a database",
+        f"{build} [work/todo·ready] Build{unreviewed}",
+        f"{choice} [decision/todo·ready] Pick a database  (not ready: not broken down yet)",
     ]
-    assert apm("ready", "--root", ship).splitlines() == [f"{build} [work/todo·ready] Build"]
+    assert apm("ready", "--root", ship).splitlines() == [
+        f"{build} [work/todo·ready] Build{unreviewed}"
+    ]
 
     apm("node", "status", build, "done", "--note", "Shipped.")
-    assert apm("ready", "--root", ship).splitlines() == [f"{test} [work/todo·ready] Test → {build}"]
+    assert apm("ready", "--root", ship).splitlines() == [
+        f"{test} [work/todo·ready] Test → {build}{unreviewed}"
+    ]
     assert apm("check").strip() == "ok"
     assert log(code / ".apm")[0].subject == f"status {build}: done"
 
@@ -113,13 +119,16 @@ def test_ready_lists_stacked_work_and_says_what_it_stacks_on(cwd: Project) -> No
     attach_delivery(
         cwd, load_graph(cwd).resolve(first), branch="apm/first", pr="https://github.com/o/r/pull/20"
     )
+    # Ready, but a top-level node with nothing inside: its review holds it back, and it says so.
     assert apm("ready").splitlines() == [
         f"{second} [work/todo·ready·stacked] Second → {first} · stacked on {first} (#20)"
+        "  (not ready: not broken down yet)"
     ]
     (data,) = json.loads(apm("ready", "--json"))
     assert data["stacked_on"] == [
         {"id": load_graph(cwd).resolve(first), "handle": first, "pr": "#20"}
     ]
+    assert data["gate"] == "breakdown"
 
 
 def test_show_prints_links_and_body(cwd: Project) -> None:

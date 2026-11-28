@@ -1,6 +1,24 @@
-import type { NodeView, Proposal, Run, RunStatus, StackedOn } from "./types";
+import type { Gate, NodeView, Proposal, Run, RunStatus, StackedOn } from "./types";
 
-export type StateKey = "ready" | "stacked" | "blocked" | "todo" | "in_progress" | "review" | "done" | "dropped";
+export type StateKey =
+  | "ready"
+  | "stacked"
+  | "unreviewed"
+  | "blocked"
+  | "todo"
+  | "in_progress"
+  | "review"
+  | "done"
+  | "dropped";
+
+/** What a ready task whose review holds it back is called. */
+export const GATE_LABEL: Record<Gate, string> = {
+  breakdown: "Not broken down",
+  unreviewed: "Not reviewed",
+  error: "Not reviewed",
+  too_big: "Too big",
+  unclear: "Unclear",
+};
 
 /** `#20`: what a stacked node builds on (its stack top), by pull request where it has one. */
 export function stackedName(node: { stacked_on?: StackedOn[]; stack_top?: string | null }): string {
@@ -15,10 +33,13 @@ export function stateOf(
     stack_top?: string | null;
     delivery?: NodeView["delivery"];
     children?: number;
+    gate?: Gate | null;
   },
 ): { key: StateKey; label: string } {
   if (node.status === "todo") {
     if (node.blocked) return { key: "blocked", label: "Blocked" };
+    // Nothing in its way but its review: it can't be built until a review of it passes.
+    if (node.ready && node.gate) return { key: "unreviewed", label: GATE_LABEL[node.gate] };
     if (node.ready && node.stack_top) return { key: "stacked", label: `Ready · stacked on ${stackedName(node)}` };
     if (node.ready) return { key: "ready", label: "Ready" };
     return { key: "todo", label: "To do" };

@@ -10,6 +10,7 @@ import { FeatureSettingsSection } from "./Settings";
 import type {
   AgentRequest,
   Batch,
+  Gate,
   FeatureSettings,
   Issue,
   Kind,
@@ -45,6 +46,8 @@ export interface DetailActions {
   openRun: (runId: string) => void;
   /** Start Claude on every ready task of a feature (`POST /api/nodes/{id}/implement`). */
   implementAll: (id: string) => Promise<Batch>;
+  /** Review every task of a feature (`POST /api/nodes/{id}/review-tasks`). */
+  reviewTasks: (id: string) => Promise<Batch>;
 }
 
 const REVIEW_LABEL: Record<string, string> = {
@@ -211,6 +214,10 @@ function NextStep({ detail, nodes, actions }: { detail: NodeDetail; nodes: NodeV
     );
   }
 
+  if (state.key === "unreviewed" && detail.gate) {
+    return <NotReviewed detail={detail} gate={detail.gate} actions={actions} label={state.label} />;
+  }
+
   if (state.key === "ready" || state.key === "stacked") {
     const needsReview = detail.review !== null && ["none", "stale", "too_big", "unclear", "error"].includes(detail.review.state);
     return (
@@ -283,6 +290,41 @@ function NextStep({ detail, nodes, actions }: { detail: NodeDetail; nodes: NodeV
   return null;
 }
 
+const GATE_WHY: Record<Gate, string> = {
+  breakdown: "A feature with nothing inside it yet. Break it down, or review it to build it as one task.",
+  unreviewed: "Its current content has no task review yet, so it can't be built. Review it first.",
+  error: "Its last task review failed, so it can't be built. Review it again.",
+  too_big: "Its review found it too big to build as one task: accept the split under Proposals, or edit it and review it again.",
+  unclear: "Its review found it too unclear to size: say what is missing in its description, then review it again.",
+};
+
+/** Ready but for its review: why, and the review that would let it be built. */
+function NotReviewed({ detail, gate, actions, label }: { detail: NodeDetail; gate: Gate; actions: DetailActions; label: string }) {
+  const failed = gate === "error" && detail.review?.error;
+  return (
+    <div className="next-step state-unreviewed">
+      <div className="next-head">
+        <span className="next-label">{label}</span>
+        <span>{GATE_WHY[gate]}</span>
+      </div>
+      {failed && <p className="hint">The review said: {detail.review!.error}</p>}
+      <div className="next-actions">
+        <button
+          className="primary"
+          disabled={detail.under_review}
+          onClick={() => actions.runAgent("apm-task-reviewer", detail.id)}
+          title="Claude checks that the task is small and clear enough to build"
+        >
+          {detail.under_review && <Spinner />}
+          {gate === "unreviewed" ? "Review task" : "Review it again"}
+        </button>
+        {gate === "breakdown" && <button onClick={() => actions.runAgent("apm-decomposer", detail.id)}>Decompose</button>}
+      </div>
+      {detail.under_review && <p className="hint">Its task review is running.</p>}
+    </div>
+  );
+}
+
 /** A feature's tasks, by what each needs from you, and Implement all ready tasks. */
 function FeatureStep({ detail, nodes, actions }: { detail: NodeDetail; nodes: NodeView[]; actions: DetailActions }) {
   const [confirming, setConfirming] = useState(false);
@@ -303,12 +345,25 @@ function FeatureStep({ detail, nodes, actions }: { detail: NodeDetail; nodes: No
   const tasks = nodes.filter((n) => n.children === 0 && n.kind !== "review" && inside(n));
   const by = (key: string) => tasks.filter((n) => stateOf(n).key === key);
   const ready = [...by("ready"), ...by("stacked")];
+  const unreviewed = by("unreviewed");
   const groups: [string, NodeView[]][] = [
     ["Waiting for your PR review", by("review")],
+    ["Not reviewed: they need a passing task review before they can be built", unreviewed],
     ["Ready to build", ready],
     ["Being built", by("in_progress")],
     ["Blocked", by("blocked")],
   ];
+  const reviewAll = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      setResult(await actions.reviewTasks(detail.id));
+    } catch (err) {
+      setError(errorText(err));
+    } finally {
+      setBusy(false);
+    }
+  };
   const start = async () => {
     setBusy(true);
     setError(null);
@@ -348,14 +403,21 @@ function FeatureStep({ detail, nodes, actions }: { detail: NodeDetail; nodes: No
             </button>
           </>
         ) : (
-          <button
-            className="primary"
-            disabled={ready.length === 0}
-            title={ready.length ? "Claude builds each ready task in its own worktree and opens its pull request" : "No task is ready"}
-            onClick={() => setConfirming(true)}
-          >
-            Implement all ready tasks ({ready.length})
-          </button>
+          <>
+            <button
+              className="primary"
+              disabled={ready.length === 0}
+              title={ready.length ? "Claude builds each ready task in its own worktree and opens its pull request" : "No task is ready"}
+              onClick={() => setConfirming(true)}
+            >
+              Implement all ready tasks ({ready.length})
+            </button>
+            {unreviewed.length > 0 && (
+              <button onClick={() => void reviewAll()} disabled={busy} title="Start a task review on every task of the feature">
+                Review tasks ({unreviewed.length} not reviewed)
+              </button>
+            )}
+          </>
         )}
       </div>
       {error && <p className="form-error">{error}</p>}
@@ -579,6 +641,7 @@ export function PlanSummary({
   onReview,
   onOpenRun,
   onImplement,
+  onReviewTask,
 }: {
   project: Project;
   nodes: NodeView[];
@@ -592,6 +655,7 @@ export function PlanSummary({
   onReview: (proposal: Proposal) => void;
   onOpenRun: (runId: string) => void;
   onImplement: (id: string) => void;
+  onReviewTask: (id: string) => void;
 }) {
   const byId = new Map(nodes.map((n) => [n.id, n]));
   const leaves = nodes.filter((n) => n.children === 0 && n.status !== "dropped" && n.kind !== "review");
@@ -599,6 +663,7 @@ export function PlanSummary({
   const by = (...keys: string[]) => leaves.filter((n) => keys.includes(stateOf(n).key));
   const toReview = by("review");
   const ready = by("ready", "stacked");
+  const unreviewed = by("unreviewed").filter((n) => n.gate !== "breakdown");
   const building = by("in_progress");
   const blocked = by("blocked");
   const needsYou = requests.length + proposals.length + toReview.length;
@@ -682,6 +747,26 @@ export function PlanSummary({
                   {node.stack_top && <span className="hint"> · on top of {stackedName(node)}</span>}
                 </span>
                 <button onClick={() => onImplement(node.id)}>Implement</button>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+
+      {unreviewed.length > 0 && (
+        <section>
+          <h3>Not reviewed ({unreviewed.length})</h3>
+          <ul className="inbox-list">
+            {unreviewed.map((node) => (
+              <li key={node.id}>
+                <span className="dot state-unreviewed" />
+                <span className="inbox-text">
+                  <button className="link" onClick={() => onGoTo(node.id)}>
+                    {node.title}
+                  </button>
+                  <span className="hint"> · {stateOf(node).label.toLowerCase()}</span>
+                </span>
+                <button onClick={() => onReviewTask(node.id)}>Review task</button>
               </li>
             ))}
           </ul>

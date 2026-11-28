@@ -97,7 +97,9 @@ def test_read_tools(plan: tuple[Project, str, str, str]) -> None:
     assert f"parent: {parent} [work/todo·ready] Parent (0/3)" in shown
     assert f"waiting on: {first} [work/todo·ready] First" in shown
     assert "## Intent" in shown
-    assert session.call("apm_ready") == f"{first} [work/todo·ready] First"
+    assert (
+        session.call("apm_ready") == f"{first} [work/todo·ready] First  (not ready: not reviewed)"
+    )
     assert session.call("apm_ready", root=second) == "(nothing is ready)"
     assert session.call("apm_search", query="second") == f"{second} Second"
     assert session.call("apm_search", query="zebra") == "(no matches)"
@@ -126,6 +128,7 @@ def test_ready_marks_stacked_work(plan: tuple[Project, str, str, str]) -> None:
     attach_delivery(project, first_id, branch="apm/first")
     assert Session(project).call("apm_ready") == (
         f"{second} [work/todo·ready·stacked] Second → {first} · stacked on {first}"
+        "  (not ready: not reviewed)"
     )
 
 

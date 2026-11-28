@@ -48,7 +48,7 @@ from apm.core.settings import (
     settings_view,
 )
 from apm.core.store import PROJECT, Proposal, Store
-from apm.core.task_review import implement_blocker, review_state
+from apm.core.task_review import Gate, implement_blocker, ready_gates, review_state
 from apm.core.timeline import builder, node_timeline
 from apm.core.views import all_nodes_view, level_json, node_history, node_ref, node_view, search
 from apm.runner.agents import AGENTS, MODES
@@ -261,6 +261,9 @@ def create_app(
         )
         return {
             **node_view(graph, node_id),
+            "gate": ready_gates(
+                graph, store, partial(read_body, project.apm_dir), only=node_id
+            ).get(node_id),
             "pr": pr_view(graph[node_id]),
             "builder": asdict(building) if building is not None else None,
             "timeline": [asdict(m) for m in node_timeline(store, graph, node_id, history)],
@@ -338,7 +341,11 @@ def create_app(
         problems: list[str] = []
         with contextlib.suppress(ApmError):  # a broken apm.yaml shows up everywhere else
             problems = override_problems(read_config(project.apm_dir), graph)
-        nodes = [{**view, "pr": pr_view(graph[view["id"]])} for view in all_nodes_view(graph)]
+        gated = gates(graph)
+        nodes = [
+            {**view, "pr": pr_view(graph[view["id"]]), "gate": gated.get(view["id"])}
+            for view in all_nodes_view(graph)
+        ]
         return {
             "head": rev_parse(project.apm_dir, "HEAD"),
             "nodes": nodes,
@@ -349,10 +356,17 @@ def create_app(
             ],
         }
 
+    def gates(graph: Graph) -> dict[NodeId, Gate]:
+        """The ready tasks their review keeps from being built (`ready_gates`)."""
+        return ready_gates(graph, store, partial(read_body, project.apm_dir))
+
     @app.get("/api/graph")
     def get_graph(root: str | None = None) -> dict[str, Any]:
         graph = load_graph(project)
-        return level_json(graph, graph.resolve(root) if root else None)
+        level = level_json(graph, graph.resolve(root) if root else None)
+        gated = gates(graph)
+        level["nodes"] = [{**view, "gate": gated.get(view["id"])} for view in level["nodes"]]
+        return level
 
     @app.get("/api/nodes/{node}")
     def get_node(node: str) -> dict[str, Any]:

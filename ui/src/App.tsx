@@ -354,6 +354,7 @@ export function App() {
     },
     runAgent: (agent, id) => setDialog({ kind: "run", agent, node: id }),
     implementAll: handlers.implementAll,
+    reviewTasks: handlers.reviewTasks,
     openRun: (runId) => {
       setFocusRun(runId);
       setTab("chat");
@@ -383,7 +384,8 @@ export function App() {
     );
   }
 
-  const readyNodes = nodes.filter((n) => n.ready && n.children === 0);
+  // Ready to build: nothing in the way, its review included.
+  const readyNodes = nodes.filter((n) => n.ready && n.children === 0 && !n.gate);
   const issues = [...tree.errors, ...tree.warnings];
   const runOf = (request: AgentRequest) => runningRuns.find((r) => r.id === request.run_id);
   const chatNode = focusId ? (byId.get(focusId) ?? null) : null;
@@ -607,6 +609,7 @@ export function App() {
                 if (run) showRun(run);
               }}
               onImplement={(id) => setDialog({ kind: "run", agent: "apm-implementer", node: id })}
+              onReviewTask={(id) => setDialog({ kind: "run", agent: "apm-task-reviewer", node: id })}
             />
           )}
         </div>

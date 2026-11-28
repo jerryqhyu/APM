@@ -20,7 +20,7 @@ from pydantic import BaseModel, Field
 
 from apm.core import ops
 from apm.core.errors import ApmError
-from apm.core.files import render_body
+from apm.core.files import read_body, render_body
 from apm.core.graph import Graph
 from apm.core.ids import is_node_id
 from apm.core.lifting import check_all
@@ -28,6 +28,8 @@ from apm.core.model import Kind, NodeId, Status
 from apm.core.mutate import Mutation
 from apm.core.project import Project, find_project, load_graph
 from apm.core.settings import check_config
+from apm.core.store import Store
+from apm.core.task_review import GATE_NOTE, ready_gates
 from apm.core.views import node_line, node_text, outline, search
 
 SCOPE_ENV = "APM_RUN_SCOPE"
@@ -180,11 +182,19 @@ def build_server(project: Project | None = None, env: Mapping[str, str] | None =
     ) -> str:
         """What can be worked on now: todo leaves whose dependencies are done. A line marked
         `·stacked` depends on work that is delivered but not merged yet: build it on top of the
-        branch named after "stacked on".
+        branch named after "stacked on". A line ending "(not ready: …)" needs a passing task
+        review first: Implement refuses it until then.
         """
-        _, graph = plan()
+        found, graph = plan()
         ready = graph.ready_leaves(None if root is None else graph.resolve(root))
-        return "\n".join(node_line(graph, n) for n in ready) or "(nothing is ready)"
+        gated = ready_gates(
+            graph, Store(found.apm_dir), functools.partial(read_body, found.apm_dir)
+        )
+        lines = [
+            node_line(graph, n) + (f"  (not ready: {GATE_NOTE[g]})" if (g := gated.get(n)) else "")
+            for n in ready
+        ]
+        return "\n".join(lines) or "(nothing is ready)"
 
     @tool
     def apm_check() -> str:

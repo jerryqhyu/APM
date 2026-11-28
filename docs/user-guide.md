@@ -78,6 +78,7 @@ That is the whole loop: talk, shape the plan, build a piece, repeat.
 | **Ready** | To do, and nothing it needs is unfinished. You can start it. |
 | **Ready · stacked on #20** | To do, and what it needs is built and pushed but not merged yet. You can start it now: it builds on that work's branch. It becomes plain **Ready** once that merges. |
 | **Blocked** | To do, but something it needs isn't done yet, and isn't pushed either. A node inside a blocked node is blocked too. |
+| **Not reviewed** | To do, and nothing it needs is unfinished, but it has no passing task review of what it says now: never reviewed, changed since, or its last review failed (**Too big** and **Unclear** say which way). It can't be built yet, so it isn't Ready, isn't counted as ready anywhere, and Implement waits. Press **Review task**, or **Review tasks** on its feature. A top-level node with nothing inside it says **Not broken down** instead. |
 | **Pending PR review** | In progress, and its work is delivered: its branch is pushed, usually with a pull request. It waits for you to review and merge. Once the pull request merges, APM marks it **Done**. |
 | **2/5** on a node | Two of the five leaves inside it are done. The review step counts, so a feature reaches 5/5 only once it has been reviewed and has landed. |
 
