@@ -12,7 +12,7 @@ Implement on it still waits for a review you start by hand.
 """
 
 from collections.abc import Callable
-from typing import Any
+from typing import Any, Literal
 
 from apm.core.config import ApmConfig
 from apm.core.graph import Graph
@@ -53,6 +53,39 @@ def due_task_reviews(graph: Graph, store: Store, body: Callable[[NodeId], str]) 
     ]
 
 
+type Gate = Literal["breakdown", "unreviewed", "too_big", "unclear", "error"]
+"""Why a To do task can't be built yet, as far as its review goes: a top-level node not broken
+down, content with no review (or changed since), or a review that didn't pass."""
+
+
+GATE_NOTE: dict[str, str] = {
+    "breakdown": "not broken down yet",
+    "unreviewed": "not reviewed",
+    "too_big": "its review found it too big",
+    "unclear": "its review found it unclear",
+    "error": "its review failed",
+}
+"""Each gate in a few words, for `apm ready` and `apm_ready`."""
+
+
+def review_gate(
+    graph: Graph, store: Store, node_id: NodeId, body: Callable[[NodeId], str]
+) -> Gate | None:
+    """What stands between a To do task and Implement in its review, or None if it passed for
+    its current content (or isn't To do). The UI shows such a task as not reviewed, not Ready.
+    """
+    if graph[node_id].status != Status.TODO:
+        return None
+    latest = store.latest_task_review(node_id)
+    if latest is None and awaits_breakdown(graph, node_id):
+        return "breakdown"
+    if latest is None or latest.fingerprint != content_fingerprint(graph[node_id], body(node_id)):
+        return "unreviewed"
+    if latest.verdict == "pass":
+        return None
+    return latest.verdict
+
+
 def implement_blocker(
     graph: Graph, store: Store, config: ApmConfig, node_id: NodeId, body: Callable[[NodeId], str]
 ) -> str | None:
@@ -61,19 +94,36 @@ def implement_blocker(
     through this, by way of `check_startable`. The gate holds whatever `config` says:
     `automation.task_review` only switches off the reviews `apm serve` starts on its own.
     """
-    if graph[node_id].status != Status.TODO:
+    gate = review_gate(graph, store, node_id, body)
+    if gate is None:
         return None
-    latest = store.latest_task_review(node_id)
-    if latest is None and awaits_breakdown(graph, node_id):
+    if gate == "breakdown":
         return (
             "this feature is not broken down yet: Decompose it, "
             "or run Review task to build it as one task"
         )
-    if latest is None or latest.fingerprint != content_fingerprint(graph[node_id], body(node_id)):
+    if gate == "unreviewed":
         return "this task's current content has not been reviewed: run Review task first"
-    if latest.verdict != "pass":
-        return f"this task's latest review says {latest.verdict}: fix it and review it again"
-    return None
+    return f"this task's latest review says {gate}: fix it and review it again"
+
+
+def ready_gates(
+    graph: Graph, store: Store, body: Callable[[NodeId], str], *, only: NodeId | None = None
+) -> dict[NodeId, Gate]:
+    """The ready leaves (review steps aside) that their review keeps from being built: shown as
+    not reviewed rather than Ready, and left out of what is ready to build. `only` looks at one.
+    """
+    gates: dict[NodeId, Gate] = {}
+    for node_id in graph.nodes if only is None else [only]:
+        if (
+            not graph.states[node_id].ready
+            or not graph.is_leaf(node_id)
+            or graph.is_review(node_id)
+        ):
+            continue
+        if (gate := review_gate(graph, store, node_id, body)) is not None:
+            gates[node_id] = gate
+    return gates
 
 
 def review_state(

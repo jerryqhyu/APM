@@ -5,7 +5,7 @@ from apm.core.config import ApmConfig
 from apm.core.graph import Graph
 from apm.core.model import Delivery, Kind, Node, Status
 from apm.core.store import ReviewVerdict, Store, TaskReview, content_fingerprint
-from apm.core.task_review import due_task_reviews, implement_blocker
+from apm.core.task_review import due_task_reviews, implement_blocker, ready_gates, review_gate
 from tests.core.build import A, B, C, D, E, F, G, node
 
 BODIES = {A: "feature", B: "task b", C: "task c"}
@@ -112,3 +112,23 @@ def test_implement_is_gated_the_same_when_task_review_is_off(tmp_path: Path) -> 
         expected = implement_blocker(graph, store, config(), B, body)
         assert implement_blocker(graph, store, off, B, body) == expected
     assert implement_blocker(graph, store, off, B, lambda _: "edited") is not None
+
+
+def test_a_ready_task_without_a_passing_review_is_held_back(tmp_path: Path) -> None:
+    store = Store(tmp_path)
+    graph = Graph(
+        [
+            node(A),
+            node(B, parent=A),
+            node(C, parent=A),
+            node(D, parent=A, deps=[B]),  # blocked: not ready, so not held back here
+            node(E),  # top level, nothing inside: a feature not broken down yet
+        ]
+    )
+    assert ready_gates(graph, store, body) == {B: "unreviewed", C: "unreviewed", E: "breakdown"}
+    review(store, graph[B], "pass")
+    review(store, graph[C], "error")
+    assert ready_gates(graph, store, body) == {C: "error", E: "breakdown"}
+    assert ready_gates(graph, store, body, only=B) == {}
+    assert review_gate(graph, store, B, lambda _: "edited") == "unreviewed"  # changed since
+    assert "says error" in (implement_blocker(graph, store, config(), C, body) or "")

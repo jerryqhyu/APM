@@ -368,6 +368,12 @@ textarea {
   --c-subtle: var(--warn-subtle);
 }
 
+/* Ready but for its review: grey, like work that can't move yet. */
+.state-unreviewed {
+  --c: var(--fg-muted);
+  --c-subtle: var(--bg-muted);
+}
+
 .state-in_progress {
   --c: var(--info);
   --c-subtle: var(--info-subtle);

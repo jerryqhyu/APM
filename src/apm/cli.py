@@ -57,6 +57,7 @@ from apm.core.settings import (
     settings_view,
 )
 from apm.core.store import Proposal, Store
+from apm.core.task_review import GATE_NOTE, ready_gates
 from apm.core.views import (
     all_nodes_view,
     node_line,
@@ -321,14 +322,22 @@ def ready(
     root_: Annotated[str | None, typer.Option("--root", help="Only under this node.")] = None,
     as_json: Json = False,
 ) -> None:
-    """List what can be worked on now: ready leaves, stacked ones marked."""
-    _, graph = plan()
+    """List what can be worked on now: ready leaves, stacked ones marked, and those that need a
+    passing task review first marked with why.
+    """
+    project, graph = plan()
     ids = graph.ready_leaves(graph.resolve(root_) if root_ else None)
+    gated = ready_gates(
+        graph, Store(project.apm_dir), functools.partial(read_body, project.apm_dir)
+    )
     if as_json:
-        print_json([node_view(graph, n) for n in ids])
+        print_json([{**node_view(graph, n), "gate": gated.get(n)} for n in ids])
         return
     for node_id in ids:
-        typer.echo(node_line(graph, node_id))
+        gate = gated.get(node_id)
+        typer.echo(
+            node_line(graph, node_id) + (f"  (not ready: {GATE_NOTE[gate]})" if gate else "")
+        )
 
 
 @cli(app, "search")
