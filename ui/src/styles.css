@@ -10,7 +10,9 @@
   --canvas: light-dark(#f6f8fa, #111111);
   /* Around the panels: the window itself. */
   --chrome: light-dark(#e4e7eb, #000000);
-  --logo-plate: light-dark(#13203d, transparent);
+  /* The logo, on no background: white letters in the dark, black in the light (src/Logo.tsx). */
+  --logo-word: light-dark(#111318, #f5f1e8);
+  --logo-white: light-dark(#ffffff, #f5f1e8);
   --panel-radius: 12px;
   --border: light-dark(#d0d7de, #363636);
   --border-muted: light-dark(#e3e7eb, #272727);
@@ -584,14 +586,18 @@ body.resizing {
   font-size: 15px;
 }
 
-/* The logo sits on a navy plate where the page is light: the white stripe would vanish there. */
+/* The logo has no background: only its letters change colour with the theme. */
 .apm-logo {
   display: block;
   flex: none;
 }
 
-.apm-logo-plate {
-  fill: var(--logo-plate);
+.apm-logo-word {
+  fill: var(--logo-word);
+}
+
+.apm-logo .apm-logo-white {
+  fill: var(--logo-white);
 }
 
 .splash .apm-logo {
