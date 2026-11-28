@@ -50,6 +50,7 @@ def test_settings_show_set_and_clear(cwd: Project) -> None:
     assert "own settings cleared" in apm("settings", "clear", handle(top))
     assert apm("settings", "clear", handle(top)).strip() == "nothing to clear"
     assert apm("settings", "set", "eager=default").strip() == "settings: eager mode back to default"
+    assert apm("settings", "set", "budget_usd=5").strip() == "settings: budget $5"
 
 
 def test_settings_refuses_what_it_cannot_set(cwd: Project) -> None:

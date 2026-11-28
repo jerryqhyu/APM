@@ -106,6 +106,7 @@ class FeatureOverride(_Model):
     task_max_lines: TaskLines | None = None
     report: bool | None = None
     report_detail: ReportDetail | None = None
+    budget_usd: Positive | None = None
 
 
 class FeaturesConfig(_Model):
@@ -121,6 +122,10 @@ class FeaturesConfig(_Model):
     """Write a feature report once the feature's review passes."""
     report_detail: ReportDetail = "standard"
     """How much that report says."""
+    budget_usd: Positive | None = None
+    """The most a feature may spend, in US dollars, before automation stops starting runs for it.
+    None: no cap. Not the per-run cap, `runner.default_budget_usd`.
+    """
     overrides: dict[NodeKey, FeatureOverride] = Field(default_factory=dict)
     """Per feature, by node id (a handle works too, typed by hand): the settings that differ from
     the defaults above. They apply to everything inside the feature, unless a feature inside it

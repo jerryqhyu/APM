@@ -66,6 +66,7 @@ def test_an_inner_override_wins_for_what_it_sets() -> None:
         "task_max_lines": B,
         "report": B,
         "report_detail": None,
+        "budget_usd": None,
     }
     assert resolved.own is None
     assert resolve_settings(cfg, GRAPH, B).own is not None
@@ -74,6 +75,28 @@ def test_an_inner_override_wins_for_what_it_sets() -> None:
     assert inherited.settings == FeatureSettings(True, 40, True, "standard")
     assert inherited.sources["task_max_lines"] == A
     assert resolve_settings(cfg, GRAPH, A, inherited=True).settings.task_max_lines == 60
+
+
+def test_a_budget_is_unset_by_default_and_resolved_like_the_other_settings() -> None:
+    assert feature_settings(config(), GRAPH, C).budget_usd is None
+    cfg = config(f"  budget_usd: 5\n  overrides:\n    {B}: {{ budget_usd: 2.5 }}\n")
+    assert [feature_settings(cfg, GRAPH, n).budget_usd for n in (A, B, C, D, E)] == [
+        5,
+        2.5,
+        2.5,
+        5,
+        5,
+    ]
+    assert resolve_settings(cfg, GRAPH, C).sources["budget_usd"] == B
+    assert resolve_settings(cfg, GRAPH, D).sources["budget_usd"] is None
+
+
+@pytest.mark.parametrize("budget", ["0", "-1"])
+def test_a_budget_must_be_positive(budget: str) -> None:
+    with pytest.raises(ConfigError, match=r"features\.budget_usd"):
+        config(f"  budget_usd: {budget}\n")
+    with pytest.raises(ConfigError, match=r"budget_usd"):
+        config(f"  overrides:\n    {A}: {{ budget_usd: {budget} }}\n")
 
 
 def test_a_node_can_override_its_own_settings() -> None:
@@ -220,6 +243,17 @@ def test_a_features_override_is_set_inherited_and_cleared(project: Project) -> N
         f'settings {handle(top)}: own settings cleared for "Search"'
     )
     assert clear_override(project, top).sha is None
+
+
+def test_a_budget_is_set_and_committed(project: Project) -> None:
+    top, _ = feature(project)
+    set_defaults(project, features={"budget_usd": 5})
+    assert log(project.apm_dir)[0].subject == "settings: budget $5"
+    set_override(project, top, {"budget_usd": 2.5})
+    assert log(project.apm_dir)[0].subject == f'settings {handle(top)}: budget $2.5 for "Search"'
+    set_override(project, top, {"budget_usd": None})
+    assert log(project.apm_dir)[0].subject.startswith(f"settings {handle(top)}: budget inherited")
+    assert parse_config(apm_yaml(project)).features.budget_usd == 5
 
 
 def test_an_override_typed_with_a_handle_is_edited_where_it_is(project: Project) -> None:

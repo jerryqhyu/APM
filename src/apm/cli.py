@@ -241,7 +241,7 @@ def settings_set(
         list[str],
         typer.Argument(
             help="NAME=VALUE: eager=on, task_max_lines=80, report_detail=brief,"
-            " automation.task_review=off. VALUE default (or inherit) unsets it.",
+            " budget_usd=5, automation.task_review=off. VALUE default (or inherit) unsets it.",
         ),
     ],
     node: Annotated[
