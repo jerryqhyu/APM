@@ -16,6 +16,7 @@ from apm.core.config import (
     FeatureOverride,
     FeaturesConfig,
     ReportDetail,
+    RunnerConfig,
     parse_config,
     read_config,
 )
@@ -33,6 +34,8 @@ type SettingName = Literal["eager", "task_max_lines", "report", "report_detail"]
 SETTINGS: tuple[SettingName, ...] = ("eager", "task_max_lines", "report", "report_detail")
 """What `features:` sets, project-wide or per feature."""
 AUTOMATION: tuple[str, ...] = tuple(AutomationConfig.model_fields)
+RUNNER: tuple[str, ...] = ("max_concurrent",)
+"""What `runner:` sets from the Settings dialog: the rest of it is per agent, in apm.yaml."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -166,19 +169,30 @@ def set_defaults(
     *,
     features: Mapping[str, Scalar | None] | None = None,
     automation: Mapping[str, Scalar | None] | None = None,
+    runner: Mapping[str, Scalar | None] | None = None,
     actor: str = "user",
 ) -> SettingsChange:
-    """Changes project-wide settings: `features:` defaults and `automation:` switches, by name.
-    None puts a setting back to APM's own default. One commit, or none if nothing changed.
+    """Changes project-wide settings: `features:` defaults, `automation:` switches and
+    `runner.max_concurrent`, by name. None puts a setting back to APM's own default. One commit,
+    or none if nothing changed.
     """
-    features, automation = features or {}, automation or {}
+    features, automation, runner = features or {}, automation or {}, runner or {}
     _check_names("features", features, SETTINGS)
     _check_names("automation", automation, AUTOMATION)
+    _check_names("runner", runner, RUNNER)
     changes: dict[KeyPath, Scalar | None] = {
         **{("features", name): value for name, value in features.items()},
         **{("automation", name): value for name, value in automation.items()},
+        **{("runner", name): value for name, value in runner.items()},
     }
-    said = [*_describe(features, unset="back to default"), *_describe_automation(automation)]
+    said = [
+        *_describe(features, unset="back to default"),
+        *_describe_automation(automation),
+        *(
+            f"agents at once {'back to default' if value is None else value}"
+            for value in runner.values()
+        ),
+    ]
     return _change(project, lambda *_: (changes, f"settings: {', '.join(said)}", None), actor)
 
 
@@ -297,9 +311,11 @@ def settings_view(config: ApmConfig, graph: Graph) -> dict[str, Any]:
     return {
         "features": config.features.model_dump(exclude={"overrides"}),
         "automation": config.automation.model_dump(),
+        "runner": {"max_concurrent": config.runner.max_concurrent},
         "defaults": {
             "features": {name: defaults[name].default for name in SETTINGS},
             "automation": {n: f.default for n, f in AutomationConfig.model_fields.items()},
+            "runner": {"max_concurrent": RunnerConfig.model_fields["max_concurrent"].default},
         },
         "overrides": [
             {

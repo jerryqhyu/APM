@@ -121,6 +121,7 @@ export function getSettings(): Promise<ProjectSettings> {
 export function saveSettings(change: {
   features?: SettingsChange<FeatureSettings>;
   automation?: SettingsChange<Automation>;
+  runner?: { max_concurrent?: number | null };
 }): Promise<ProjectSettings> {
   return api<ProjectSettings>("/api/settings", { method: "PATCH", body: change });
 }

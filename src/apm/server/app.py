@@ -141,6 +141,7 @@ class PatchSettings(BaseModel):
 
     features: dict[str, Scalar | None] = Field(default_factory=dict)
     automation: dict[str, Scalar | None] = Field(default_factory=dict)
+    runner: dict[str, Scalar | None] = Field(default_factory=dict)
 
 
 class Hub:
@@ -478,7 +479,9 @@ def create_app(
     @app.patch("/api/settings")
     def patch_settings(body: PatchSettings) -> dict[str, Any]:
         """Edits apm.yaml in place and commits it. A bad value is refused, and nothing changes."""
-        change = set_defaults(project, features=body.features, automation=body.automation)
+        change = set_defaults(
+            project, features=body.features, automation=body.automation, runner=body.runner
+        )
         return settings_view(change.config, load_graph(project))
 
     @app.patch("/api/nodes/{node}/settings")

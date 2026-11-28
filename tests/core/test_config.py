@@ -8,7 +8,7 @@ from apm.core.config import ConfigError, default_repo, parse_config, read_config
 FIXTURES = Path(__file__).parent.parent / "fixtures"
 MINIMAL = "name: x\ncode: { repos: { app: { path: '..' } } }\n"
 DEFAULT_RUNNER = {
-    "max_concurrent": 2,
+    "max_concurrent": 10,
     "default_budget_usd": 2.0,
     "permission_mode": "auto",
     "agents": {},

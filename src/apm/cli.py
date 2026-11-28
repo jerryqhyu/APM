@@ -220,7 +220,7 @@ def settings_show(
             typer.echo(f"  {name:<16} {setting_text(value):<10} {where}")
         return
     view = settings_view(config, graph)
-    for section in ("features", "automation"):
+    for section in ("features", "automation", "runner"):
         typer.echo(f"{section}:")
         for name, value in view[section].items():
             typer.echo(f"  {name:<22} {setting_text(value)}")
@@ -241,7 +241,8 @@ def settings_set(
         list[str],
         typer.Argument(
             help="NAME=VALUE: eager=on, task_max_lines=80, report_detail=brief,"
-            " automation.task_review=off. VALUE default (or inherit) unsets it.",
+            " automation.task_review=off, runner.max_concurrent=12. VALUE default (or inherit)"
+            " unsets it.",
         ),
     ],
     node: Annotated[
@@ -252,16 +253,20 @@ def settings_set(
     """Change settings in apm.yaml, keeping its comments: one commit in the plan repo."""
     project, graph = plan()
     parsed = [parse_setting(pair) for pair in pairs]
-    by_section: dict[str, dict[str, Any]] = {"features": {}, "automation": {}}
+    by_section: dict[str, dict[str, Any]] = {"features": {}, "automation": {}, "runner": {}}
     for section, name, value in parsed:
         by_section[section][name] = value
     if node is not None:
-        if by_section["automation"]:
-            raise OpError("automation switches are project-wide: leave out --node")
+        if by_section["automation"] or by_section["runner"]:
+            raise OpError("automation and runner settings are project-wide: leave out --node")
         change = set_override(project, graph.resolve(node), by_section["features"])
     else:
-        features, automation = by_section["features"], by_section["automation"]
-        change = set_defaults(project, features=features, automation=automation)
+        change = set_defaults(
+            project,
+            features=by_section["features"],
+            automation=by_section["automation"],
+            runner=by_section["runner"],
+        )
     typer.echo(log(project.apm_dir)[0].subject if change.sha else "nothing to change")
 
 
@@ -280,7 +285,7 @@ def parse_setting(pair: str) -> tuple[str, str, bool | int | float | str | None]
     name, equals, raw = pair.partition("=")
     section, _, key = name.strip().rpartition(".")
     section = section or "features"
-    if not equals or not key or section not in ("features", "automation"):
+    if not equals or not key or section not in ("features", "automation", "runner"):
         raise OpError(f'"{pair}": expected NAME=VALUE, e.g. eager=on or automation.reconcile=off')
     if raw.strip() in ("default", "inherit"):
         return section, key, None

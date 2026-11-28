@@ -30,6 +30,10 @@ def test_settings_show_set_and_clear(cwd: Project) -> None:
     assert "  eager                  off\n" in shown
     assert "  task_max_lines         50\n" in shown
     assert "  eager_redo             on\n" in shown
+    assert "runner:\n  max_concurrent         10\n" in shown
+    assert apm("settings", "set", "runner.max_concurrent=12").strip() == (
+        "settings: agents at once 12"
+    )
 
     said = apm("settings", "set", "eager=on", "task_max_lines=80", "automation.reconcile=off")
     assert said.strip() == (
@@ -60,7 +64,7 @@ def test_settings_refuses_what_it_cannot_set(cwd: Project) -> None:
     assert "needs a value" in apm("settings", "set", "eager=", code=1)
     top, _ = feature(cwd, "Index")
     refused = apm("settings", "set", "-n", handle(top), "automation.reconcile=off", code=1)
-    assert "automation switches are project-wide" in refused
+    assert "automation and runner settings are project-wide" in refused
     assert len(log(cwd.apm_dir)) == commits + 2  # the two nodes of `feature`
 
 
